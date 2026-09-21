@@ -3802,6 +3802,9 @@ def build_state_payload(include_audit_logs: bool = True) -> dict:
             {
                 "id": str(monitor["id"]),
                 "typeId": str(monitor.get("typeId") or ""),
+                # 类型名必须一起下发：前端只拿到 typeId 时无法显示类型，
+                # 会退化成统一的「物资」标签。类型被删除时按显示屏兜底。
+                "typeName": type_names.get(str(monitor.get("typeId") or "")) or "显示屏",
                 "brand": monitor.get("brand") or "",
                 "model": monitor.get("model") or "",
                 "inventoryBrandId": str(monitor.get("brandId") or "") or inventory_brand_by_type_name.get(
@@ -3830,6 +3833,7 @@ def build_state_payload(include_audit_logs: bool = True) -> dict:
             {
                 "id": str(item["id"]),
                 "typeId": str(item["typeId"]),
+                "typeName": type_names.get(str(item["typeId"] or "")) or "非资产设备",
                 "brand": item.get("brand") or "",
                 "model": item.get("model") or "",
                 "quantity": sql_int(item.get("quantity"), 1),
