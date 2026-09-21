@@ -115,7 +115,7 @@ python server.py          # 读取 DB_* / SERVER_* 环境变量，默认 http://
 - [数据库与迁移](docs/development/migrations.md) · [时区迁移](docs/development/timezone-migration.md)
 - [机房设备管理](docs/development/datacenter-management.md) · [设备面板与拓扑](docs/development/device-panel-and-topology.md)
 - [机房巡检](docs/development/inspection-management.md) · [机柜视图](docs/development/rack-layout.md)
-- [Docker 部署](docs/deployment/docker.md) · [Ubuntu 原生部署](docs/deployment/ubuntu.md) · [Gitea 与更新服务](docs/deployment/gitea.md)
+- [Docker 部署](docs/deployment/docker.md) · [Ubuntu 原生部署](docs/deployment/ubuntu.md) · [更新服务与手动版本更新](docs/deployment/update-service.md)
 - [发布流程](docs/releases/github-release.md) · [发布前脱敏检查](docs/development/release-safety.md)
 - [安全检查](docs/security/review.md) · [扫描整改记录](docs/security/tscanplus-remediation.md)
 - [前端与接口说明](web/README.md) · [GitHub Wiki](https://github.com/freeisme/OMbox/wiki)

@@ -109,7 +109,7 @@
 - 会话记录保存客户端 IP 和 User-Agent。
 - 备份下载要求管理员权限、CSRF Token 和当前密码。
 - 备份路径会限制在 `BACKUP_DIR` 内，防止路径穿越。
-- Gitea Webhook 使用 HMAC 签名校验。
+- 更新控制 Webhook 使用 HMAC 签名校验。
 - 更新控制接口使用独立控制令牌、TLS 和受信任 CA。
 - 版本更新必须由管理员手动选择已发布的 SemVer 版本。
 - 应用容器默认不发布 MySQL 端口。
@@ -120,12 +120,12 @@
 
 1. 生产环境使用 HTTPS，并设置 `AUTH_COOKIE_SECURE=true`。
 2. 只允许必要网段访问应用端口。
-3. Gitea Webhook 端口不要暴露到公网或无关局域网。
+3. 更新控制 Webhook 端口不要暴露到公网或无关局域网。
 4. 应用使用独立 MySQL 账号，禁止使用 root 连接 Web 服务。
 5. 更新控制端口 9000 仅允许 Docker 网桥和必要管理源访问，证书 SAN 与
    `UPDATE_SERVICE_URL` 主机名严格一致。
 6. `.env`、备份文件、Webhook Secret、更新控制令牌、CA 私钥和 SSH 私钥不得进入 Git。
-7. Docker、Gitea、MySQL 和 Ubuntu 主机按安全补丁周期更新。
+7. Docker、MySQL 和 Ubuntu 主机按安全补丁周期更新。
 8. 备份保存到服务器之外，并定期执行恢复演练。
 
 ## 验证清单
