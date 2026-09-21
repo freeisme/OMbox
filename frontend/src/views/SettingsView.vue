@@ -1118,7 +1118,7 @@ onMounted(async () => {
               <el-input
                 v-model="updateRepositoryUrl"
                 :disabled="updateBusy"
-                placeholder="填写 GitHub/Gitea 仓库地址"
+                placeholder="填写 GitHub 或内网 Git 仓库地址"
               />
             </el-form-item>
             <el-alert

@@ -18,7 +18,7 @@
 
 - [Docker Compose 部署](deployment/docker.md)
 - [Ubuntu 原生部署](deployment/ubuntu.md)
-- [Gitea 和更新服务](deployment/gitea.md)
+- [更新服务与手动版本更新](deployment/update-service.md)
 - [MySQL 连接、备份与恢复](deployment/mysql-connection.md)
 
 ## 发布与安全

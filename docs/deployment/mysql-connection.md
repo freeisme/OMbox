@@ -304,8 +304,8 @@ sudo docker compose \
 curl --fail http://127.0.0.1:8000/api/health
 ```
 
-不要把办公资产数据库 SQL 恢复到 Gitea 数据库。当前 Gitea 使用
-PostgreSQL 容器 `gitea-db`，不是 `office-asset-mgmt-db-1`。
+不要把办公资产数据库 SQL 恢复到内网 Git 备份库的数据库。备份库使用
+PostgreSQL 容器，不是 `office-asset-mgmt-db-1`。
 
 ## 10. 从远程办公终端使用 GUI 客户端
 

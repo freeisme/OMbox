@@ -1260,15 +1260,22 @@ class ScrapManagementRegressionTests(TestCase):
         self.assertIn('page: "scrapRecords"', navigation)
         self.assertIn('modules: ["scrap_management"]', navigation)
 
-    def test_version_notes_document_the_scrap_release(self):
-        notes = (ROOT / "VERSION_NOTES.md").read_text(encoding="utf-8")
-        release = notes.split("## v2.3.0", 1)
+    def test_scrap_release_documents_no_stock_return(self):
+        """报废不回补库存这条业务规则要留在迁移脚本与页面文案里。
 
-        self.assertEqual(2, len(release), "VERSION_NOTES.md must document v2.3.0")
-        body = release[1].split("\n## ", 1)[0]
-        self.assertIn("20260915_001_scrap_management.sql", body)
-        self.assertIn("报废", body)
-        self.assertIn("不回补库存", body)
+        v2.3.0 的版本说明已随仓库重建作废（版本说明只保留 v3.0.x），
+        因此这里改为校验迁移文件与页面上的口径。
+        """
+        migration = (
+            ROOT / "database" / "migrations" / "20260915_001_scrap_management.sql"
+        ).read_text(encoding="utf-8")
+        view = (ROOT / "frontend" / "src" / "views" / "ScrapRecordsView.vue").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("不回补库存", migration)
+        self.assertIn("报废", migration)
+        self.assertIn("不回收、不回补库存", view)
 
 
 class UpdateSourceSelectionTests(TestCase):

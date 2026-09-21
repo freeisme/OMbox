@@ -900,7 +900,7 @@ def request_update_service(
         print(f"Update service returned HTTP {exc.code}: {payload.get('error') or raw[:256]}")
         if payload.get("error") == "repository_fetch_failed":
             raise ApiError(
-                "更新项目无法获取，请检查项目地址、GitHub 网络或本机 Gitea 的部署读取权限。"
+                "更新项目无法获取，请检查项目地址、GitHub 网络或部署账号对内网 Git 的读取权限。"
             ) from exc
         raise ApiError(f"服务器更新服务返回 HTTP {exc.code}。") from exc
     except (URLError, TimeoutError) as exc:
@@ -5726,7 +5726,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                     VALUES (
                       'update_repository_url',
                       {sql_quote(repository_url)},
-                      '用于版本检查的 GitHub 或 Gitea Git 仓库地址；为空时使用服务器部署目录 origin',
+                      '用于版本检查的 Git 仓库地址（GitHub 或内网 Git）；为空时使用服务器部署目录 origin',
                       {sql_quote(context.get("id"))}
                     )
                     ON DUPLICATE KEY UPDATE

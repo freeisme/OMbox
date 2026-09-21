@@ -7,7 +7,7 @@ VALUES
   (
     'update_repository_url',
     '',
-    '用于版本检查的 GitHub 或 Gitea Git 仓库地址；为空时使用服务器部署目录 origin'
+    '用于版本检查的 Git 仓库地址（GitHub 或内网 Git）；为空时使用服务器部署目录 origin'
   )
 ON DUPLICATE KEY UPDATE
   setting_description = VALUES(setting_description);

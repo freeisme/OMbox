@@ -38,10 +38,10 @@
 | --- | --- | --- |
 | 80 / 443 | OpenResty 反向代理 | 保留，作为唯一对外入口 |
 | 8000 | 应用容器 | 只绑 `127.0.0.1` |
-| 9000 | Gitea 部署 Webhook | 只绑 `127.0.0.1` |
+| 9000 | 更新控制 Webhook | 只绑 `127.0.0.1` |
 | 3306 | 1Panel MySQL | 只绑 `127.0.0.1` |
 | 9100 | node-exporter | 只绑 `127.0.0.1`，或不再对外发布 |
-| 3001 / 2222 | Gitea Web / SSH | 按实际需要收敛到本机或指定管理网段 |
+| 3001 / 2222 | 内网 Git 备份库 Web / SSH | 按实际需要收敛到本机或指定管理网段 |
 | 22 | SSH | 保留，用防火墙限制来源网段 |
 
 操作步骤：
@@ -72,7 +72,7 @@
    sudo systemctl restart office-asset-gitea-webhook.service
    ```
 
-   注意：Webhook 只允许 Gitea 本机调用；即使需要跨主机调用，也应该走代理并按来源网段限制。
+   注意：Webhook 只允许本机调用；即使需要跨主机调用，也应该走代理并按来源网段限制。
 
 3. 1Panel 组件。MySQL 和 node-exporter 由 1Panel 管理，在 1Panel 的容器详情里把端口发布改成
    `127.0.0.1:3306:3306`，node-exporter 直接不要对外发布端口（1Panel 自身即可抓取）。

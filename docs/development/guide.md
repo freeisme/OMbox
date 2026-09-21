@@ -1,7 +1,7 @@
 # OMbox 运维（O&M）盒子 开发指南
 
 本文档面向需要维护、扩展、部署和排查本项目的开发人员及系统管理员。
-文档以当前仓库代码为准，适用于 Docker Compose 部署和 Gitea 手动版本更新流程。
+文档以当前仓库代码为准，适用于 Docker Compose 部署和手动版本更新流程。
 
 本文档不包含任何真实密码、SSH 私钥、Webhook Secret、更新控制令牌、业务数据或
 数据库备份。生产运行时配置只保存在服务器上的 `.env` 或 systemd 环境文件中。
@@ -45,7 +45,7 @@ GitHub Wiki 提供适合团队日常查阅的模块化文档：
 | 前端 | 原生 HTML、CSS、JavaScript，无前端构建工具 |
 | 数据库 | MySQL 8.0+，当前 Docker 镜像为 MySQL 8.4 |
 | 容器 | Docker Compose v2 |
-| 代码托管 | GitHub 源仓库，私有 Gitea 部署镜像 |
+| 代码托管 | GitHub 源仓库 + 内网 Git 备份库 |
 | 反向代理 | 可选 Nginx |
 | 运行方式 | `server.py` 直接运行，或使用 Docker 镜像运行 |
 
@@ -69,7 +69,7 @@ GitHub Wiki 提供适合团队日常查阅的模块化文档：
   |
   +-- GitHub freeisme/OMbox
           |
-          +-- Gitea 镜像 OWNER/office-asset-management（每 8 小时）
+          +-- 内网 Git 备份库（本地镜像，按需同步）
                   |
                   +-- 签名 Webhook --> 宿主机更新服务:9000
                                            |
@@ -92,25 +92,25 @@ GitHub Wiki 提供适合团队日常查阅的模块化文档：
 | --- | --- |
 | 服务器地址 | `<asset-server-host>` |
 | 服务器 SSH | `22` |
-| Gitea SSH | `2222` |
+| 备份库 SSH | `2222` |
 | 应用目录 | `/opt/office-asset-mgmt` |
 | 应用地址 | `https://asset.example.internal/` |
-| Gitea 仓库 | `OWNER/office-asset-management` |
+| 备份库仓库 | `OWNER/<项目仓库>` |
 | 发布分支 | `main` |
 | 应用数据库服务名 | `db` |
 
 服务器 IP、端口和仓库名称可以写入运维文档，但密码和令牌不能写入 Git。
 
-当前 GitHub 到 Gitea 的发布链路：
+当前发布链路（GitHub → 内网 Git 备份库）：
 
 ```text
 GitHub freeisme/OMbox
-  -> Gitea 镜像 OWNER/office-asset-mgmt（每 8 小时）
+  -> 内网 Git 备份库（本地镜像，按需同步）
   -> 设置页检查并选择版本
   -> 更新控制服务手动部署
 ```
 
-Gitea 镜像同步只更新仓库，不会自动部署服务器。更新服务读取私有仓库时，必须为目标
+本地镜像同步只更新仓库，不会自动部署服务器。更新服务读取私有仓库时，必须为目标
 仓库授权 `officeasset-deploy` 只读部署密钥。
 
 ## 2. 目录和模块职责
@@ -250,7 +250,6 @@ Element Plus 按需引入，首屏 JS 约 268 KB（gzip 约 114 KB）。
 | `deploy/scripts/update_from_gitea.sh` | 拉取指定分支、构建和重启 Docker 服务 |
 | `deploy/gitea/deploy_webhook.py` | 接收签名 Webhook，并提供手动版本更新控制接口 |
 | `deploy/gitea/office-asset-gitea-webhook.service` | systemd 托管 Webhook 服务 |
-| `deploy/gitea/compose.yaml` | Gitea + PostgreSQL 部署 |
 | `deploy/nginx/office-asset-mgmt.conf` | Nginx 反向代理示例 |
 | `deploy/systemd/office-asset-mgmt.service` | 非 Docker 运行方式的 systemd 示例 |
 
@@ -380,7 +379,7 @@ curl --fail http://127.0.0.1:8000/api/health
 | `PUT` | `/api/users/{id}` | admin + CSRF | 修改用户角色、状态或密码 |
 | `GET` | `/api/settings` | 登录 | 获取系统设置 |
 | `PUT` | `/api/settings` | admin + CSRF | 保存系统和备份设置 |
-| `POST` | `/api/updates/check` | admin + CSRF | 检查 Gitea 并返回可选版本 |
+| `POST` | `/api/updates/check` | admin + CSRF | 检查更新来源并返回可选版本 |
 | `POST` | `/api/updates/apply` | admin + CSRF | 按指定提交排队手动更新 |
 | `GET` | `/api/backups` | admin | 获取备份记录 |
 | `POST` | `/api/backups` | admin + CSRF | 创建手动备份 |
@@ -714,7 +713,7 @@ mysqldump \
 
 恢复前：
 
-1. 确认备份文件来自办公资产数据库，而不是 Gitea PostgreSQL 数据库。
+1. 确认备份文件来自办公资产数据库，而不是内网 Git 备份库的数据库。
 2. 确认文件是纯 SQL 或正确解压后的 SQL。
 3. 停止应用写入。
 4. 在测试库先试恢复并检查表、视图、过程和数据量。
@@ -744,7 +743,7 @@ ASCII '\0' appeared in the statement
 应先确认文件类型和编码，再用 `gzip -dc` 解压。`--binary-mode=1` 只适用于确实
 包含二进制内容的合法导入场景，不能替代解压、编码转换或文件修复。
 
-## 8. Gitea 手动版本发布和更新
+## 8. 手动版本发布和更新
 
 ### 8.1 正常发布流程
 
@@ -766,7 +765,7 @@ git push origin main
 ssh://git@code.example.internal:2222/organization/office-asset-mgmt.git
 ```
 
-服务器 Webhook 服务收到 Gitea 的 `main` 分支 push 后，会校验：
+服务器 Webhook 服务收到备份库 `main` 分支 push 后，会校验：
 
 - `X-Gitea-Signature` HMAC 签名。
 - 仓库全名是否匹配。
@@ -807,7 +806,7 @@ ssh://git@code.example.internal:2222/organization/office-asset-mgmt.git
   -> POST /api/updates/check
   -> 后端校验 admin + CSRF + repositoryUrl + releaseChannel
   -> app 容器请求 host.docker.internal:9000/control/status?repositoryUrl=...&releaseChannel=...
-  -> 宿主机服务 fetch 指定 GitHub/Gitea 地址；留空时 fetch origin/main
+  -> 宿主机服务 fetch 指定 Git 地址（GitHub 或内网 Git）；留空时 fetch origin/main
   -> 返回已发布 SemVer 列表
 
 管理员选择版本号更高的已发布版本并点击“更新到所选版本”
@@ -819,7 +818,7 @@ ssh://git@code.example.internal:2222/organization/office-asset-mgmt.git
 ```
 
 宿主机控制接口使用独立的 `DEPLOY_CONTROL_TOKEN`，应用容器中对应
-`UPDATE_CONTROL_TOKEN`。它与 Gitea Webhook Secret 不是同一个令牌，也不能暴露到
+`UPDATE_CONTROL_TOKEN`。它与 Webhook Secret 不是同一个令牌，也不能暴露到
 前端、Git 或普通日志。
 
 更新状态：
@@ -846,17 +845,17 @@ SemVer 注释标签，并且标签对应提交必须包含匹配的 `VERSION_NOT
 `sha`、提交说明、发布时间、`releaseNotes`、`isCurrent`、`isLatest` 和
 `isSelectable`。前端只允许选择 `isSelectable` 为真的版本。
 
-`repositoryUrl` 支持 HTTPS、SSH 和内网 HTTP Git 地址，例如 GitHub HTTPS、Gitea HTTPS、
+`repositoryUrl` 支持 HTTPS、SSH 和内网 HTTP Git 地址，例如 GitHub HTTPS、内网 Git HTTPS、
 `ssh://git@host:port/owner/repo.git` 或 `git@host:owner/repo.git`。HTTP 只允许内网、
 本机或内部域名；URL 不能包含账号密码、令牌、查询参数、片段、空白或本地文件协议。
 
 更新控制服务必须使用 TLS。应用通过 `UPDATE_SERVICE_CA_FILE` 验证自签或内部 CA；
 只有隔离的开发环境可以同时设置 `UPDATE_SERVICE_ALLOW_HTTP=true` 和 HTTP 地址。
-控制令牌必须独立于 Gitea Webhook Secret，并只存在于服务器运行时配置中。
+控制令牌必须独立于 Webhook Secret，并只存在于服务器运行时配置中。
 
 ### 8.4 版本更新说明要求
 
-每次准备推送到 Gitea 的可部署变更，必须同步修改
+每次准备推送的可部署变更，必须同步修改
 `VERSION_NOTES.md`，至少包含：
 
 1. 日期、SemVer 版本标签和对应的提交范围或目标提交。
@@ -966,7 +965,7 @@ curl -i http://127.0.0.1:8000/api/auth/bootstrap-status
 
 ### 9.5 更新回归清单
 
-- Gitea 中推送一个测试提交。
+- 备份库中推送一个测试提交。
 - 确认 Webhook 日志显示已接收但未自动部署。
 - 设置页点击“检查版本”。
 - 确认返回 `update_available` 和可选发布版本列表。
@@ -1034,7 +1033,7 @@ docker compose down -v
 
 该命令会删除 Docker 管理的数据库卷，只有在备份已验证且明确要清空环境时才能用。
 
-### 10.4 Gitea push 后没有自动更新
+### 10.4 备份库 push 后没有自动更新
 
 这是预期行为。当前 push webhook 已取消自动部署。需要：
 
@@ -1056,10 +1055,10 @@ sudo curl --fail \
 
 再确认：
 
-- Gitea Webhook Secret 与宿主机一致。
+- Webhook Secret 与宿主机一致。
 - Webhook 仓库全名和分支为 `main`。
-- 部署用户可以通过 SSH 读取 Gitea 仓库。
-- Gitea SSH 端口为 `2222`。
+- 部署用户可以通过 SSH 读取备份库仓库。
+- 备份库 SSH 端口为 `2222`。
 - `/opt/office-asset-mgmt/.env` 存在且权限正确。
 - 部署用户具备 Docker Compose 执行权限。
 
@@ -1069,13 +1068,13 @@ sudo curl --fail \
 `UPDATE_CONTROL_TOKEN`/`DEPLOY_CONTROL_TOKEN` 是否成对一致。
 
 控制令牌只允许出现在服务器运行时环境文件中。不要把令牌复制到浏览器控制台、
-前端 JavaScript、Gitea 仓库或聊天记录。
+前端 JavaScript、仓库或聊天记录。
 
 ### 10.6 页面仍显示旧版本
 
 执行以下步骤：
 
-1. 确认 Gitea `main` 已包含最新 commit。
+1. 确认备份库 `main` 已包含最新 commit。
 2. 确认部署日志显示该 commit 已发布。
 3. 确认 app 容器已重新创建。
 4. 检查 `web/index.html` 中 JS/CSS 查询版本。
@@ -1148,14 +1147,14 @@ sudo curl --fail \
 - [ ] 登录、角色、CSRF 正常
 - [ ] 主要业务流程正常
 - [ ] 备份创建和恢复验证
-- [ ] Gitea 手动版本更新验证
+- [ ] 手动版本更新验证
 
 ### 发布
 
 - [ ] `.env` 和运行时令牌没有进入 commit。
-- [ ] 已推送 Gitea `main`。
-- [ ] 已创建未占用的 SemVer 注释标签并推送到 Gitea。
-- [ ] Gitea Releases 已补充对应版本说明和附件。
+- [ ] 已推送备份库 `main`。
+- [ ] 已创建未占用的 SemVer 注释标签并推送到备份库。
+- [ ] 备份库 Releases 已补充对应版本说明和附件。
 - [ ] 已确认 Webhook 不会自动部署，并完成手动版本更新验证。
 - [ ] app、db 均 healthy。
 - [ ] 页面已加载新资源版本。
@@ -1217,7 +1216,7 @@ sudo curl --fail \
 
 - [项目简介和快速启动](../../README.md)
 - [Docker Compose 部署](../deployment/docker.md)
-- [Gitea 和手动版本更新](../deployment/gitea.md)
+- [更新服务与手动版本更新](../deployment/update-service.md)
 - [MySQL 连接、备份和恢复](../deployment/mysql-connection.md)
 - [Ubuntu 原生部署](../deployment/ubuntu.md)
 - [应用和 MySQL 编排](../../compose.yaml)
