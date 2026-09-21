@@ -76,6 +76,25 @@ class StateValidationTests(TestCase):
         self.assertIn("START TRANSACTION;", sql)
         self.assertIn("INSERT INTO app_state_revision", sql)
 
+    def test_employee_usage_items_carry_their_type_name(self):
+        """人员名下的显示屏 / 非资产物资必须带 typeName。
+
+        只下发 typeId 时，前端 `employeeUsageLabel` 只能退化成统一的「物资」标签，
+        页面与 CSV 导出都会看不出这是什么类型的物资。
+        """
+        source = (ROOT / "server.py").read_text(encoding="utf-8")
+        api = (ROOT / "frontend" / "src" / "api" / "employees.ts").read_text(encoding="utf-8")
+
+        monitors_block = source.split('employee["monitors"].append(', 1)[1][:900]
+        non_asset_block = source.split('employee["nonAssetItems"].append(', 1)[1][:900]
+
+        self.assertIn('"typeName"', monitors_block)
+        self.assertIn('"typeName"', non_asset_block)
+        self.assertIn("type_names.get(", monitors_block)
+        self.assertIn("type_names.get(", non_asset_block)
+        # 前端标签以 typeName 优先，兜底文案只在前端拿不到类型时出现
+        self.assertIn("item.typeName", api)
+
 
 class AuthenticationHardeningTests(TestCase):
     def test_password_length_limit_is_enforced_before_hashing(self):
