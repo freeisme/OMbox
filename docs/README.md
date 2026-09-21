@@ -1,0 +1,35 @@
+# 文档索引
+
+## 开发
+
+- [开发指南](development/guide.md)
+- [前端结构与迁移说明](development/frontend.md)
+- [前端页面设计计划（布局规范与美化方案）](development/frontend-design-plan.md)
+- [机柜视图](development/rack-layout.md)
+- [设备面板与网络拓扑](development/device-panel-and-topology.md)
+- [机房管理（设备台账与状态）](development/datacenter-management.md)
+- [机房巡检管理](development/inspection-management.md)
+- [数据库迁移与升级](development/migrations.md)
+- [时区迁移（UTC → UTC+8）](development/timezone-migration.md)
+- [发布前脱敏检查](development/release-safety.md)
+- [前端和接口](../web/README.md)
+
+## 部署与运维
+
+- [Docker Compose 部署](deployment/docker.md)
+- [Ubuntu 原生部署](deployment/ubuntu.md)
+- [Gitea 和更新服务](deployment/gitea.md)
+- [MySQL 连接、备份与恢复](deployment/mysql-connection.md)
+
+## 发布与安全
+
+- [GitHub 发布流程](releases/github-release.md)
+- [安全检查和运维注意事项](security/review.md)
+- [扫描整改：Nginx 加固、端口收敛与 CSRF 复测](security/tscanplus-remediation.md)
+- [版本说明](../VERSION_NOTES.md)
+
+## Wiki 源文件
+
+- [Wiki 页面源文件](wiki/README.md)（`docs/wiki/`，内容与 Wiki 同步）
+
+根目录的 `README.md` 提供项目概览、目录说明和常用命令。

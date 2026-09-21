@@ -1,0 +1,387 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--oa-canvas);
+  font-family: "Microsoft YaHei", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+}
+
+/* 公共页面类：与 components/ui 下的组件配套使用 */
+.oa-panel-gap {
+  margin-top: var(--oa-gap);
+}
+
+.oa-cell-sub {
+  color: var(--oa-text-secondary);
+  font-size: var(--oa-font-xs);
+}
+
+.oa-muted {
+  color: var(--oa-text-secondary);
+}
+
+.oa-hint {
+  color: var(--oa-text-secondary);
+  font-size: var(--oa-font-sm);
+}
+
+.oa-flex-between {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--oa-space-3);
+  align-items: center;
+  justify-content: space-between;
+}
+
+.oa-flex-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--oa-space-2);
+  align-items: center;
+}
+
+.oa-filter-form {
+  flex: 1 1 100%;
+}
+
+.oa-filter-form .el-form-item {
+  margin-bottom: 0;
+}
+
+.oa-full-width {
+  width: 100%;
+}
+
+.oa-mt-0 { margin-top: 0; }
+.oa-mt-2 { margin-top: var(--oa-space-2); }
+.oa-mt-3 { margin-top: var(--oa-space-3); }
+.oa-mb-2 { margin-bottom: var(--oa-space-2); }
+.oa-mb-3 { margin-bottom: var(--oa-space-3); }
+.oa-my-3 { margin: var(--oa-space-3) 0; }
+.oa-ml-1 { margin-left: var(--oa-space-1); }
+.oa-ml-2 { margin-left: var(--oa-space-2); }
+.oa-ml-3 { margin-left: var(--oa-space-3); }
+
+.oa-text-right {
+  text-align: right;
+}
+
+.oa-flex-1 {
+  flex: 1 1 auto;
+}
+
+.oa-min-180 {
+  min-width: 180px;
+}
+
+.oa-w-96 {
+  width: 96px;
+}
+
+.oa-warn-text {
+  color: var(--el-color-warning);
+  font-size: var(--oa-font-xs);
+}
+
+/* 巡检检查项卡片：一行一项，边框与圆角取令牌 */
+.oa-check-item {
+  padding: var(--oa-space-3);
+  margin-bottom: var(--oa-space-2);
+  border: var(--oa-border);
+  border-radius: var(--oa-radius-md);
+}
+
+.oa-filter-input {
+  margin-bottom: var(--oa-space-2);
+}
+
+.oa-pagination {
+  margin-top: var(--oa-space-3);
+  justify-content: flex-end;
+}
+
+.oa-drawer-section {
+  margin-top: var(--oa-space-4);
+}
+
+.oa-drawer-section h4 {
+  margin: 0 0 var(--oa-space-2);
+  font-size: var(--oa-font-md);
+}
+
+.oa-button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--oa-space-2);
+}
+
+.oa-shell {
+  display: flex;
+  height: 100%;
+  min-height: 100%;
+}
+
+.oa-rail {
+  display: flex;
+  flex-direction: column;
+  width: var(--oa-rail-width);
+  flex: 0 0 var(--oa-rail-width);
+  height: 100%;
+  padding: 12px 8px;
+  background: #1f2d3d;
+  color: #e5eaf3;
+  overflow-y: auto;
+  /* 侧栏是深色面：直接改 Element Plus 菜单自己的变量，而不是覆盖 .el-menu 的
+     background。组件样式按需加载、排在 app.css 之后，同权重会把覆盖规则盖掉，
+     之前正是这样把菜单变成了白底灰字。 */
+  --el-menu-bg-color: transparent;
+  --el-menu-text-color: #d3dce6;
+  --el-menu-hover-text-color: #ffffff;
+  --el-menu-hover-bg-color: rgba(255, 255, 255, 0.08);
+  --el-menu-active-color: #ffffff;
+  --el-menu-item-height: 40px;
+  --el-menu-border-color: transparent;
+}
+
+.oa-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px 14px;
+}
+
+.oa-brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: var(--el-color-primary, #409eff);
+  color: var(--oa-accent-contrast, #fff);
+  font-weight: 700;
+}
+
+.oa-brand-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.oa-brand-text strong {
+  font-size: 15px;
+}
+
+.oa-brand-text small {
+  color: #9fb0c4;
+  font-size: 12px;
+}
+
+.oa-nav {
+  flex: 1 1 auto;
+}
+
+.oa-rail .oa-nav {
+  border-right: none;
+}
+
+.oa-rail .oa-nav .el-menu-item {
+  margin-bottom: 2px;
+  border-radius: var(--oa-radius-md);
+}
+
+/* 选中项：Element Plus 只改文字色，底色仍要自己给 */
+.oa-rail .oa-nav .el-menu-item.is-active {
+  background: var(--el-color-primary, #409eff);
+  color: #fff;
+}
+
+.oa-nav-group {
+  padding: 12px 12px 4px;
+  color: #8494a6;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+.oa-rail-footer {
+  padding: 10px 12px 2px;
+  color: #8494a6;
+  font-size: 12px;
+  line-height: 1.5;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.oa-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+}
+
+.oa-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: var(--oa-topbar-height);
+  flex: 0 0 var(--oa-topbar-height);
+  padding: 0 16px;
+  background: #fff;
+  border-bottom: 1px solid #e4e7ed;
+}
+
+html.dark .oa-topbar {
+  background: #1d1e1f;
+  border-bottom-color: #363637;
+}
+
+.oa-topbar-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.oa-topbar-title h1 {
+  margin: 0;
+  font-size: 18px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.oa-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.oa-content {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.oa-content.is-scroll {
+  overflow: auto;
+  padding: 16px;
+}
+
+.oa-login {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+  background: linear-gradient(135deg, #1f2d3d 0%, #2c3e50 100%);
+}
+
+.oa-login-card {
+  width: 100%;
+  max-width: 380px;
+}
+
+/* ------------------------------------------------------------------
+   四档断点：XL ≥1200 / L 992–1199 / M 768–991 / S <768
+   目标是小屏不出现横向溢出与遮挡；表格由 Element Plus 自身横向滚动。
+   ------------------------------------------------------------------ */
+@media (max-width: 1199px) {
+  :root {
+    --oa-rail-width: 200px;
+  }
+}
+
+@media (max-width: 991px) {
+  :root {
+    --oa-rail-width: 168px;
+  }
+
+  /* 带 .oa-topbar 前缀提高权重：文本按钮在 Element Plus 里是 .el-button.is-text，
+     单靠两段类名会和它同权重而被组件样式盖掉。 */
+  .oa-topbar .oa-topbar-actions .el-button {
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+}
+
+@media (max-width: 767px) {
+  /* 导航改为顶部横向条，内容区独占剩余高度 */
+  .oa-shell {
+    flex-direction: column;
+  }
+
+  .oa-rail {
+    width: 100%;
+    flex: 0 0 auto;
+    height: auto;
+    max-height: 38vh;
+    padding: 8px;
+  }
+
+  /* 小屏把菜单项压矮：同样走变量，避免和组件样式比权重 */
+  .oa-rail {
+    --el-menu-item-height: 34px;
+  }
+
+  .oa-rail-footer {
+    display: none;
+  }
+
+  .oa-main {
+    flex: 1 1 auto;
+    min-height: 0;
+    height: auto;
+  }
+
+  .oa-topbar {
+    height: auto;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 8px 12px;
+  }
+
+  .oa-topbar-title h1 {
+    font-size: 16px;
+  }
+
+  .oa-topbar-actions {
+    width: 100%;
+    justify-content: flex-start;
+    gap: 4px;
+  }
+
+  .oa-content.is-scroll {
+    padding: var(--oa-space-3);
+  }
+
+  /* 筛选区与工具条在竖屏下统一竖排，宽度占满 */
+  .oa-filter-bar__fields > *,
+  .oa-toolbar__actions > * {
+    width: 100%;
+  }
+
+  /* 窄屏隐藏筛选标签，改用控件自身的 placeholder 说明用途：实测可省 60–180px 纵向空间
+     （操作日志 416→236px、使用人员 215→125px）。前提是筛选控件都带 placeholder。
+     这里写两段类名是为了拿到更高权重：Element Plus 的
+     `.el-form-item--label-top .el-form-item__label` 与单类名同权重、又按需加载在后。 */
+  .oa-filter-bar .oa-filter-form .el-form-item__label {
+    display: none;
+  }
+
+  .oa-filter-bar__footer,
+  .oa-toolbar {
+    justify-content: flex-start;
+  }
+}
