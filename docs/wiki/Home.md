@@ -1,0 +1,42 @@
+# OMbox · 运维（O&M）盒子
+
+面向内部 IT 部门的办公资产与 IT 服务管理系统：组织与人员、办公终端台账、IT 物资与多仓库、
+离职回收、报废归档、工单与服务管理，以及机房管理（网络设备/服务器台账、机柜视图、设备面板、
+网络拓扑、机房巡检）。
+
+## 快速导航
+
+| 主题 | 说明 |
+| --- | --- |
+| [机房管理](Datacenter-Management) | 机房相关的五个页面与它们之间的关系 |
+| [机房设备台账](Device-Ledger) | 网络设备/服务器状态机与 Excel 导入 |
+| [机柜视图与设备面板](Rack-View-and-Panel) | 上架下架、并排视图、端口与链路、面板图片 |
+| [网络拓扑](Topology) | 由端口连接自动分层的拓扑图与坐标保存 |
+| [机房巡检](Inspection) | 巡检模板、开始巡检、提交与导出 |
+| [发布与版本](Releases-and-Versioning) | 版本号规则、发布流程与回滚 |
+| [运维与安全](Operations-and-Security) | 权限模型、备份、密钥与令牌、脱敏纪律 |
+
+## 技术形态
+
+| 项目 | 现状 |
+| --- | --- |
+| 后端 | Python 标准库（`http.server`），单进程同时提供 `/api/*` 与前端静态资源 |
+| 前端 | Vue 3 + TypeScript + Vite + Element Plus，源码在 `frontend/`，产物输出到 `web/app/` |
+| 前端引入方式 | Element Plus 按需引入 + 路由懒加载，首屏 JS 约 268 KB；旧前端（`web/app.js` 等）已整体删除 |
+| 数据库 | MySQL 8.0+，迁移文件在 `database/migrations/` |
+| 依赖 | 后端不引入第三方依赖；xlsx 解析、YAML 处理等均用标准库实现 |
+
+## 版本与发布
+
+- 版本号唯一来源是仓库根目录的 `VERSION`，后端通过 `GET /api/meta` 暴露；
+- 每个可部署版本在 `VERSION_NOTES.md` 里有同名段落，并打 SemVer 注释标签；
+- 发布前必须通过 `tools/scan_release_safety.py` 的脱敏扫描；
+- 除非明确要求，更新只推送代码仓库，不自动部署、不同步内网镜像。
+
+详见 [发布与版本](Releases-and-Versioning)。
+
+## 权限与数据范围
+
+系统按「权限模块 + 操作」授权（如 `it_assets:view`、`rack_layout:create`），
+并按组织数据范围过滤；后端逐项校验权限，前端隐藏按钮不构成安全边界。
+详见 [运维与安全](Operations-and-Security)。
