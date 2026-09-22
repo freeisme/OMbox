@@ -596,13 +596,15 @@ class DomainApiRouter:
             return True
         if path.startswith("/api/datacenter-devices/"):
             parts = path.split("/")
-            if len(parts) == 6 and parts[5] == "remove" and method == "POST":
+            # 路径就是 /api/datacenter-devices/{id} 与 /api/datacenter-devices/{id}/remove，
+            # 段数分别是 4 和 5；之前按 5 / 6 判断，导致编辑与删除一直 404。
+            if len(parts) == 5 and parts[4] == "remove" and method == "POST":
                 context = self._write_context(handler, "rack_layout", "delete")
-                send_json(self.datacenter_devices.remove_device(parts[4], self._payload(handler), context))
+                send_json(self.datacenter_devices.remove_device(parts[3], self._payload(handler), context))
                 return True
-            if len(parts) == 5 and method == "PUT":
+            if len(parts) == 4 and method == "PUT":
                 context = self._write_context(handler, "rack_layout", "update")
-                send_json(self.datacenter_devices.update_device(parts[4], self._payload(handler), context))
+                send_json(self.datacenter_devices.update_device(parts[3], self._payload(handler), context))
                 return True
 
         if path == "/api/device-types" and method == "GET":

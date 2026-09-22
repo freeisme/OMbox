@@ -87,6 +87,11 @@ function openDialog(device: DatacenterDeviceSummary | null): void {
         serialNumber: device.serialNumber,
         assetCode: device.assetCode,
         ownerLabel: device.ownerLabel,
+        purpose: device.purpose ?? "",
+        remoteAccess: device.remoteAccess ?? "",
+        cpu: device.cpu ?? "",
+        memory: device.memory ?? "",
+        disk: device.disk ?? "",
         status: device.status,
         notes: device.notes ?? "",
       }
@@ -100,6 +105,11 @@ function openDialog(device: DatacenterDeviceSummary | null): void {
         serialNumber: "",
         assetCode: "",
         ownerLabel: "",
+        purpose: "",
+        remoteAccess: "",
+        cpu: "",
+        memory: "",
+        disk: "",
         status: "stock",
         notes: "",
       };
@@ -107,24 +117,30 @@ function openDialog(device: DatacenterDeviceSummary | null): void {
 }
 
 /**
- * 复制一台设备：除备注外全部沿用（含设备编号、名称、SN / ST、固资编码）。
- * 编号或名称重复时保存会被后端拒绝，改到唯一即可保存。
- * 例外：原设备若已上架，状态回到"未上架"——上架状态只能由机柜视图的上架操作写入。
+ * 复制一台设备：只沿用"非唯一"的配置项（品牌型号、设备类型、占用高度、用途、
+ * 远程访问地址、CPU、内存、硬盘、使用人），设备编号、名称、SN / ST、固资编码
+ * 与备注都留空由手工填写，避免保存时撞唯一约束。
+ * 状态统一回到"未上架"——上架状态只能由机柜视图的上架操作写入。
  */
 function copyDevice(device: DatacenterDeviceSummary): void {
   editingId.value = "";
   copyFromName.value = device.name || device.code;
   form.value = {
-    code: device.code,
-    name: device.name,
+    code: "",
+    name: "",
     catalogId: device.catalogId || "",
     brandModel: device.brandModel,
     category: device.category,
     uHeight: device.uHeight,
-    serialNumber: device.serialNumber,
-    assetCode: device.assetCode,
+    serialNumber: "",
+    assetCode: "",
     ownerLabel: device.ownerLabel,
-    status: device.status === "installed" ? "stock" : device.status,
+    purpose: device.purpose ?? "",
+    remoteAccess: device.remoteAccess ?? "",
+    cpu: device.cpu ?? "",
+    memory: device.memory ?? "",
+    disk: device.disk ?? "",
+    status: "stock",
     notes: "",
   };
   dialog.value = true;
@@ -358,6 +374,26 @@ onMounted(async () => {
         </template>
       </el-table-column>
       <el-table-column prop="ownerLabel" label="使用人 / 责任人" width="140" />
+      <el-table-column prop="purpose" label="用途" min-width="140" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.purpose || "—" }}</template>
+      </el-table-column>
+      <el-table-column
+        prop="remoteAccess"
+        label="远程访问地址"
+        min-width="160"
+        show-overflow-tooltip
+      >
+        <template #default="{ row }">{{ row.remoteAccess || "—" }}</template>
+      </el-table-column>
+      <el-table-column prop="cpu" label="CPU" min-width="140" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.cpu || "—" }}</template>
+      </el-table-column>
+      <el-table-column prop="memory" label="内存" width="100" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.memory || "—" }}</template>
+      </el-table-column>
+      <el-table-column prop="disk" label="硬盘" min-width="130" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.disk || "—" }}</template>
+      </el-table-column>
       <el-table-column label="操作" width="280" fixed="right">
         <template #default="{ row }">
           <el-button v-if="canUpdate" link size="small" @click="openDialog(row)">编辑</el-button>
@@ -399,7 +435,7 @@ onMounted(async () => {
         type="info"
         :closable="false"
         show-icon
-        title="已复制全部配置（备注除外）。设备编号或名称重复时保存会被拒绝，改成唯一值即可保存。"
+        title="已沿用被复制设备的品牌型号、设备类型、占用高度、用途、远程访问地址与硬件配置；设备编号、名称、SN / ST、固资编码需手工填写。"
         class="oa-mb-2"
       />
       <el-form label-position="top" size="small">
@@ -445,6 +481,29 @@ onMounted(async () => {
         <el-form-item label="使用人 / 责任人">
           <el-input v-model="form.ownerLabel" placeholder="例如 机房公用" />
         </el-form-item>
+        <el-form-item label="用途">
+          <el-input v-model="form.purpose" placeholder="例如 核心交换 / 数据库主库" />
+        </el-form-item>
+        <el-form-item label="远程访问地址">
+          <el-input v-model="form.remoteAccess" placeholder="例如 IPMI 管理口地址 / ssh 跳板机端口" />
+        </el-form-item>
+        <el-row :gutter="12">
+          <el-col :xs="24" :sm="8">
+            <el-form-item label="CPU">
+              <el-input v-model="form.cpu" placeholder="例如 2 × Xeon Silver 4310" />
+            </el-form-item>
+          </el-col>
+          <el-col :xs="24" :sm="8">
+            <el-form-item label="内存">
+              <el-input v-model="form.memory" placeholder="例如 64G" />
+            </el-form-item>
+          </el-col>
+          <el-col :xs="24" :sm="8">
+            <el-form-item label="硬盘">
+              <el-input v-model="form.disk" placeholder="例如 2 × 480G SSD" />
+            </el-form-item>
+          </el-col>
+        </el-row>
         <el-form-item label="状态">
           <el-select v-model="form.status" class="oa-full-width" :disabled="form.status === 'installed'">
             <el-option label="未上架" value="stock" />

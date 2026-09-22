@@ -182,14 +182,14 @@ function openRackDialog(row?: InspectionRack): void {
 }
 
 /**
- * 复制机柜：除备注外全部沿用（含编码与名称）。
- * 编号重复时保存会被后端拒绝，改到唯一即可保存——这样比事后再补录配置省事。
+ * 复制机柜：只沿用非唯一的项（所属机房、高度），机柜编码与名称留空由手工填写，
+ * 避免和已有记录撞唯一约束。
  */
 function copyRack(row: InspectionRack): void {
   rackEditingId.value = "";
   rackCopyFrom.value = row.name || row.code;
-  rackForm.code = row.code ?? "";
-  rackForm.name = row.name ?? "";
+  rackForm.code = "";
+  rackForm.name = "";
   rackForm.siteId = row.siteId ?? sites.value[0]?.id ?? "";
   rackForm.heightU = String(row.heightU || 42);
   rackForm.remarks = "";
@@ -898,7 +898,7 @@ onMounted(async () => {
       type="info"
       :closable="false"
       show-icon
-      title="已复制全部配置（备注除外）。机柜编码重复时保存会被拒绝，改成唯一编号即可保存。"
+      title="已沿用被复制机柜的所属机房与高度，请填写新的机柜编码与名称。"
       class="oa-mb-2"
     />
     <el-form label-position="top">
