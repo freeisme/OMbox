@@ -2890,6 +2890,41 @@ class InspectionEntryRegressionTests(TestCase):
         self.assertIn("self.datacenter_devices.update_device(parts[3]", router)
         self.assertIn("self.datacenter_devices.remove_device(parts[3]", router)
 
+    def test_datacenter_import_template_lists_every_field(self):
+        """「下载模板」的表头要和字段、示例行一致——上一版加字段时漏改过模板。"""
+        view = (ROOT / "frontend" / "src" / "views" / "DatacenterDeviceView.vue").read_text(
+            encoding="utf-8"
+        )
+        block = view.split("function downloadTemplate()", 1)[1]
+        arrays = re.findall(r"const (?:header|sample) = \[(.*?)\];", block, re.S)
+        self.assertEqual(len(arrays), 2, "模板函数里应有 header 与 sample 两个数组")
+        header = re.findall(r'"([^"]+)"', arrays[0])
+        sample = re.findall(r'"([^"]+)"', arrays[1])
+
+        self.assertEqual(
+            header,
+            [
+                "设备编号",
+                "设备名称",
+                "品牌型号",
+                "设备类型",
+                "占用高度",
+                "SN/ST",
+                "固资编码",
+                "使用人",
+                "用途",
+                "远程访问地址",
+                "CPU",
+                "内存",
+                "硬盘",
+                "状态",
+                "备注",
+            ],
+        )
+        self.assertEqual(len(sample), len(header), "示例行的列数必须与表头一致")
+        # 导入说明也要列出同样的列，避免界面提示落后于功能
+        self.assertIn("用途、远程访问地址、CPU、内存、硬盘", view)
+
     def test_inspection_sites_and_racks_can_be_deleted(self):
         """机房 / 机柜要能删除，且带引用保护：有柜的机房、柜内有设备的机柜都不能删。"""
         api = (ROOT / "frontend" / "src" / "api" / "governance.ts").read_text(encoding="utf-8")
