@@ -65,6 +65,8 @@ const siteForm = reactive({
 
 const rackVisible = ref(false);
 const rackEditingId = ref("");
+/** 复制来源名称：非空时对话框标题显示"复制自…"。 */
+const rackCopyFrom = ref("");
 const rackForm = reactive({
   code: "",
   name: "",
@@ -141,6 +143,7 @@ async function submitSite(): Promise<void> {
 
 function openRackDialog(row?: InspectionRack): void {
   rackEditingId.value = row?.id ?? "";
+  rackCopyFrom.value = "";
   rackForm.code = row?.code ?? "";
   rackForm.name = row?.name ?? "";
   rackForm.siteId = row?.siteId ?? sites.value[0]?.id ?? "";
@@ -149,6 +152,18 @@ function openRackDialog(row?: InspectionRack): void {
   if (!sites.value.length) {
     ElMessage.warning("请先创建机房或弱电间，机柜必须归属其中一个。");
   }
+  rackVisible.value = true;
+}
+
+/** 复制机柜：沿用所属机房、高度与备注，只清掉机柜编码与名称。 */
+function copyRack(row: InspectionRack): void {
+  rackEditingId.value = "";
+  rackCopyFrom.value = row.name || row.code;
+  rackForm.code = "";
+  rackForm.name = "";
+  rackForm.siteId = row.siteId ?? sites.value[0]?.id ?? "";
+  rackForm.heightU = String(row.heightU || 42);
+  rackForm.remarks = row.remarks ?? "";
   rackVisible.value = true;
 }
 
@@ -611,9 +626,10 @@ onMounted(async () => {
                 {{ sites.find((item) => item.id === row.siteId)?.name || "—" }}
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="80" fixed="right">
+            <el-table-column label="操作" width="130" fixed="right">
               <template #default="{ row }">
                 <el-button link type="primary" @click="openRackDialog(row)">编辑</el-button>
+                <el-button link @click="copyRack(row)">复制</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -811,11 +827,25 @@ onMounted(async () => {
 
   <FormDialog
     v-model="rackVisible"
-    :title="rackEditingId ? '编辑机柜' : '新增机柜'"
+    :title="
+      rackEditingId
+        ? '编辑机柜'
+        : rackCopyFrom
+          ? `复制机柜（来自 ${rackCopyFrom}）`
+          : '新增机柜'
+    "
     size="md"
     :loading="saving"
     @confirm="submitRack"
   >
+    <el-alert
+      v-if="rackCopyFrom && !rackEditingId"
+      type="info"
+      :closable="false"
+      show-icon
+      title="已沿用被复制机柜的所属机房、高度与备注，请填写新的机柜编码与名称。"
+      class="oa-mb-2"
+    />
     <el-form label-position="top">
       <el-row :gutter="12">
         <el-col :xs="24" :sm="12">

@@ -28,6 +28,8 @@ const statusFilter = ref("");
 const keyword = ref("");
 const dialog = ref(false);
 const editingId = ref("");
+/** 复制来源名称：非空时对话框标题显示"复制自…"，并提示补录唯一字段。 */
+const copyFromName = ref("");
 const form = ref<Record<string, unknown>>({});
 const importDialog = ref(false);
 const importFileName = ref("");
@@ -73,6 +75,7 @@ async function loadDeviceTypes(): Promise<void> {
 
 function openDialog(device: DatacenterDeviceSummary | null): void {
   editingId.value = device?.id ?? "";
+  copyFromName.value = "";
   form.value = device
     ? {
         code: device.code,
@@ -100,6 +103,29 @@ function openDialog(device: DatacenterDeviceSummary | null): void {
         status: "stock",
         notes: "",
       };
+  dialog.value = true;
+}
+
+/**
+ * 复制一台设备：型号库、品牌型号、设备类型、占用高度、使用人与备注都沿用，
+ * 只清掉设备编号、名称、SN / ST、固资编码这些唯一值，状态回到"未上架"。
+ */
+function copyDevice(device: DatacenterDeviceSummary): void {
+  editingId.value = "";
+  copyFromName.value = device.name || device.code;
+  form.value = {
+    code: "",
+    name: "",
+    catalogId: device.catalogId || "",
+    brandModel: device.brandModel,
+    category: device.category,
+    uHeight: device.uHeight,
+    serialNumber: "",
+    assetCode: "",
+    ownerLabel: device.ownerLabel,
+    status: "stock",
+    notes: device.notes ?? "",
+  };
   dialog.value = true;
 }
 
@@ -331,9 +357,10 @@ onMounted(async () => {
         </template>
       </el-table-column>
       <el-table-column prop="ownerLabel" label="使用人 / 责任人" width="140" />
-      <el-table-column label="操作" width="230" fixed="right">
+      <el-table-column label="操作" width="280" fixed="right">
         <template #default="{ row }">
           <el-button v-if="canUpdate" link size="small" @click="openDialog(row)">编辑</el-button>
+          <el-button v-if="canCreate" link size="small" @click="copyDevice(row)">复制</el-button>
           <el-dropdown v-if="canUpdate" @command="(command: string) => changeStatus(row, command)">
             <el-button link size="small">状态<span class="caret">▾</span></el-button>
             <template #dropdown>
@@ -356,10 +383,24 @@ onMounted(async () => {
 
     <FormDialog
       v-model="dialog"
-      :title="editingId ? '编辑机房设备' : '新增机房设备'"
+      :title="
+        editingId
+          ? '编辑机房设备'
+          : copyFromName
+            ? `复制机房设备（来自 ${copyFromName}）`
+            : '新增机房设备'
+      "
       size="lg"
       @confirm="submit"
     >
+      <el-alert
+        v-if="copyFromName && !editingId"
+        type="info"
+        :closable="false"
+        show-icon
+        title="已沿用被复制设备的型号、类型、占用高度与备注，请补填设备编号与名称，SN / ST 与固资编码需重新录入。"
+        class="oa-mb-2"
+      />
       <el-form label-position="top" size="small">
         <el-form-item label="型号库（可选，选中后自动带出型号、类型与 U 高）">
           <el-select
