@@ -56,6 +56,20 @@ HEADER_ALIASES: dict[str, set[str]] = {
     "serialNumber": {"sn", "sn/st", "序列号", "serial", "serialnumber", "序列号st", "设备序列号"},
     "assetCode": {"固资编码", "固定资产编号", "资产编码", "固资编号", "assetcode", "固定资产编码"},
     "ownerLabel": {"使用人", "责任人", "负责人", "使用人/责任人", "owner", "ownerlabel", "保管人"},
+    "purpose": {"用途", "设备用途", "用途说明", "功能", "purpose", "usage"},
+    "remoteAccess": {
+        "远程访问地址",
+        "远程地址",
+        "访问地址",
+        "管理地址",
+        "管理IP",
+        "ip",
+        "remoteaccess",
+        "remote",
+    },
+    "cpu": {"cpu", "处理器", "cpu型号"},
+    "memory": {"内存", "内存容量", "memory", "ram"},
+    "disk": {"硬盘", "硬盘容量", "磁盘", "存储", "disk", "storage"},
     "status": {"状态", "设备状态", "使用状态", "status"},
     "notes": {"备注", "说明", "描述", "notes", "remark", "remarks"},
 }
@@ -211,6 +225,11 @@ class DatacenterDeviceService:
             "serialNumber": self.db.text(payload.get("serialNumber", current.get("serialNumber")))[:128],
             "assetCode": self.db.text(payload.get("assetCode", current.get("assetCode")))[:128],
             "ownerLabel": self.db.text(payload.get("ownerLabel", current.get("ownerLabel")))[:128],
+            "purpose": self.db.text(payload.get("purpose", current.get("purpose")))[:160],
+            "remoteAccess": self.db.text(payload.get("remoteAccess", current.get("remoteAccess")))[:255],
+            "cpu": self.db.text(payload.get("cpu", current.get("cpu")))[:64],
+            "memory": self.db.text(payload.get("memory", current.get("memory")))[:64],
+            "disk": self.db.text(payload.get("disk", current.get("disk")))[:64],
             "status": status,
             "orgId": org_id,
             "notes": self.db.text(payload.get("notes", current.get("notes")))[:500],
@@ -272,6 +291,11 @@ class DatacenterDeviceService:
                   'serialNumber', device.serial_number,
                   'assetCode', device.asset_code,
                   'ownerLabel', device.owner_label,
+                  'purpose', device.purpose,
+                  'remoteAccess', device.remote_access,
+                  'cpu', device.cpu,
+                  'memory', device.memory,
+                  'disk', device.disk,
                   'status', device.status,
                   'siteId', COALESCE(CAST(device.site_id AS CHAR), ''),
                   'siteName', COALESCE(site.site_name, ''),
@@ -308,7 +332,8 @@ class DatacenterDeviceService:
                 f"""
             INSERT INTO datacenter_device (
               device_code, device_name, catalog_id, brand_model, category, u_height,
-              serial_number, asset_code, owner_label, status, org_unit_id, notes,
+              serial_number, asset_code, owner_label, purpose, remote_access, cpu, memory, disk,
+              status, org_unit_id, notes,
               created_by, updated_by
             )
             VALUES (
@@ -321,6 +346,11 @@ class DatacenterDeviceService:
               {self.db.quote(fields['serialNumber'])},
               {self.db.quote(fields['assetCode'])},
               {self.db.quote(fields['ownerLabel'])},
+              {self.db.quote(fields['purpose'])},
+              {self.db.quote(fields['remoteAccess'])},
+              {self.db.quote(fields['cpu'])},
+              {self.db.quote(fields['memory'])},
+              {self.db.quote(fields['disk'])},
               {self.db.quote(fields['status'])},
               {org_sql},
               {self.db.quote(fields['notes'])},
@@ -363,6 +393,11 @@ class DatacenterDeviceService:
               'serialNumber', serial_number,
               'assetCode', asset_code,
               'ownerLabel', owner_label,
+              'purpose', purpose,
+              'remoteAccess', remote_access,
+              'cpu', cpu,
+              'memory', memory,
+              'disk', disk,
               'status', status,
               'orgId', COALESCE(CAST(org_unit_id AS CHAR), ''),
               'notes', notes
@@ -398,6 +433,11 @@ class DatacenterDeviceService:
                 serial_number = {self.db.quote(fields['serialNumber'])},
                 asset_code = {self.db.quote(fields['assetCode'])},
                 owner_label = {self.db.quote(fields['ownerLabel'])},
+                purpose = {self.db.quote(fields['purpose'])},
+                remote_access = {self.db.quote(fields['remoteAccess'])},
+                cpu = {self.db.quote(fields['cpu'])},
+                memory = {self.db.quote(fields['memory'])},
+                disk = {self.db.quote(fields['disk'])},
                 status = {self.db.quote(fields['status'])},
                 org_unit_id = {org_sql},
                 notes = {self.db.quote(fields['notes'])},
@@ -520,6 +560,11 @@ class DatacenterDeviceService:
             "serialNumber": self._cell(row, mapping.get("serialNumber")),
             "assetCode": self._cell(row, mapping.get("assetCode")),
             "ownerLabel": self._cell(row, mapping.get("ownerLabel")),
+            "purpose": self._cell(row, mapping.get("purpose")),
+            "remoteAccess": self._cell(row, mapping.get("remoteAccess")),
+            "cpu": self._cell(row, mapping.get("cpu")),
+            "memory": self._cell(row, mapping.get("memory")),
+            "disk": self._cell(row, mapping.get("disk")),
             "notes": self._cell(row, mapping.get("notes")),
         }
         category_raw = self._cell(row, mapping.get("category"))
@@ -578,7 +623,8 @@ class DatacenterDeviceService:
         if not mapping:
             raise self.api_error(
                 "没有识别到表头。请至少包含「设备编号」和「设备名称」两列，"
-                "可选：品牌型号、设备类型、占用高度、SN/ST、固资编码、使用人、状态、备注。"
+                "可选：品牌型号、设备类型、占用高度、SN/ST、固资编码、使用人、用途、"
+                "远程访问地址、CPU、内存、硬盘、状态、备注。"
             )
         if "code" not in mapping or "name" not in mapping:
             raise self.api_error("表头必须包含「设备编号」与「设备名称」两列。")
@@ -626,6 +672,11 @@ class DatacenterDeviceService:
                       'serialNumber', serial_number,
                       'assetCode', asset_code,
                       'ownerLabel', owner_label,
+                      'purpose', purpose,
+                      'remoteAccess', remote_access,
+                      'cpu', cpu,
+                      'memory', memory,
+                      'disk', disk,
                       'notes', notes
                     )), JSON_ARRAY())
                     FROM datacenter_device

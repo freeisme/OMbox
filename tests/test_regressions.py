@@ -2810,7 +2810,7 @@ class InspectionEntryRegressionTests(TestCase):
         self.assertIn('["tasks", "templates", "sites"].includes(requested)', view)
 
     def test_datacenter_devices_and_racks_can_be_copied(self):
-        """网络设备与机柜的"复制"要除备注外全复制：重名由后端拒绝，改名即可保存。"""
+        """复制的语义：只沿用非唯一项（配置），编号 / 名称 / SN / 固资编码留空手填。"""
         devices = (ROOT / "frontend" / "src" / "views" / "DatacenterDeviceView.vue").read_text(
             encoding="utf-8"
         )
@@ -2818,29 +2818,77 @@ class InspectionEntryRegressionTests(TestCase):
             encoding="utf-8"
         )
 
-        # 网络设备：复制入口 + 全字段沿用 + 备注清空
+        # 网络设备：复制入口 + 配置项沿用 + 唯一项清空
         self.assertIn("function copyDevice(", devices)
         self.assertIn('@click="copyDevice(row)"', devices)
         self.assertIn("复制机房设备（来自 ${copyFromName}）", devices)
-        self.assertIn("code: device.code,", devices)
-        self.assertIn("name: device.name,", devices)
-        self.assertIn("serialNumber: device.serialNumber,", devices)
-        self.assertIn("assetCode: device.assetCode,", devices)
+        self.assertIn('code: "",', devices)
+        self.assertIn('name: "",', devices)
+        self.assertIn('serialNumber: "",', devices)
+        self.assertIn('assetCode: "",', devices)
         self.assertIn("brandModel: device.brandModel,", devices)
+        self.assertIn("uHeight: device.uHeight,", devices)
+        self.assertIn("purpose: device.purpose ?? \"\",", devices)
+        self.assertIn("remoteAccess: device.remoteAccess ?? \"\",", devices)
+        self.assertIn("cpu: device.cpu ?? \"\",", devices)
+        self.assertIn("memory: device.memory ?? \"\",", devices)
+        self.assertIn("disk: device.disk ?? \"\",", devices)
         self.assertIn('notes: "",', devices)
-        # 例外：已上架设备复制后回到未上架（上架状态只能由机柜视图写入）
-        self.assertIn('status: device.status === "installed" ? "stock" : device.status,', devices)
-        # 提示要讲清楚"重名先报错、改名即可保存"
-        self.assertIn("设备编号或名称重复时保存会被拒绝", devices)
+        self.assertIn('status: "stock",', devices)
 
-        # 机柜：复制入口 + 沿用编码名称机房高度 + 备注清空
+        # 机柜：复制入口 + 沿用所属机房与高度 + 编码名称留空
         self.assertIn("function copyRack(", inspection)
         self.assertIn('@click="copyRack(row)"', inspection)
         self.assertIn("复制机柜（来自 ${rackCopyFrom}）", inspection)
-        self.assertIn("rackForm.code = row.code ?? \"\";", inspection)
-        self.assertIn("rackForm.name = row.name ?? \"\";", inspection)
+        self.assertIn('rackForm.code = "";', inspection)
+        self.assertIn('rackForm.name = "";', inspection)
         self.assertIn('rackForm.remarks = "";', inspection)
-        self.assertIn("机柜编码重复时保存会被拒绝", inspection)
+        self.assertIn("rackForm.siteId = row.siteId ?? sites.value[0]?.id ?? \"\";", inspection)
+
+    def test_datacenter_device_fields_cover_operations_metadata(self):
+        """机房设备要能记录用途、远程访问地址与 CPU / 内存 / 硬盘，并支持导入与编辑。"""
+        view = (ROOT / "frontend" / "src" / "views" / "DatacenterDeviceView.vue").read_text(
+            encoding="utf-8"
+        )
+        api = (ROOT / "frontend" / "src" / "api" / "datacenter.ts").read_text(encoding="utf-8")
+        service = (ROOT / "office_asset" / "datacenter_devices.py").read_text(encoding="utf-8")
+        migration = (
+            ROOT / "database" / "migrations" / "20260922_001_datacenter_device_details.sql"
+        ).read_text(encoding="utf-8")
+
+        for label in ("用途", "远程访问地址", "CPU", "内存", "硬盘"):
+            self.assertIn(label, view)
+            self.assertIn(label, service)
+        # 表格也要有这几列
+        for prop in ('prop="purpose"', 'prop="remoteAccess"', 'prop="cpu"', 'prop="memory"', 'prop="disk"'):
+            self.assertIn(prop, view)
+        # 前端类型、后端字段与迁移一一对应
+        for field in ("purpose", "remoteAccess", "cpu", "memory", "disk"):
+            self.assertIn(field, api)
+            self.assertIn(f"{field}", service)
+        self.assertIn("purpose VARCHAR(160)", migration)
+        self.assertIn("remote_access VARCHAR(255)", migration)
+        self.assertIn("cpu VARCHAR(64)", migration)
+        self.assertIn("memory VARCHAR(64)", migration)
+        self.assertIn("disk VARCHAR(64)", migration)
+        # Excel 导入要能识别这几列
+        self.assertIn('"purpose": {"用途"', service)
+        self.assertIn('"remoteAccess"', service)
+        self.assertIn('"cpu": {"cpu"', service)
+
+    def test_datacenter_device_routes_match_frontend_paths(self):
+        """编辑 / 删除机房设备的路径段数必须和前端一致（曾因段数错位一直 404）。"""
+        router = (ROOT / "office_asset" / "api_router.py").read_text(encoding="utf-8")
+        api = (ROOT / "frontend" / "src" / "api" / "datacenter.ts").read_text(encoding="utf-8")
+
+        # 前端：PUT /api/datacenter-devices/{id}、POST /api/datacenter-devices/{id}/remove
+        self.assertIn("`/api/datacenter-devices/${encodeURIComponent(deviceId)}`", api)
+        self.assertIn("`/api/datacenter-devices/${encodeURIComponent(deviceId)}/remove`", api)
+        # 后端：4 段是 PUT，5 段且末段是 remove 才是删除
+        self.assertIn('if len(parts) == 5 and parts[4] == "remove" and method == "POST":', router)
+        self.assertIn('if len(parts) == 4 and method == "PUT":', router)
+        self.assertIn("self.datacenter_devices.update_device(parts[3]", router)
+        self.assertIn("self.datacenter_devices.remove_device(parts[3]", router)
 
     def test_inspection_sites_and_racks_can_be_deleted(self):
         """机房 / 机柜要能删除，且带引用保护：有柜的机房、柜内有设备的机柜都不能删。"""

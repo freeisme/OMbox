@@ -48,6 +48,12 @@ export interface DatacenterDeviceSummary {
   serialNumber: string;
   assetCode: string;
   ownerLabel: string;
+  /** 用途、远程访问地址与硬件配置（台账补充字段）。 */
+  purpose?: string;
+  remoteAccess?: string;
+  cpu?: string;
+  memory?: string;
+  disk?: string;
   status: string;
   siteId?: string;
   siteName?: string;
