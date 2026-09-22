@@ -2808,6 +2808,34 @@ class InspectionEntryRegressionTests(TestCase):
         # 机柜视图要能直接跳到新建机柜
         self.assertIn("/inspection?tab=sites", rack_view)
         self.assertIn('["tasks", "templates", "sites"].includes(requested)', view)
+
+    def test_datacenter_devices_and_racks_can_be_copied(self):
+        """网络设备与机柜要能"复制"复用配置：唯一字段清空，其余沿用。"""
+        devices = (ROOT / "frontend" / "src" / "views" / "DatacenterDeviceView.vue").read_text(
+            encoding="utf-8"
+        )
+        inspection = (ROOT / "frontend" / "src" / "views" / "InspectionView.vue").read_text(
+            encoding="utf-8"
+        )
+
+        # 网络设备：复制入口 + 标题提示 + 唯一字段清空 + 状态回到未上架
+        self.assertIn("function copyDevice(", devices)
+        self.assertIn('@click="copyDevice(row)"', devices)
+        self.assertIn("复制机房设备（来自 ${copyFromName}）", devices)
+        self.assertIn('serialNumber: "",', devices)
+        self.assertIn('assetCode: "",', devices)
+        self.assertIn('status: "stock",', devices)
+        # 型号库与品牌型号要沿用，否则"复制"没有意义
+        self.assertIn("catalogId: device.catalogId || \"\",", devices)
+        self.assertIn("brandModel: device.brandModel,", devices)
+
+        # 机柜：复制入口 + 清空编码名称 + 沿用所属机房与高度
+        self.assertIn("function copyRack(", inspection)
+        self.assertIn('@click="copyRack(row)"', inspection)
+        self.assertIn("复制机柜（来自 ${rackCopyFrom}）", inspection)
+        self.assertIn('rackForm.code = "";', inspection)
+        self.assertIn('rackForm.name = "";', inspection)
+        self.assertIn("rackForm.siteId = row.siteId ?? sites.value[0]?.id ?? \"\";", inspection)
     def test_vue_employees_view_can_edit_devices_under_a_person(self):
         """使用人员清单要能像旧版一样维护人员名下的设备（办公终端 / 显示屏 / 非资产设备）。"""
         view = (ROOT / "frontend" / "src" / "views" / "EmployeesView.vue").read_text(encoding="utf-8")
