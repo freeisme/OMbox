@@ -76,7 +76,9 @@ RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     (
         "local-machine-path",
-        re.compile(r"\b[CDEF]:\\\\(?:Users|数据库|work|项目|temp|Temp)\b"),
+        # 单反斜杠（文档里直接写 D:\数据库\...）与双反斜杠（JSON/Python 字符串里的转义写法）都要拦下来，
+        # 正斜杠写法同样处理，否则只要不用转义就能绕过去。
+        re.compile(r"\b[CDEF]:[\\/]{1,2}(?:Users|数据库|work|项目|temp|Temp)\b"),
     ),
     (
         "local-mysql-path",
