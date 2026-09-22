@@ -2810,7 +2810,7 @@ class InspectionEntryRegressionTests(TestCase):
         self.assertIn('["tasks", "templates", "sites"].includes(requested)', view)
 
     def test_datacenter_devices_and_racks_can_be_copied(self):
-        """网络设备与机柜要能"复制"复用配置：唯一字段清空，其余沿用。"""
+        """网络设备与机柜的"复制"要除备注外全复制：重名由后端拒绝，改名即可保存。"""
         devices = (ROOT / "frontend" / "src" / "views" / "DatacenterDeviceView.vue").read_text(
             encoding="utf-8"
         )
@@ -2818,24 +2818,51 @@ class InspectionEntryRegressionTests(TestCase):
             encoding="utf-8"
         )
 
-        # 网络设备：复制入口 + 标题提示 + 唯一字段清空 + 状态回到未上架
+        # 网络设备：复制入口 + 全字段沿用 + 备注清空
         self.assertIn("function copyDevice(", devices)
         self.assertIn('@click="copyDevice(row)"', devices)
         self.assertIn("复制机房设备（来自 ${copyFromName}）", devices)
-        self.assertIn('serialNumber: "",', devices)
-        self.assertIn('assetCode: "",', devices)
-        self.assertIn('status: "stock",', devices)
-        # 型号库与品牌型号要沿用，否则"复制"没有意义
-        self.assertIn("catalogId: device.catalogId || \"\",", devices)
+        self.assertIn("code: device.code,", devices)
+        self.assertIn("name: device.name,", devices)
+        self.assertIn("serialNumber: device.serialNumber,", devices)
+        self.assertIn("assetCode: device.assetCode,", devices)
         self.assertIn("brandModel: device.brandModel,", devices)
+        self.assertIn('notes: "",', devices)
+        # 例外：已上架设备复制后回到未上架（上架状态只能由机柜视图写入）
+        self.assertIn('status: device.status === "installed" ? "stock" : device.status,', devices)
+        # 提示要讲清楚"重名先报错、改名即可保存"
+        self.assertIn("设备编号或名称重复时保存会被拒绝", devices)
 
-        # 机柜：复制入口 + 清空编码名称 + 沿用所属机房与高度
+        # 机柜：复制入口 + 沿用编码名称机房高度 + 备注清空
         self.assertIn("function copyRack(", inspection)
         self.assertIn('@click="copyRack(row)"', inspection)
         self.assertIn("复制机柜（来自 ${rackCopyFrom}）", inspection)
-        self.assertIn('rackForm.code = "";', inspection)
-        self.assertIn('rackForm.name = "";', inspection)
-        self.assertIn("rackForm.siteId = row.siteId ?? sites.value[0]?.id ?? \"\";", inspection)
+        self.assertIn("rackForm.code = row.code ?? \"\";", inspection)
+        self.assertIn("rackForm.name = row.name ?? \"\";", inspection)
+        self.assertIn('rackForm.remarks = "";', inspection)
+        self.assertIn("机柜编码重复时保存会被拒绝", inspection)
+
+    def test_inspection_sites_and_racks_can_be_deleted(self):
+        """机房 / 机柜要能删除，且带引用保护：有柜的机房、柜内有设备的机柜都不能删。"""
+        api = (ROOT / "frontend" / "src" / "api" / "governance.ts").read_text(encoding="utf-8")
+        view = (ROOT / "frontend" / "src" / "views" / "InspectionView.vue").read_text(encoding="utf-8")
+        router = (ROOT / "office_asset" / "api_router.py").read_text(encoding="utf-8")
+        service = (ROOT / "office_asset" / "inspection.py").read_text(encoding="utf-8")
+
+        # 前端
+        self.assertIn("export async function deleteInspectionSite(", api)
+        self.assertIn("export async function deleteInspectionRack(", api)
+        self.assertIn("async function removeSite(", view)
+        self.assertIn("async function removeRack(", view)
+        self.assertIn('@click="removeSite(row)"', view)
+        self.assertIn('@click="removeRack(row)"', view)
+        # 后端
+        self.assertIn('method == "DELETE"', router)
+        self.assertIn("def delete_site(", service)
+        self.assertIn("def delete_rack(", service)
+        self.assertIn("请先删除或转移机柜", service)
+        self.assertIn("请先在机柜视图下架", service)
+        self.assertIn("删除会破坏巡检历史", service)
     def test_vue_employees_view_can_edit_devices_under_a_person(self):
         """使用人员清单要能像旧版一样维护人员名下的设备（办公终端 / 显示屏 / 非资产设备）。"""
         view = (ROOT / "frontend" / "src" / "views" / "EmployeesView.vue").read_text(encoding="utf-8")

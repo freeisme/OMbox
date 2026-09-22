@@ -6,6 +6,8 @@ import {
   INSPECTION_TASK_STATUS_LABELS,
   checkInspectionItem,
   createInspectionTask,
+  deleteInspectionRack,
+  deleteInspectionSite,
   fetchInspectionRacks,
   fetchInspectionSites,
   fetchInspectionTask,
@@ -141,6 +143,30 @@ async function submitSite(): Promise<void> {
   }
 }
 
+async function removeSite(row: InspectionSite): Promise<void> {
+  let reason = "";
+  try {
+    const { value } = await ElMessageBox.prompt(
+      `删除「${row.name}」的原因（会写入操作日志）`,
+      "删除机房 / 弱电间",
+      { confirmButtonText: "确认删除", cancelButtonText: "取消" },
+    );
+    reason = String(value ?? "");
+  } catch {
+    return;
+  }
+  saving.value = true;
+  try {
+    await deleteInspectionSite(row.id, reason.trim());
+    ElMessage.success("机房/弱电间已删除。");
+    await load();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "删除机房/弱电间失败。");
+  } finally {
+    saving.value = false;
+  }
+}
+
 function openRackDialog(row?: InspectionRack): void {
   rackEditingId.value = row?.id ?? "";
   rackCopyFrom.value = "";
@@ -155,15 +181,18 @@ function openRackDialog(row?: InspectionRack): void {
   rackVisible.value = true;
 }
 
-/** 复制机柜：沿用所属机房、高度与备注，只清掉机柜编码与名称。 */
+/**
+ * 复制机柜：除备注外全部沿用（含编码与名称）。
+ * 编号重复时保存会被后端拒绝，改到唯一即可保存——这样比事后再补录配置省事。
+ */
 function copyRack(row: InspectionRack): void {
   rackEditingId.value = "";
   rackCopyFrom.value = row.name || row.code;
-  rackForm.code = "";
-  rackForm.name = "";
+  rackForm.code = row.code ?? "";
+  rackForm.name = row.name ?? "";
   rackForm.siteId = row.siteId ?? sites.value[0]?.id ?? "";
   rackForm.heightU = String(row.heightU || 42);
-  rackForm.remarks = row.remarks ?? "";
+  rackForm.remarks = "";
   rackVisible.value = true;
 }
 
@@ -195,6 +224,30 @@ async function submitRack(): Promise<void> {
     await load();
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "保存机柜失败。");
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function removeRack(row: InspectionRack): Promise<void> {
+  let reason = "";
+  try {
+    const { value } = await ElMessageBox.prompt(
+      `删除「${row.name}」的原因（会写入操作日志）`,
+      "删除机柜",
+      { confirmButtonText: "确认删除", cancelButtonText: "取消" },
+    );
+    reason = String(value ?? "");
+  } catch {
+    return;
+  }
+  saving.value = true;
+  try {
+    await deleteInspectionRack(row.id, reason.trim());
+    ElMessage.success("机柜已删除。");
+    await load();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "删除机柜失败。");
   } finally {
     saving.value = false;
   }
@@ -610,6 +663,7 @@ onMounted(async () => {
             <el-table-column label="操作" width="80" fixed="right">
               <template #default="{ row }">
                 <el-button link type="primary" @click="openSiteDialog(row)">编辑</el-button>
+                <el-button link type="danger" @click="removeSite(row)">删除</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -626,10 +680,11 @@ onMounted(async () => {
                 {{ sites.find((item) => item.id === row.siteId)?.name || "—" }}
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="130" fixed="right">
+            <el-table-column label="操作" width="180" fixed="right">
               <template #default="{ row }">
                 <el-button link type="primary" @click="openRackDialog(row)">编辑</el-button>
                 <el-button link @click="copyRack(row)">复制</el-button>
+                <el-button link type="danger" @click="removeRack(row)">删除</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -843,7 +898,7 @@ onMounted(async () => {
       type="info"
       :closable="false"
       show-icon
-      title="已沿用被复制机柜的所属机房、高度与备注，请填写新的机柜编码与名称。"
+      title="已复制全部配置（备注除外）。机柜编码重复时保存会被拒绝，改成唯一编号即可保存。"
       class="oa-mb-2"
     />
     <el-form label-position="top">
