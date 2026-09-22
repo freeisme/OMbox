@@ -112,8 +112,10 @@ class DomainApiRouter:
         headers = getattr(handler, "headers", None)
         return str(headers.get("Idempotency-Key", "") if headers else "").strip()
 
-    def _payload(self, handler: object) -> dict:
-        return getattr(handler, "read_json")()
+    def _payload(self, handler: object, allow_empty: bool = False) -> dict:
+        reader = getattr(handler, "read_json")
+        # DELETE 允许带 {reason}，也允许完全不带请求体
+        return reader(allow_empty=True) if allow_empty else reader()
 
     def dispatch(self, handler: object, parsed: ParseResult, params: dict[str, list[str]]) -> bool:
         path = parsed.path.rstrip("/") or "/"
@@ -456,6 +458,13 @@ class DomainApiRouter:
             context = self._write_context(handler, "inspection_management", "update")
             send_json(self.inspection.update_site(site_id, self._payload(handler), context))
             return True
+        if path.startswith("/api/inspection/sites/") and method == "DELETE":
+            site_id = path.split("/")[-1]
+            context = self._write_context(handler, "inspection_management", "delete")
+            send_json(
+                self.inspection.delete_site(site_id, self._payload(handler, allow_empty=True), context)
+            )
+            return True
 
         if path == "/api/inspection/racks" and method == "GET":
             context = self._read_context(handler, "inspection_management")
@@ -469,6 +478,13 @@ class DomainApiRouter:
             rack_id = path.split("/")[-1]
             context = self._write_context(handler, "inspection_management", "update")
             send_json(self.inspection.update_rack(rack_id, self._payload(handler), context))
+            return True
+        if path.startswith("/api/inspection/racks/") and method == "DELETE":
+            rack_id = path.split("/")[-1]
+            context = self._write_context(handler, "inspection_management", "delete")
+            send_json(
+                self.inspection.delete_rack(rack_id, self._payload(handler, allow_empty=True), context)
+            )
             return True
 
         if path == "/api/inspection/templates" and method == "GET":

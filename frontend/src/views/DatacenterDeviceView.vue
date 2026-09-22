@@ -107,24 +107,25 @@ function openDialog(device: DatacenterDeviceSummary | null): void {
 }
 
 /**
- * 复制一台设备：型号库、品牌型号、设备类型、占用高度、使用人与备注都沿用，
- * 只清掉设备编号、名称、SN / ST、固资编码这些唯一值，状态回到"未上架"。
+ * 复制一台设备：除备注外全部沿用（含设备编号、名称、SN / ST、固资编码）。
+ * 编号或名称重复时保存会被后端拒绝，改到唯一即可保存。
+ * 例外：原设备若已上架，状态回到"未上架"——上架状态只能由机柜视图的上架操作写入。
  */
 function copyDevice(device: DatacenterDeviceSummary): void {
   editingId.value = "";
   copyFromName.value = device.name || device.code;
   form.value = {
-    code: "",
-    name: "",
+    code: device.code,
+    name: device.name,
     catalogId: device.catalogId || "",
     brandModel: device.brandModel,
     category: device.category,
     uHeight: device.uHeight,
-    serialNumber: "",
-    assetCode: "",
+    serialNumber: device.serialNumber,
+    assetCode: device.assetCode,
     ownerLabel: device.ownerLabel,
-    status: "stock",
-    notes: device.notes ?? "",
+    status: device.status === "installed" ? "stock" : device.status,
+    notes: "",
   };
   dialog.value = true;
 }
@@ -398,7 +399,7 @@ onMounted(async () => {
         type="info"
         :closable="false"
         show-icon
-        title="已沿用被复制设备的型号、类型、占用高度与备注，请补填设备编号与名称，SN / ST 与固资编码需重新录入。"
+        title="已复制全部配置（备注除外）。设备编号或名称重复时保存会被拒绝，改成唯一值即可保存。"
         class="oa-mb-2"
       />
       <el-form label-position="top" size="small">

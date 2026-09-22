@@ -134,6 +134,22 @@ export async function saveInspectionRack(
   await api("/api/inspection/racks", { method: "POST", body: payload });
 }
 
+/** 删除机房 / 弱电间；下面还挂着机柜或已有巡检记录时后端会拒绝。 */
+export async function deleteInspectionSite(siteId: string, reason = ""): Promise<void> {
+  await api(`/api/inspection/sites/${encodeURIComponent(siteId)}`, {
+    method: "DELETE",
+    body: { reason },
+  });
+}
+
+/** 删除机柜；柜内有已上架设备、端口链路或巡检记录时后端会拒绝。 */
+export async function deleteInspectionRack(rackId: string, reason = ""): Promise<void> {
+  await api(`/api/inspection/racks/${encodeURIComponent(rackId)}`, {
+    method: "DELETE",
+    body: { reason },
+  });
+}
+
 export interface InspectionTemplateItemPayload {
   category: string;
   title: string;

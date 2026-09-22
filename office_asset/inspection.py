@@ -478,6 +478,120 @@ class InspectionService:
         )
         return {"id": str(rack.get("id")), "code": code, "name": name}
 
+    def delete_site(self, site_id: object, payload: dict, context: dict) -> dict:
+        """删除机房 / 弱电间；下面还挂着机柜、或已有巡检记录时拒绝，避免留下孤儿数据。"""
+        site = self.db.json(
+            f"""
+            SELECT JSON_OBJECT(
+              'id', CAST(site_id AS CHAR),
+              'code', site_code,
+              'name', site_name,
+              'siteType', site_type,
+              'isActive', is_active
+            )
+            FROM asset_site
+            WHERE site_id = {self.db.integer(site_id, 0)}
+            """,
+            None,
+        )
+        if not site:
+            raise self.api_error("机房/弱电间不存在。")
+        site_id_int = self.db.integer(site.get("id"), 0)
+        rack_count = self.db.scalar(
+            f"SELECT COUNT(*) FROM asset_rack WHERE site_id = {site_id_int} AND is_active = 1;"
+        )
+        if self.db.integer(rack_count, 0) > 0:
+            raise self.conflict_error(
+                f"该机房下还有 {self.db.integer(rack_count, 0)} 个机柜，请先删除或转移机柜。"
+            )
+        task_count = self.db.scalar(
+            f"SELECT COUNT(*) FROM inspection_task WHERE site_id = {site_id_int};"
+        )
+        if self.db.integer(task_count, 0) > 0:
+            raise self.conflict_error("该机房已有巡检任务记录，删除会破坏巡检历史，不能删除。")
+        reason = self.db.text(payload.get("reason"))[:200]
+        self.db.execute(
+            f"""
+            START TRANSACTION;
+            DELETE FROM asset_site WHERE site_id = {site_id_int};
+            {self._audit_sql(
+                "inspection_site_deleted",
+                "asset_site",
+                str(site_id_int),
+                self.db.text(site.get("name")),
+                f"删除机房/弱电间：{self.db.text(site.get('name'))}"
+                + (f"（原因：{reason}）" if reason else ""),
+                context,
+                site,
+                None,
+            )};
+            COMMIT;
+            """
+        )
+        return {"id": str(site_id_int), "code": self.db.text(site.get("code"))}
+
+    def delete_rack(self, rack_id: object, payload: dict, context: dict) -> dict:
+        """删除机柜；柜内有已上架设备、端口 / 链路或巡检记录时拒绝。"""
+        rack = self.db.json(
+            f"""
+            SELECT JSON_OBJECT(
+              'id', CAST(rack_id AS CHAR),
+              'code', rack_code,
+              'name', rack_name,
+              'siteId', CAST(site_id AS CHAR),
+              'heightU', height_u,
+              'isActive', is_active
+            )
+            FROM asset_rack
+            WHERE rack_id = {self.db.integer(rack_id, 0)}
+            """,
+            None,
+        )
+        if not rack:
+            raise self.api_error("机柜不存在。")
+        rack_id_int = self.db.integer(rack.get("id"), 0)
+        placement_count = self.db.scalar(
+            f"SELECT COUNT(*) FROM rack_device_placement WHERE rack_id = {rack_id_int};"
+        )
+        if self.db.integer(placement_count, 0) > 0:
+            raise self.conflict_error(
+                f"机柜内还有 {self.db.integer(placement_count, 0)} 台已上架设备，请先在机柜视图下架。"
+            )
+        port_count = self.db.scalar(
+            f"""
+            SELECT COUNT(*) FROM rack_device_port port
+            JOIN rack_device_placement placement ON placement.placement_id = port.placement_id
+            WHERE placement.rack_id = {rack_id_int};
+            """
+        )
+        if self.db.integer(port_count, 0) > 0:
+            raise self.conflict_error("该机柜还登记着设备端口，请先清理端口与链路。")
+        task_count = self.db.scalar(
+            f"SELECT COUNT(*) FROM inspection_task WHERE rack_id = {rack_id_int};"
+        )
+        if self.db.integer(task_count, 0) > 0:
+            raise self.conflict_error("该机柜已有巡检任务记录，删除会破坏巡检历史，不能删除。")
+        reason = self.db.text(payload.get("reason"))[:200]
+        self.db.execute(
+            f"""
+            START TRANSACTION;
+            DELETE FROM asset_rack WHERE rack_id = {rack_id_int};
+            {self._audit_sql(
+                "inspection_rack_deleted",
+                "asset_rack",
+                str(rack_id_int),
+                self.db.text(rack.get("name")),
+                f"删除机柜：{self.db.text(rack.get('name'))}"
+                + (f"（原因：{reason}）" if reason else ""),
+                context,
+                rack,
+                None,
+            )};
+            COMMIT;
+            """
+        )
+        return {"id": str(rack_id_int), "code": self.db.text(rack.get("code"))}
+
     # ---------------------------------------------------------------- templates
 
     def list_templates(self, context: dict) -> list[dict]:
