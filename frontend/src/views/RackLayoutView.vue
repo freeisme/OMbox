@@ -419,6 +419,7 @@ onMounted(async () => {
         <div class="spacer" />
         <el-button size="small" @click="printRack">打印机柜图</el-button>
         <el-button size="small" @click="exportCsv">导出清单</el-button>
+        <el-button size="small" @click="router.push('/inspection?tab=sites')">新增机柜</el-button>
         <el-button size="small" @click="startInspection">发起巡检</el-button>
       </div>
     </template>

@@ -5,6 +5,9 @@ export interface InspectionSite {
   code: string;
   name: string;
   siteType?: string;
+  location?: string;
+  remarks?: string;
+  rackCount?: number;
   isActive?: unknown;
 }
 
@@ -13,7 +16,9 @@ export interface InspectionRack {
   code: string;
   name: string;
   siteId: string;
+  siteName?: string;
   heightU?: number;
+  remarks?: string;
   isActive?: unknown;
 }
 
@@ -22,6 +27,8 @@ export interface InspectionTemplate {
   code?: string;
   name: string;
   scopeKind?: string;
+  /** 列表接口返回的检查项数量（列表不带 items 明细）。 */
+  itemCount?: number;
   isActive?: unknown;
   items?: Array<{ id?: string; title?: string; checkMethod?: string }>;
 }
@@ -79,6 +86,84 @@ export async function fetchInspectionRacks(): Promise<InspectionRack[]> {
 export async function fetchInspectionTemplates(): Promise<InspectionTemplate[]> {
   const payload = await api<{ templates?: InspectionTemplate[] }>("/api/inspection/templates");
   return payload.templates ?? [];
+}
+
+export interface InspectionSitePayload {
+  code: string;
+  name: string;
+  siteType: string;
+  location?: string;
+  remarks?: string;
+}
+
+/** 新建 / 修改机房或弱电间（PUT 需要传完整字段，调用方要带上已有的位置与备注）。 */
+export async function saveInspectionSite(
+  payload: InspectionSitePayload,
+  siteId = "",
+): Promise<void> {
+  if (siteId) {
+    await api(`/api/inspection/sites/${encodeURIComponent(siteId)}`, {
+      method: "PUT",
+      body: payload,
+    });
+    return;
+  }
+  await api("/api/inspection/sites", { method: "POST", body: payload });
+}
+
+export interface InspectionRackPayload {
+  code: string;
+  name: string;
+  siteId: string;
+  heightU: string;
+  remarks?: string;
+}
+
+/** 新建 / 修改机柜；机柜必须归属一个机房或弱电间。 */
+export async function saveInspectionRack(
+  payload: InspectionRackPayload,
+  rackId = "",
+): Promise<void> {
+  if (rackId) {
+    await api(`/api/inspection/racks/${encodeURIComponent(rackId)}`, {
+      method: "PUT",
+      body: payload,
+    });
+    return;
+  }
+  await api("/api/inspection/racks", { method: "POST", body: payload });
+}
+
+export interface InspectionTemplateItemPayload {
+  category: string;
+  title: string;
+  checkMethod: string;
+  valueType: string;
+  unit: string;
+  normalRange: string;
+  isRequired: boolean;
+}
+
+export interface InspectionTemplatePayload {
+  code: string;
+  name: string;
+  siteType: string;
+  description: string;
+  items: InspectionTemplateItemPayload[];
+}
+
+export async function saveInspectionTemplate(
+  payload: InspectionTemplatePayload,
+  templateId = "",
+): Promise<void> {
+  if (templateId) {
+    await api(`/api/inspection/templates/${encodeURIComponent(templateId)}`, {
+      method: "PUT",
+      body: payload,
+    });
+    return;
+  }
+  await api("/api/inspection/templates", { method: "POST", body: payload });
 }
 
 export async function fetchInspectionTasks(): Promise<InspectionTask[]> {

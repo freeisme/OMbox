@@ -2782,6 +2782,32 @@ class InspectionEntryRegressionTests(TestCase):
         self.assertIn(".employees-table :deep(.el-table__cell .cell)", view)
         self.assertIn("padding: 0 14px;", view)
 
+    def test_inspection_sites_racks_and_templates_can_be_created(self):
+        """机房 / 机柜 / 巡检模板必须有新建入口。
+
+        后端一直有 POST /api/inspection/{sites,racks,templates}，但 Vue 迁移时把入口丢了，
+        表现为"机柜建不出来、页面上也没有新增按钮"。
+        """
+        view = (ROOT / "frontend" / "src" / "views" / "InspectionView.vue").read_text(encoding="utf-8")
+        api = (ROOT / "frontend" / "src" / "api" / "governance.ts").read_text(encoding="utf-8")
+        rack_view = (ROOT / "frontend" / "src" / "views" / "RackLayoutView.vue").read_text(
+            encoding="utf-8"
+        )
+
+        for label in ("＋ 新增机房 / 弱电间", "＋ 新增机柜", "＋ 新增模板"):
+            self.assertIn(label, view)
+        for name in ("saveInspectionSite", "saveInspectionRack", "saveInspectionTemplate"):
+            self.assertIn(f"export async function {name}(", api)
+        self.assertIn('"/api/inspection/sites"', api)
+        self.assertIn('"/api/inspection/racks"', api)
+        self.assertIn('"/api/inspection/templates"', api)
+        # 机柜必须归属机房：前端要先拦住，别等后端 400
+        self.assertIn("机柜编码、名称与所属机房必填。", view)
+        # 列表接口只返回 itemCount，检查项数量不能读 items（否则永远显示 0）
+        self.assertIn("row.itemCount ?? (row.items ?? []).length", view)
+        # 机柜视图要能直接跳到新建机柜
+        self.assertIn("/inspection?tab=sites", rack_view)
+        self.assertIn('["tasks", "templates", "sites"].includes(requested)', view)
     def test_vue_employees_view_can_edit_devices_under_a_person(self):
         """使用人员清单要能像旧版一样维护人员名下的设备（办公终端 / 显示屏 / 非资产设备）。"""
         view = (ROOT / "frontend" / "src" / "views" / "EmployeesView.vue").read_text(encoding="utf-8")

@@ -11,8 +11,12 @@ import {
   fetchInspectionTask,
   fetchInspectionTasks,
   fetchInspectionTemplates,
+  saveInspectionRack,
+  saveInspectionSite,
+  saveInspectionTemplate,
   submitInspectionTask,
   voidInspectionTask,
+  type InspectionTemplateItemPayload,
   type InspectionRack,
   type InspectionSite,
   type InspectionTask,
@@ -22,11 +26,13 @@ import {
 import { formatDateTimeText } from "../labels";
 import { hasPermission } from "../session";
 import { confirmAction } from "../composables/useConfirm";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import DataPanel from "../components/ui/DataPanel.vue";
 import PageHeader from "../components/ui/PageHeader.vue";
+import ToolbarActions from "../components/ui/ToolbarActions.vue";
 
 const router = useRouter();
+const route = useRoute();
 const loading = ref(true);
 const saving = ref(false);
 const activeTab = ref("tasks");
@@ -44,6 +50,197 @@ const createForm = reactive({
   inspectorUserId: "",
   remarks: "",
 });
+
+// ---------------------------------------------------------------- 机房 / 机柜 / 巡检模板维护
+
+const siteVisible = ref(false);
+const siteEditingId = ref("");
+const siteForm = reactive({
+  code: "",
+  name: "",
+  siteType: "server_room",
+  location: "",
+  remarks: "",
+});
+
+const rackVisible = ref(false);
+const rackEditingId = ref("");
+const rackForm = reactive({
+  code: "",
+  name: "",
+  siteId: "",
+  heightU: "42",
+  remarks: "",
+});
+
+const templateVisible = ref(false);
+const templateForm = reactive({
+  code: "",
+  name: "",
+  siteType: "both",
+  description: "",
+  items: [] as InspectionTemplateItemPayload[],
+});
+
+const TEMPLATE_VALUE_TYPES = [
+  { value: "ok_fail", label: "正常 / 异常" },
+  { value: "ok_fail_na", label: "正常 / 异常 / 不适用" },
+  { value: "number", label: "数值" },
+  { value: "text", label: "文本" },
+];
+
+function emptyTemplateItem(): InspectionTemplateItemPayload {
+  return {
+    category: "",
+    title: "",
+    checkMethod: "",
+    valueType: "ok_fail",
+    unit: "",
+    normalRange: "",
+    isRequired: true,
+  };
+}
+
+function openSiteDialog(row?: InspectionSite): void {
+  siteEditingId.value = row?.id ?? "";
+  siteForm.code = row?.code ?? "";
+  siteForm.name = row?.name ?? "";
+  siteForm.siteType = row?.siteType || "server_room";
+  siteForm.location = row?.location ?? "";
+  siteForm.remarks = row?.remarks ?? "";
+  siteVisible.value = true;
+}
+
+async function submitSite(): Promise<void> {
+  if (!siteForm.code.trim() || !siteForm.name.trim()) {
+    ElMessage.warning("机房/弱电间编码与名称必填。");
+    return;
+  }
+  saving.value = true;
+  try {
+    await saveInspectionSite(
+      {
+        code: siteForm.code.trim(),
+        name: siteForm.name.trim(),
+        siteType: siteForm.siteType,
+        location: siteForm.location.trim(),
+        remarks: siteForm.remarks.trim(),
+      },
+      siteEditingId.value,
+    );
+    ElMessage.success(siteEditingId.value ? "机房/弱电间已更新。" : "机房/弱电间已创建。");
+    siteVisible.value = false;
+    siteEditingId.value = "";
+    await load();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "保存机房/弱电间失败。");
+  } finally {
+    saving.value = false;
+  }
+}
+
+function openRackDialog(row?: InspectionRack): void {
+  rackEditingId.value = row?.id ?? "";
+  rackForm.code = row?.code ?? "";
+  rackForm.name = row?.name ?? "";
+  rackForm.siteId = row?.siteId ?? sites.value[0]?.id ?? "";
+  rackForm.heightU = String(row?.heightU || 42);
+  rackForm.remarks = row?.remarks ?? "";
+  if (!sites.value.length) {
+    ElMessage.warning("请先创建机房或弱电间，机柜必须归属其中一个。");
+  }
+  rackVisible.value = true;
+}
+
+async function submitRack(): Promise<void> {
+  if (!rackForm.code.trim() || !rackForm.name.trim() || !rackForm.siteId) {
+    ElMessage.warning("机柜编码、名称与所属机房必填。");
+    return;
+  }
+  const heightU = Number(rackForm.heightU);
+  if (!Number.isInteger(heightU) || heightU < 1 || heightU > 100) {
+    ElMessage.warning("机柜高度必须是 1-100 之间的整数。");
+    return;
+  }
+  saving.value = true;
+  try {
+    await saveInspectionRack(
+      {
+        code: rackForm.code.trim(),
+        name: rackForm.name.trim(),
+        siteId: rackForm.siteId,
+        heightU: String(heightU),
+        remarks: rackForm.remarks.trim(),
+      },
+      rackEditingId.value,
+    );
+    ElMessage.success(rackEditingId.value ? "机柜已更新。" : "机柜已创建。");
+    rackVisible.value = false;
+    rackEditingId.value = "";
+    await load();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "保存机柜失败。");
+  } finally {
+    saving.value = false;
+  }
+}
+
+function openTemplateDialog(): void {
+  templateForm.code = "";
+  templateForm.name = "";
+  templateForm.siteType = "both";
+  templateForm.description = "";
+  templateForm.items = [emptyTemplateItem()];
+  templateVisible.value = true;
+}
+
+function addTemplateItem(): void {
+  templateForm.items.push(emptyTemplateItem());
+}
+
+function removeTemplateItem(index: number): void {
+  templateForm.items.splice(index, 1);
+  if (!templateForm.items.length) templateForm.items.push(emptyTemplateItem());
+}
+
+async function submitTemplate(): Promise<void> {
+  if (!templateForm.code.trim() || !templateForm.name.trim()) {
+    ElMessage.warning("模板编码与名称必填。");
+    return;
+  }
+  const items = templateForm.items
+    .map((item) => ({
+      category: item.category.trim(),
+      title: item.title.trim(),
+      checkMethod: item.checkMethod.trim(),
+      valueType: item.valueType || "ok_fail",
+      unit: item.unit.trim(),
+      normalRange: item.normalRange.trim(),
+      isRequired: Boolean(item.isRequired),
+    }))
+    .filter((item) => item.title);
+  if (!items.length) {
+    ElMessage.warning("至少需要一项巡检事项。");
+    return;
+  }
+  saving.value = true;
+  try {
+    await saveInspectionTemplate({
+      code: templateForm.code.trim(),
+      name: templateForm.name.trim(),
+      siteType: templateForm.siteType,
+      description: templateForm.description.trim(),
+      items,
+    });
+    ElMessage.success("巡检模板已创建。");
+    templateVisible.value = false;
+    await load();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "保存巡检模板失败。");
+  } finally {
+    saving.value = false;
+  }
+}
 
 const detailVisible = ref(false);
 const detail = ref<InspectionTask | null>(null);
@@ -250,7 +447,12 @@ async function voidTask(row: InspectionTask): Promise<void> {
   }
 }
 
-onMounted(load);
+onMounted(async () => {
+  // 机柜视图等页面可以带 ?tab=sites 直达「机房与机柜」，方便新增机柜。
+  const requested = typeof route.query.tab === "string" ? route.query.tab : "";
+  if (["tasks", "templates", "sites"].includes(requested)) activeTab.value = requested;
+  await load();
+});
 </script>
 
 <template>
@@ -279,6 +481,39 @@ onMounted(load);
   </PageHeader>
 
   <DataPanel class="oa-panel-gap" :loading="loading">
+    <ToolbarActions
+      v-if="activeTab !== 'tasks'"
+      class="oa-mb-3"
+      :hint="
+        activeTab === 'sites'
+          ? '机柜必须归属一个机房或弱电间；先建机房，再建机柜'
+          : '模板定义一次检查项，可被机房或机柜的巡检任务反复使用'
+      "
+    >
+      <template v-if="activeTab === 'sites'">
+        <el-button
+          v-if="hasPermission('inspection_management', 'create')"
+          type="primary"
+          @click="openSiteDialog()"
+        >
+          ＋ 新增机房 / 弱电间
+        </el-button>
+        <el-button
+          v-if="hasPermission('inspection_management', 'create')"
+          @click="openRackDialog()"
+        >
+          ＋ 新增机柜
+        </el-button>
+      </template>
+      <el-button
+        v-else-if="hasPermission('inspection_management', 'create')"
+        type="primary"
+        @click="openTemplateDialog()"
+      >
+        ＋ 新增模板
+      </el-button>
+    </ToolbarActions>
+
     <el-table
       v-if="activeTab === 'tasks'"
       :data="tasks"
@@ -334,7 +569,9 @@ onMounted(load);
       <el-table-column prop="name" label="模板名称" min-width="200" />
       <el-table-column prop="code" label="编码" width="140" />
       <el-table-column label="检查项" width="100">
-        <template #default="{ row }">{{ (row.items ?? []).length }}</template>
+        <template #default="{ row }">
+          {{ row.itemCount ?? (row.items ?? []).length }}
+        </template>
       </el-table-column>
       <el-table-column label="启用" width="90">
         <template #default="{ row }">{{ row.isActive ? "是" : "否" }}</template>
@@ -352,6 +589,14 @@ onMounted(load);
                 {{ row.siteType === "weak_room" ? "弱电间" : "机房" }}
               </template>
             </el-table-column>
+            <el-table-column label="机柜数" width="80">
+              <template #default="{ row }">{{ row.rackCount ?? 0 }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="80" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="openSiteDialog(row)">编辑</el-button>
+              </template>
+            </el-table-column>
           </el-table>
         </el-col>
         <el-col :xs="24" :md="12">
@@ -364,6 +609,11 @@ onMounted(load);
             <el-table-column label="所属机房" min-width="140">
               <template #default="{ row }">
                 {{ sites.find((item) => item.id === row.siteId)?.name || "—" }}
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="80" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="openRackDialog(row)">编辑</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -523,4 +773,168 @@ onMounted(load);
       </template>
     </template>
   </DetailDrawer>
+
+  <FormDialog
+    v-model="siteVisible"
+    :title="siteEditingId ? '编辑机房 / 弱电间' : '新增机房 / 弱电间'"
+    size="md"
+    :loading="saving"
+    @confirm="submitSite"
+  >
+    <el-form label-position="top">
+      <el-row :gutter="12">
+        <el-col :xs="24" :sm="12">
+          <el-form-item label="编码" required>
+            <el-input v-model="siteForm.code" placeholder="例如 SR-01" />
+          </el-form-item>
+        </el-col>
+        <el-col :xs="24" :sm="12">
+          <el-form-item label="名称" required>
+            <el-input v-model="siteForm.name" placeholder="例如 一号机房" />
+          </el-form-item>
+        </el-col>
+      </el-row>
+      <el-form-item label="类型" required>
+        <el-radio-group v-model="siteForm.siteType">
+          <el-radio-button value="server_room">机房</el-radio-button>
+          <el-radio-button value="weak_room">弱电间</el-radio-button>
+        </el-radio-group>
+      </el-form-item>
+      <el-form-item label="位置">
+        <el-input v-model="siteForm.location" placeholder="例如 一号楼 3 层" />
+      </el-form-item>
+      <el-form-item label="备注">
+        <el-input v-model="siteForm.remarks" type="textarea" :rows="2" />
+      </el-form-item>
+    </el-form>
+  </FormDialog>
+
+  <FormDialog
+    v-model="rackVisible"
+    :title="rackEditingId ? '编辑机柜' : '新增机柜'"
+    size="md"
+    :loading="saving"
+    @confirm="submitRack"
+  >
+    <el-form label-position="top">
+      <el-row :gutter="12">
+        <el-col :xs="24" :sm="12">
+          <el-form-item label="机柜编码" required>
+            <el-input v-model="rackForm.code" placeholder="例如 RACK-A01" />
+          </el-form-item>
+        </el-col>
+        <el-col :xs="24" :sm="12">
+          <el-form-item label="机柜名称" required>
+            <el-input v-model="rackForm.name" placeholder="例如 A 列 01 柜" />
+          </el-form-item>
+        </el-col>
+      </el-row>
+      <el-form-item label="所属机房 / 弱电间" required>
+        <el-select v-model="rackForm.siteId" class="oa-full-width" placeholder="请选择机房或弱电间">
+          <el-option
+            v-for="site in sites"
+            :key="site.id"
+            :label="`${site.name}（${site.siteType === 'weak_room' ? '弱电间' : '机房'}）`"
+            :value="site.id"
+          />
+        </el-select>
+        <div v-if="!sites.length" class="oa-hint">
+          还没有机房或弱电间，请先在左侧新增机房。
+        </div>
+      </el-form-item>
+      <el-form-item label="高度（U）" required>
+        <el-input-number v-model="rackForm.heightU" :min="1" :max="100" />
+      </el-form-item>
+      <el-form-item label="备注">
+        <el-input v-model="rackForm.remarks" type="textarea" :rows="2" />
+      </el-form-item>
+    </el-form>
+  </FormDialog>
+
+  <FormDialog
+    v-model="templateVisible"
+    title="新增巡检模板"
+    size="lg"
+    :loading="saving"
+    @confirm="submitTemplate"
+  >
+    <el-form label-position="top">
+      <el-row :gutter="12">
+        <el-col :xs="24" :sm="8">
+          <el-form-item label="模板编码" required>
+            <el-input v-model="templateForm.code" placeholder="例如 TPL-DAILY" />
+          </el-form-item>
+        </el-col>
+        <el-col :xs="24" :sm="8">
+          <el-form-item label="模板名称" required>
+            <el-input v-model="templateForm.name" placeholder="例如 机房日常巡检" />
+          </el-form-item>
+        </el-col>
+        <el-col :xs="24" :sm="8">
+          <el-form-item label="适用对象">
+            <el-select v-model="templateForm.siteType" class="oa-full-width">
+              <el-option label="机房与弱电间通用" value="both" />
+              <el-option label="仅机房" value="server_room" />
+              <el-option label="仅弱电间" value="weak_room" />
+            </el-select>
+          </el-form-item>
+        </el-col>
+      </el-row>
+      <el-form-item label="说明">
+        <el-input v-model="templateForm.description" placeholder="可选" />
+      </el-form-item>
+    </el-form>
+
+    <el-divider content-position="left">巡检事项</el-divider>
+    <el-table :data="templateForm.items" size="small" border>
+      <el-table-column label="分类" width="120">
+        <template #default="{ row }">
+          <el-input v-model="row.category" size="small" placeholder="可选" />
+        </template>
+      </el-table-column>
+      <el-table-column label="检查项" min-width="160">
+        <template #default="{ row }">
+          <el-input v-model="row.title" size="small" placeholder="例如 指示灯状态" />
+        </template>
+      </el-table-column>
+      <el-table-column label="检查方法" min-width="150">
+        <template #default="{ row }">
+          <el-input v-model="row.checkMethod" size="small" placeholder="可选" />
+        </template>
+      </el-table-column>
+      <el-table-column label="结论类型" width="140">
+        <template #default="{ row }">
+          <el-select v-model="row.valueType" size="small">
+            <el-option
+              v-for="option in TEMPLATE_VALUE_TYPES"
+              :key="option.value"
+              :label="option.label"
+              :value="option.value"
+            />
+          </el-select>
+        </template>
+      </el-table-column>
+      <el-table-column label="单位" width="90">
+        <template #default="{ row }">
+          <el-input v-model="row.unit" size="small" placeholder="可选" />
+        </template>
+      </el-table-column>
+      <el-table-column label="正常范围" width="120">
+        <template #default="{ row }">
+          <el-input v-model="row.normalRange" size="small" placeholder="可选" />
+        </template>
+      </el-table-column>
+      <el-table-column label="必填" width="70" align="center">
+        <template #default="{ row }">
+          <el-checkbox v-model="row.isRequired" />
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" width="70" align="center">
+        <template #default="{ $index }">
+          <el-button link type="danger" @click="removeTemplateItem($index)">删除</el-button>
+        </template>
+      </el-table-column>
+    </el-table>
+    <el-button class="oa-mt-2" @click="addTemplateItem">＋ 添加检查项</el-button>
+  </FormDialog>
 </template>
