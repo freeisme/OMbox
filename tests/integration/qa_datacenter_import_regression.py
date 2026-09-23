@@ -282,8 +282,9 @@ def main() -> int:
         [f"{PREFIX.upper()}-SRV-{suffix}", f"{PREFIX} 服务器", "戴尔 PowerEdge R650", "服务器", "2",
          f"{PREFIX.upper()}-SN-2-{suffix}", f"{PREFIX.upper()}-FA-2-{suffix}", "测试部门", "维修", ""],
         [f"{PREFIX.upper()}-UPS-{suffix}", f"{PREFIX} UPS", "山特 C6KS", "UPS", "4", "", "", "", "报废", "待处置"],
-        # 故意出错的三行：类型无法识别、状态写成上架、缺少设备名称
-        [f"{PREFIX.upper()}-BAD-1-{suffix}", f"{PREFIX} 未知类型", "X", "外星设备", "1", "", "", "", "未上架", ""],
+        # 自定义设备类型：不再要求落在预设枚举里，按原文保存
+        [f"{PREFIX.upper()}-BAD-1-{suffix}", f"{PREFIX} 自定义类型", "X", "外星设备", "1", "", "", "", "未上架", ""],
+        # 故意出错的两行：状态写成上架、缺少设备名称
         [f"{PREFIX.upper()}-BAD-2-{suffix}", f"{PREFIX} 上架状态", "X", "服务器", "1", "", "", "", "上架", ""],
         [f"{PREFIX.upper()}-BAD-3-{suffix}", "", "X", "服务器", "1", "", "", "", "未上架", ""],
     ]
@@ -297,9 +298,9 @@ def main() -> int:
     )
     assert preview["dryRun"] is True, preview
     assert preview["totalRows"] == 6, preview
-    assert preview["created"] == 3 and preview["errorCount"] == 3, preview
+    # 自定义设备类型不再算错误，只剩「状态写成上架」「缺少设备名称」两行出错
+    assert preview["created"] == 4 and preview["errorCount"] == 2, preview
     assert preview["sheetHeaders"]["code"] == "设备编号", preview["sheetHeaders"]
-    assert any("无法识别" in item["message"] for item in preview["errors"]), preview["errors"]
     assert any("上架" in item["message"] for item in preview["errors"]), preview["errors"]
     assert any("缺少设备名称" in item["message"] for item in preview["errors"]), preview["errors"]
     print("preview ok:", preview["created"], "新增", preview["errorCount"], "错误")
@@ -310,7 +311,7 @@ def main() -> int:
         {"fileName": "机房设备.xlsx", "contentBase64": content, "dryRun": False, "mode": "skip"},
         expected=200,
     )
-    assert result["created"] == 3 and result["errorCount"] == 3, result
+    assert result["created"] == 4 and result["errorCount"] == 2, result
 
     status, payload = admin.request("GET", f"/api/datacenter-devices?keyword={PREFIX.upper()}", expected=200)
     devices = {item["code"]: item for item in payload["devices"]}
@@ -321,6 +322,9 @@ def main() -> int:
     assert server["category"] == "server" and server["status"] == "repair", server
     ups = devices[f"{PREFIX.upper()}-UPS-{suffix}"]
     assert ups["category"] == "power" and ups["uHeight"] == 4 and ups["status"] == "scrapped", ups
+    # 预设之外的类型按原文保存，不再被拒绝
+    custom = devices[f"{PREFIX.upper()}-BAD-1-{suffix}"]
+    assert custom["category"] == "外星设备", custom
     print("commit ok:", len(devices), "台设备")
 
     status, rerun = admin.request(
@@ -329,14 +333,14 @@ def main() -> int:
         {"fileName": "机房设备.xlsx", "contentBase64": content, "dryRun": False, "mode": "skip"},
         expected=200,
     )
-    assert rerun["created"] == 0 and rerun["skipped"] == 3, rerun
+    assert rerun["created"] == 0 and rerun["skipped"] == 4, rerun
     status, updated = admin.request(
         "POST",
         "/api/datacenter-devices/import",
         {"fileName": "机房设备.xlsx", "contentBase64": content, "dryRun": False, "mode": "update"},
         expected=200,
     )
-    assert updated["updated"] == 3 and updated["created"] == 0, updated
+    assert updated["updated"] == 4 and updated["created"] == 0, updated
     print("duplicate handling ok:", rerun["skipped"], "跳过 /", updated["updated"], "更新")
 
     # 已上架设备不能被导入改成未上架
