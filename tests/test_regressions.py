@@ -22,6 +22,10 @@ from office_asset.datacenter_devices import (  # noqa: E402  (ROOT must be impor
     DatacenterDeviceService,
 )
 from office_asset.device_topology import layout_template_ports  # noqa: E402
+from office_asset.inspection import (  # noqa: E402
+    IMPORT_RESULT_ALIASES,
+    InspectionService,
+)
 from office_asset.xlsx import WorkbookError, read_sheet  # noqa: E402
 
 
@@ -1095,7 +1099,15 @@ class InventoryRecoveryRegressionTests(TestCase):
         self.assertIn("preferred_org_id=self._actor_org_id(context)", legacy_return)
         self.assertIn("require_explicit=True", offboard_normalization)
         self.assertIn("选择回收时必须指定回收目标仓库。", offboard_normalization)
-        self.assertIn("Every recovery must name its destination warehouse", offboard_normalization)
+        # 办公终端回收是唯一不需要仓库的回收（直接回到办公终端台账的闲置设备）。
+        self.assertIn(
+            "Every non-computer recovery must name its destination warehouse",
+            offboard_normalization,
+        )
+        self.assertIn(
+            'if action == "recover" and current["itemType"] != "computer":',
+            offboard_normalization,
+        )
         self.assertIn(
             "ON DUPLICATE KEY UPDATE quantity = inventory_warehouse_stock.quantity",
             allocation_return,
@@ -3105,6 +3117,197 @@ class InspectionEntryRegressionTests(TestCase):
         self.assertIn("export async function allocateInventoryToEmployee(", api)
         self.assertIn("export async function returnEmployeeUsage(", api)
         self.assertIn('"/api/inventory/allocations"', api)
+
+
+class RackPlacementCategoryFreeTests(TestCase):
+    """上架不再限定预设设备类型：自定义类型的设备也要能上架。"""
+
+    def _slice(self, service: str, start: str, end: str) -> str:
+        return service.split(start, 1)[1].split(end, 1)[0]
+
+    def test_service_normalises_categories_instead_of_rejecting_them(self):
+        service = (ROOT / "office_asset" / "rack_layout.py").read_text(encoding="utf-8")
+        place_device = self._slice(service, "    def place_device(", "\n    def update_placement(")
+        update_placement = self._slice(service, "    def update_placement(", "\n    def remove_placement(")
+
+        # 台账侧放开类型之后，机柜侧必须用同一套规则（别名归一化 + 原文保留）。
+        self.assertIn("def _normalise_category(", service)
+        self.assertIn("mapped = CATEGORY_ALIASES.get(normalise_key(raw))", service)
+        self.assertIn("return raw[:64]", service)
+        self.assertIn("self._normalise_category(", place_device)
+        self.assertIn("self._normalise_category(", update_placement)
+        # 上架与改位置都不再对预设枚举做成员校验（否则自定义类型会报「设备类型无效」）。
+        self.assertNotIn('raise self.api_error("设备类型无效。")', place_device)
+        self.assertNotIn('raise self.api_error("设备类型无效。")', update_placement)
+
+    def test_migration_drops_the_enum_check_and_widens_the_column(self):
+        migration = (
+            ROOT / "database" / "migrations" / "20260924_001_rack_placement_category_free.sql"
+        ).read_text(encoding="utf-8")
+        original = (ROOT / "database" / "migrations" / "20260918_002_rack_layout.sql").read_text(
+            encoding="utf-8"
+        )
+
+        # DDL 目标必须在更早的迁移里真的存在，否则升级会中断。
+        self.assertIn("CONSTRAINT ck_rack_placement_category CHECK (", original)
+        self.assertIn("ALTER TABLE rack_device_placement", migration)
+        self.assertIn("DROP CHECK ck_rack_placement_category", migration)
+        self.assertIn("MODIFY COLUMN category VARCHAR(64) NOT NULL DEFAULT 'other'", migration)
+        self.assertNotIn("DROP TABLE", migration.upper())
+        self.assertNotIn("DELETE FROM", migration.upper())
+
+    def test_frontend_placement_form_accepts_a_typed_category(self):
+        view = (ROOT / "frontend" / "src" / "views" / "RackLayoutView.vue").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('v-model="form.category"', view)
+        self.assertIn("allow-create", view)
+        self.assertIn("filterable", view)
+
+
+class OffboardingComputerRecoveryTests(TestCase):
+    """办公终端离职回收直接回到办公终端台账的闲置设备，不选择回收仓库。"""
+
+    def test_backend_skips_the_warehouse_requirement_for_computers(self):
+        service = (ROOT / "office_asset" / "asset_service.py").read_text(encoding="utf-8")
+        normalization = service.split("    def _normalize_offboarding_plan(", 1)[1].split(
+            "\n    def offboard_employee(",
+            1,
+        )[0]
+        offboard = service.split("    def offboard_employee(", 1)[1]
+        computer_branch = offboard.split('            if item_type == "computer":', 1)[1].split(
+            "\n            usage_table = ",
+            1,
+        )[0]
+
+        # 仓库校验只对非办公终端的物资生效。
+        self.assertIn('if action == "recover" and current["itemType"] != "computer":', normalization)
+        # 办公终端分支只把设备置回闲置，从不写仓库字段。
+        self.assertIn('next_status = "lost" if action == "exception" else "idle"', computer_branch)
+        self.assertNotIn("recovery_warehouse_id", computer_branch)
+
+    def test_frontend_hides_the_warehouse_select_for_computers(self):
+        view = (ROOT / "frontend" / "src" / "views" / "EmployeesView.vue").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("row.action === 'recover' && row.item.itemType !== 'computer'", view)
+        self.assertIn("回收到办公终端闲置设备，不进仓库", view)
+        self.assertIn(
+            'const recoverToWarehouse = row.action === "recover" && row.item.itemType !== "computer";',
+            view,
+        )
+        self.assertIn('row.action === "recover" && row.item.itemType !== "computer"', view)
+
+    def test_integration_script_covers_computer_recovery_without_a_warehouse(self):
+        script = (ROOT / "tests" / "integration" / "qa_offboarding_regression.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("办公终端回收直接回到办公终端台账的闲置设备，不进仓库。", script)
+        self.assertIn("办公终端回收后必须回到办公终端台账的闲置设备", script)
+
+
+class InspectionSheetImportExportTests(TestCase):
+    """巡检表：按模板上传导入，提交后可下载表格。"""
+
+    def _service(self) -> InspectionService:
+        gateway = SimpleNamespace(
+            text=lambda value: "" if value is None else str(value).strip(),
+            integer=lambda value, default=0: int(value)
+            if str(value if value is not None else "").strip().lstrip("-").isdigit()
+            else default,
+            quote=lambda value: "'" + str(value).replace("'", "''") + "'",
+        )
+        return InspectionService(gateway, SimpleNamespace(), ValueError, ValueError, ValueError)
+
+    def test_xlsx_rows_and_headers_are_recognised(self):
+        service = self._service()
+        rows = service._read_import_rows(
+            "巡检表.xlsx",
+            build_test_xlsx(
+                [
+                    ["机房名称", "机柜", "检查项分类", "检查项", "检查方法", "结论", "实测值", "备注"],
+                    ["QA机房", "QA机柜", "环境", "温湿度", "目视", "正常", "22℃", ""],
+                ]
+            ),
+        )
+        mapping = service._map_import_headers(rows[0])
+
+        self.assertEqual(rows[1][3], "温湿度")
+        self.assertEqual(mapping["site"], 0)
+        self.assertEqual(mapping["rack"], 1)
+        self.assertEqual(mapping["category"], 2)
+        self.assertEqual(mapping["title"], 3)
+        self.assertEqual(mapping["checkMethod"], 4)
+        self.assertEqual(mapping["result"], 5)
+        self.assertEqual(mapping["valueText"], 6)
+        self.assertEqual(mapping["notes"], 7)
+
+    def test_csv_rows_support_utf8_bom_and_gbk(self):
+        service = self._service()
+        header = "机房,机柜,检查项分类,检查项,检查方法,结论,实测值,说明\n"
+        body = "QA机房,QA机柜,安全,门禁,目视,异常,开合异常,门吸损坏\n"
+        for payload in (
+            ("\ufeff" + header + body).encode("utf-8"),
+            (header + body).encode("gbk"),
+        ):
+            rows = service._read_import_rows("巡检表.csv", payload)
+            self.assertEqual(rows[0][0], "机房")
+            self.assertEqual(rows[1][5], "异常")
+
+    def test_result_aliases_and_unsupported_extensions(self):
+        service = self._service()
+
+        for label, expected in (("正常", "ok"), ("异常", "fail"), ("不适用", "na"), ("ok", "ok")):
+            self.assertEqual(IMPORT_RESULT_ALIASES[label], expected)
+        with self.assertRaises(ValueError):
+            service._read_import_rows("巡检表.xls", b"whatever")
+
+    def test_route_and_frontend_are_wired(self):
+        router = (ROOT / "office_asset" / "api_router.py").read_text(encoding="utf-8")
+        service = (ROOT / "office_asset" / "inspection.py").read_text(encoding="utf-8")
+        api = (ROOT / "frontend" / "src" / "api" / "governance.ts").read_text(encoding="utf-8")
+        view = (ROOT / "frontend" / "src" / "views" / "InspectionView.vue").read_text(
+            encoding="utf-8"
+        )
+
+        # 导入必须先于 /api/inspection/tasks/<id> 的通用分支匹配。
+        import_route = router.index('if path == "/api/inspection/tasks/import" and method == "POST":')
+        self.assertLess(import_route, router.index('if path.startswith("/api/inspection/tasks/"):'))
+        self.assertIn('self._write_context(handler, "inspection_management", "create")', router)
+        self.assertIn("def import_task(", service)
+        self.assertIn('"/api/inspection/tasks/import"', api)
+        self.assertIn("importInspectionTask", view)
+        self.assertIn("downloadInspectionTemplate", view)
+        self.assertIn("导入巡检表", view)
+
+    def test_template_columns_match_between_backend_and_frontend(self):
+        service = (ROOT / "office_asset" / "inspection.py").read_text(encoding="utf-8")
+        api = (ROOT / "frontend" / "src" / "api" / "governance.ts").read_text(encoding="utf-8")
+
+        backend_block = service.split("IMPORT_COLUMNS = (", 1)[1].split(")", 1)[0]
+        frontend_block = api.split("export const INSPECTION_IMPORT_COLUMNS = [", 1)[1].split(
+            "] as const;", 1
+        )[0]
+        self.assertEqual(
+            re.findall(r'"([^"]+)"', backend_block),
+            re.findall(r'"([^"]+)"', frontend_block),
+        )
+
+    def test_submitted_task_can_be_downloaded_as_a_sheet(self):
+        view = (ROOT / "frontend" / "src" / "views" / "InspectionView.vue").read_text(
+            encoding="utf-8"
+        )
+        api = (ROOT / "frontend" / "src" / "api" / "governance.ts").read_text(encoding="utf-8")
+
+        self.assertIn("async function exportInspectionSheet(", view)
+        self.assertIn("下载巡检表", view)
+        # 列表行可能没有明细，下载前要先取一次任务明细。
+        self.assertIn("fetchInspectionTask", view)
+        self.assertIn("fetchInspectionTask", api)
+        self.assertIn("checkedByName", api)
 
 
 if __name__ == "__main__":

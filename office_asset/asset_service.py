@@ -4090,11 +4090,12 @@ class AssetService:
                                 self._warehouse(source_warehouse_id, include_inactive=True),
                                 "warehouse_management",
                             )
-            if action == "recover":
-                # Every recovery must name its destination warehouse, no matter
-                # whether the item was deducted from stock: the destination is
-                # recorded for traceability and used for stock recovery when the
-                # item was issued from inventory.
+            if action == "recover" and current["itemType"] != "computer":
+                # Every non-computer recovery must name its destination warehouse,
+                # no matter whether the item was deducted from stock: the destination
+                # is recorded for traceability and used for stock recovery when the
+                # item was issued from inventory. 办公终端回收直接回到办公终端台账的
+                # 闲置设备，不进仓库，所以不要求选择仓库。
                 requested_warehouse_id = self.db.integer(
                     raw_item.get("recoveryWarehouseId") or raw_item.get("warehouseId"),
                     0,

@@ -521,6 +521,10 @@ class DomainApiRouter:
                 status=201,
             )
             return True
+        if path == "/api/inspection/tasks/import" and method == "POST":
+            context = self._write_context(handler, "inspection_management", "create")
+            send_json(self.inspection.import_task(self._payload(handler), context), status=201)
+            return True
         if path.startswith("/api/inspection/tasks/"):
             parts = path.split("/")
             if len(parts) == 8 and parts[5] == "items" and parts[7] == "check" and method == "POST":

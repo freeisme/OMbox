@@ -13,12 +13,15 @@ import {
   fetchInspectionTask,
   fetchInspectionTasks,
   fetchInspectionTemplates,
+  importInspectionTask,
+  INSPECTION_IMPORT_COLUMNS,
   saveInspectionRack,
   saveInspectionSite,
   saveInspectionTemplate,
   submitInspectionTask,
   voidInspectionTask,
   type InspectionTemplateItemPayload,
+  type InspectionImportResult,
   type InspectionRack,
   type InspectionSite,
   type InspectionTask,
@@ -85,6 +88,156 @@ const templateForm = reactive({
   description: "",
   items: [] as InspectionTemplateItemPayload[],
 });
+
+// ---------------------------------------------------------------- 巡检表导入 / 导出
+
+const importVisible = ref(false);
+const importBusy = ref(false);
+const importFileName = ref("");
+const importContent = ref("");
+const importResult = ref<InspectionImportResult | null>(null);
+
+/** 下载导入模板：表头与后端识别的一致，附一行示例。 */
+function downloadInspectionTemplate(): void {
+  const sample = [
+    "一号机房",
+    "A 列 01 柜",
+    "环境",
+    "指示灯状态",
+    "目视检查",
+    "正常",
+    "",
+    "",
+  ];
+  const csv = `\ufeff${INSPECTION_IMPORT_COLUMNS.join(",")}\n${sample
+    .map((cell) => `"${cell}"`)
+    .join(",")}\n`;
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  link.download = "机房巡检表模板.csv";
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+function openImportDialog(): void {
+  importFileName.value = "";
+  importContent.value = "";
+  importResult.value = null;
+  importVisible.value = true;
+}
+
+function onImportFileChange(event: Event): void {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const text = String(reader.result ?? "");
+    importFileName.value = file.name;
+    // 上传接口收 base64：文本文件按 UTF-8 转，xlsx 直接读二进制
+    if (/\.(xlsx|xlsm)$/i.test(file.name)) {
+      const buffer = reader.result as ArrayBuffer;
+      const bytes = new Uint8Array(buffer);
+      let binary = "";
+      bytes.forEach((byte) => {
+        binary += String.fromCharCode(byte);
+      });
+      importContent.value = btoa(binary);
+    } else {
+      importContent.value = btoa(unescape(encodeURIComponent(text)));
+    }
+    importResult.value = null;
+  };
+  if (/\.(xlsx|xlsm)$/i.test(file.name)) {
+    reader.readAsArrayBuffer(file);
+  } else {
+    reader.readAsText(file, "utf-8");
+  }
+}
+
+async function submitImport(): Promise<void> {
+  if (!importContent.value) {
+    ElMessage.warning("请先选择要导入的巡检表文件。");
+    return;
+  }
+  const confirmed = await confirmAction(
+    `将按「${importFileName.value}」生成一份已提交的巡检记录，是否继续？`,
+    { title: "导入巡检表", confirmText: "导入" },
+  );
+  if (!confirmed) return;
+  importBusy.value = true;
+  try {
+    const result = await importInspectionTask({
+      fileName: importFileName.value,
+      contentBase64: importContent.value,
+    });
+    importResult.value = result;
+    ElMessage.success(
+      `导入完成：${result.siteName}${result.rackName ? ` / ${result.rackName}` : ""} 共 ${result.itemTotal} 项` +
+        `（异常 ${result.itemFail} 项，跳过 ${result.errorCount} 行）。`,
+    );
+    await load();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "导入巡检表失败。");
+  } finally {
+    importBusy.value = false;
+  }
+}
+
+/** 导出当前巡检表：一份带表头信息的 CSV，可直接用 Excel 打开。 */
+async function exportInspectionSheet(row?: InspectionTask | null): Promise<void> {
+  let task = row ?? detail.value;
+  if (!task) return;
+  // 列表行不带明细，先按需拉一次任务详情
+  if (!(task.items ?? []).length) {
+    try {
+      task = await fetchInspectionTask(task.id);
+    } catch (error) {
+      ElMessage.error(error instanceof Error ? error.message : "读取巡检表失败。");
+      return;
+    }
+  }
+  const items = (task.items ?? []).slice();
+  if (!items.length) {
+    ElMessage.warning("该巡检任务没有巡检事项可导出。");
+    return;
+  }
+  const escape = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+  const lines: string[][] = [
+    ["巡检表"],
+    ["任务编号", task.number || task.id],
+    ["机房", task.siteName || ""],
+    ["机柜", task.rackName || ""],
+    ["执行人", task.inspectorName || ""],
+    ["开始时间", formatDateTimeText(task.startedAt)],
+    ["提交时间", task.submittedAt ? formatDateTimeText(task.submittedAt) : ""],
+    ["状态", INSPECTION_TASK_STATUS_LABELS[task.status] || task.status],
+    [],
+    ["序号", "分类", "检查项", "检查方法", "结论", "实测值", "说明", "检查人", "检查时间"],
+  ];
+  items.forEach((item, index) => {
+    lines.push([
+      String(index + 1),
+      item.category ?? "",
+      item.title ?? "",
+      item.checkMethod ?? "",
+      INSPECTION_RESULT_OPTIONS.find((option) => option.value === item.result)?.label ||
+        (item.result && item.result !== "pending" ? item.result : "未检查"),
+      item.valueText ?? "",
+      item.notes ?? "",
+      item.checkedByName ?? "",
+      item.checkedAt ? formatDateTimeText(item.checkedAt) : "",
+    ]);
+  });
+  const csv = lines.map((line) => line.map(escape).join(",")).join("\r\n");
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([`\ufeff${csv}`], { type: "text/csv;charset=utf-8" }));
+  link.download = `巡检表-${task.number || task.id}-${stamp}.csv`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+  ElMessage.success("巡检表已开始下载。");
+}
 
 const TEMPLATE_VALUE_TYPES = [
   { value: "ok_fail", label: "正常 / 异常" },
@@ -533,6 +686,18 @@ onMounted(async () => {
       <el-button @click="router.push('/rack-layout')">机柜视图</el-button>
       <el-button
         v-if="hasPermission('inspection_management', 'create')"
+        @click="downloadInspectionTemplate"
+      >
+        下载模板
+      </el-button>
+      <el-button
+        v-if="hasPermission('inspection_management', 'create')"
+        @click="openImportDialog"
+      >
+        导入巡检表
+      </el-button>
+      <el-button
+        v-if="hasPermission('inspection_management', 'create')"
         type="primary"
         @click="openCreate"
       >
@@ -612,9 +777,10 @@ onMounted(async () => {
       </el-table-column>
       <el-table-column prop="inspectorName" label="巡检人" width="110" />
       <el-table-column prop="abnormalSummary" label="异常说明" min-width="180" show-overflow-tooltip />
-      <el-table-column label="操作" width="140" fixed="right">
+      <el-table-column label="操作" width="200" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="openDetail(row)">查看</el-button>
+          <el-button link @click="exportInspectionSheet(row)">下载巡检表</el-button>
           <el-button
             v-if="hasPermission('inspection_management', 'update') && row.status === 'running'"
             link
@@ -839,11 +1005,55 @@ onMounted(async () => {
           </el-form-item>
         </el-form>
         <div class="oa-text-right">
+          <el-button @click="exportInspectionSheet(detail)">下载巡检表</el-button>
           <el-button type="primary" :loading="saving" @click="submitTask">提交巡检</el-button>
         </div>
       </template>
     </template>
   </DetailDrawer>
+
+  <FormDialog
+    v-model="importVisible"
+    title="导入巡检表"
+    size="lg"
+    confirm-text="导入"
+    :loading="importBusy"
+    :confirm-disabled="!importContent"
+    @confirm="submitImport"
+  >
+    <el-alert
+      type="info"
+      :closable="false"
+      show-icon
+      title="按模板填写后上传：机房、机柜、检查项分类、检查项、检查方法、结论、实测值、说明。机柜留空表示按机房巡检；导入会直接生成一份「已提交」的巡检记录。"
+    />
+    <div class="oa-flex-row oa-mt-3">
+      <input type="file" accept=".xlsx,.xlsm,.csv" @change="onImportFileChange" />
+      <el-button link @click="downloadInspectionTemplate">下载模板</el-button>
+    </div>
+    <div v-if="importFileName" class="oa-hint oa-mt-2">已选择：{{ importFileName }}</div>
+    <template v-if="importResult">
+      <el-divider content-position="left">导入结果</el-divider>
+      <el-descriptions :column="2" border size="small">
+        <el-descriptions-item label="任务编号">{{ importResult.taskNo }}</el-descriptions-item>
+        <el-descriptions-item label="巡检对象">
+          {{ importResult.siteName }}{{ importResult.rackName ? ` / ${importResult.rackName}` : "" }}
+        </el-descriptions-item>
+        <el-descriptions-item label="检查项">{{ importResult.itemTotal }}</el-descriptions-item>
+        <el-descriptions-item label="正常 / 异常 / 不适用">
+          {{ importResult.itemOk }} / {{ importResult.itemFail }} / {{ importResult.itemNa }}
+        </el-descriptions-item>
+      </el-descriptions>
+      <div v-if="importResult.errorCount" class="oa-mt-2">
+        <div class="oa-warn-text">跳过了 {{ importResult.errorCount }} 行：</div>
+        <ul style="margin: 6px 0 0 18px; color: var(--el-text-color-secondary); font-size: 12px">
+          <li v-for="item in importResult.errors" :key="`${item.row}-${item.message}`">
+            第 {{ item.row }} 行：{{ item.message }}
+          </li>
+        </ul>
+      </div>
+    </template>
+  </FormDialog>
 
   <FormDialog
     v-model="siteVisible"

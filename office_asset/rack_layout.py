@@ -20,6 +20,7 @@ from dataclasses import dataclass
 
 from .scope import OrganizationScopeService
 from .sql import SqlGateway, parse_bool
+from .datacenter_devices import CATEGORY_ALIASES, normalise_key
 
 
 FACES = {"front", "rear", "both"}
@@ -56,6 +57,20 @@ class RackLayoutService:
 
     def _actor_name(self, context: dict) -> str:
         return self.db.text(context.get("username")) or "web"
+
+    def _normalise_category(self, value: object) -> str:
+        """设备类型不限于预设枚举：常见写法归一化，其余按原文保留（最多 64 字符）。
+
+        台账侧（datacenter_device）已经放开类型，机柜上架必须用同一套规则，
+        否则自定义类型的设备一上架就报「设备类型无效」。
+        """
+        raw = self.db.text(value)
+        if not raw:
+            return "other"
+        mapped = CATEGORY_ALIASES.get(normalise_key(raw))
+        if mapped:
+            return mapped
+        return raw[:64]
 
     def _org_filter(self, context: dict, column: str) -> str:
         allowed = self.scope.permitted_org_ids(context)
@@ -495,9 +510,9 @@ class RackLayoutService:
         face = self.db.text(payload.get("face")) or "front"
         if face not in FACES:
             raise self.api_error("安装面板无效。")
-        category = self.db.text(payload.get("category")) or self.db.text(device.get("category")) or "other"
-        if category not in CATEGORIES:
-            raise self.api_error("设备类型无效。")
+        category = self._normalise_category(
+            self.db.text(payload.get("category")) or self.db.text(device.get("category"))
+        )
         position_u = self.db.integer(payload.get("positionU"), 0)
         u_height = self.db.integer(payload.get("uHeight"), self.db.integer(device.get("uHeight"), 1))
         notes = self.db.text(payload.get("notes"))[:500]
@@ -609,9 +624,9 @@ class RackLayoutService:
         face = self.db.text(payload.get("face", placement.get("face"))) or "front"
         if face not in FACES:
             raise self.api_error("安装面板无效。")
-        category = self.db.text(payload.get("category", placement.get("category"))) or "other"
-        if category not in CATEGORIES:
-            raise self.api_error("设备类型无效。")
+        category = self._normalise_category(
+            self.db.text(payload.get("category", placement.get("category")))
+        )
         display_name = self.db.text(payload.get("displayName", placement.get("name")))[:128]
         if not display_name:
             raise self.api_error("设备名称不能为空。")

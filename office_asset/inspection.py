@@ -12,7 +12,10 @@
 
 from __future__ import annotations
 
+import base64
+import csv
 import hashlib
+import io
 import json
 import re
 from dataclasses import dataclass
@@ -20,6 +23,7 @@ from datetime import datetime
 
 from .scope import OrganizationScopeService
 from .sql import SqlGateway, parse_bool
+from .xlsx import WorkbookError, read_sheet
 
 
 SITE_TYPES = {"server_room", "weak_room"}
@@ -30,6 +34,42 @@ VALUE_TYPES = {"ok_fail", "number", "text", "select"}
 CHECK_RESULTS = {"pending", "ok", "fail", "na"}
 TASK_STATUSES = {"running", "submitted", "void"}
 CODE_PATTERN = re.compile(r"^[A-Za-z0-9._-]{2,64}$")
+
+# 巡检表导入：允许的表头写法（大小写、空格与标点会被忽略）
+IMPORT_HEADER_ALIASES: dict[str, set[str]] = {
+    "site": {"机房", "机房名称", "弱电间", "弱电间名称", "site", "sitename"},
+    "rack": {"机柜", "机柜名称", "rack", "rackname"},
+    "category": {"检查项分类", "分类", "类别", "category"},
+    "title": {"检查项", "检查内容", "巡检项", "巡检事项", "事项", "title", "item"},
+    "checkMethod": {"检查方法", "方法", "checkmethod"},
+    "result": {"结论", "检查结论", "结果", "result"},
+    "valueText": {"实测值", "数值", "记录值", "valuetext", "value"},
+    "notes": {"说明", "备注", "问题说明", "notes", "remark", "remarks"},
+}
+IMPORT_RESULT_ALIASES = {
+    "正常": "ok",
+    "合格": "ok",
+    "通过": "ok",
+    "ok": "ok",
+    "异常": "fail",
+    "不合格": "fail",
+    "fail": "fail",
+    "不适用": "na",
+    "na": "na",
+    "n/a": "na",
+}
+IMPORT_COLUMNS = (
+    "机房",
+    "机柜",
+    "检查项分类",
+    "检查项",
+    "检查方法",
+    "结论",
+    "实测值",
+    "说明",
+)
+MAX_IMPORT_ROWS = 1000
+MAX_IMPORT_BYTES = 8 * 1024 * 1024
 
 
 @dataclass
@@ -1063,6 +1103,290 @@ class InspectionService:
         response = {"id": str(task_id), "taskNo": task_no, "itemTotal": len(items)}
         self._store_idempotency_result("inspection.task.start", idempotency_key, payload, response)
         return response
+
+    # ------------------------------------------------------------------ 表格导入
+
+    @staticmethod
+    def _import_key(value: str) -> str:
+        return re.sub(r"[\s_\-/（）()]", "", (value or "").strip().lower())
+
+    def _map_import_headers(self, header_row: list[str]) -> dict[str, int]:
+        mapping: dict[str, int] = {}
+        for index, raw in enumerate(header_row):
+            key = self._import_key(raw)
+            if not key:
+                continue
+            for field, aliases in IMPORT_HEADER_ALIASES.items():
+                if field in mapping:
+                    continue
+                if key in {self._import_key(alias) for alias in aliases}:
+                    mapping[field] = index
+                    break
+        return mapping
+
+    @staticmethod
+    def _import_cell(row: list[str], index: int | None) -> str:
+        if index is None or index >= len(row):
+            return ""
+        return (row[index] or "").strip()
+
+    def _read_import_rows(self, file_name: str, data: bytes) -> list[list[str]]:
+        if len(data) > MAX_IMPORT_BYTES:
+            raise self.api_error(f"文件过大（上限 {MAX_IMPORT_BYTES // (1024 * 1024)}MB）。")
+        lower = file_name.lower()
+        if lower.endswith(".csv"):
+            try:
+                text = data.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                try:
+                    text = data.decode("gbk")
+                except UnicodeDecodeError as exc:
+                    raise self.api_error("CSV 编码无法识别，请另存为 UTF-8 或 xlsx。") from exc
+            return [list(row) for row in csv.reader(io.StringIO(text))]
+        if lower.endswith((".xlsx", ".xlsm")):
+            try:
+                return read_sheet(data)
+            except WorkbookError as exc:
+                raise self.api_error(str(exc)) from exc
+        raise self.api_error("只支持 .xlsx、.xlsm 或 .csv 文件。")
+
+    def import_task(self, payload: dict, context: dict) -> dict:
+        """按模板导入巡检表：一次生成一份"已提交"的巡检记录。
+
+        表头：机房、机柜（可空，空则按机房巡检）、检查项分类、检查项、检查方法、结论、实测值、说明。
+        结论文案支持 正常 / 异常 / 不适用（也接受 ok / fail / na）。
+        """
+        file_name = self.db.text(payload.get("fileName"))[:200]
+        content = self.db.text(payload.get("contentBase64"))
+        if not content:
+            raise self.api_error("请上传 .xlsx 或 .csv 巡检表。")
+        try:
+            data = base64.b64decode(content, validate=True)
+        except (ValueError, TypeError) as exc:
+            raise self.api_error("文件内容不是合法的 base64 编码。") from exc
+        rows = self._read_import_rows(file_name, data)
+        if not rows:
+            raise self.api_error("文件里没有可读取的内容。")
+
+        header_index = 0
+        mapping: dict[str, int] = {}
+        for index, row in enumerate(rows[:10]):
+            candidate = self._map_import_headers(row)
+            if len(candidate) >= 2:
+                header_index, mapping = index, candidate
+                break
+        if not mapping:
+            raise self.api_error(
+                "没有识别到表头。请用「下载模板」生成表头："
+                + "、".join(IMPORT_COLUMNS)
+                + "。"
+            )
+        required = {"site": "机房", "title": "检查项", "result": "结论"}
+        missing = [label for key, label in required.items() if key not in mapping]
+        if missing:
+            raise self.api_error(f"表头缺少：{'、'.join(missing)}。")
+
+        data_rows = [
+            row for row in rows[header_index + 1 :] if any((cell or "").strip() for cell in row)
+        ]
+        if not data_rows:
+            raise self.api_error("表头下面没有数据行。")
+        if len(data_rows) > MAX_IMPORT_ROWS:
+            raise self.api_error(f"一次最多导入 {MAX_IMPORT_ROWS} 行，请拆分文件。")
+
+        errors: list[dict] = []
+        items: list[dict] = []
+        site_name = ""
+        rack_name = ""
+        for offset, row in enumerate(data_rows):
+            excel_row = header_index + 2 + offset
+            row_site = self._import_cell(row, mapping.get("site"))
+            row_rack = self._import_cell(row, mapping.get("rack"))
+            title = self._import_cell(row, mapping.get("title"))
+            result_raw = self._import_cell(row, mapping.get("result"))
+            notes = self._import_cell(row, mapping.get("notes"))[:500]
+            if not title:
+                errors.append({"row": excel_row, "message": "缺少检查项"})
+                continue
+            if not row_site:
+                errors.append({"row": excel_row, "message": "缺少机房名称"})
+                continue
+            if site_name and row_site != site_name:
+                errors.append({"row": excel_row, "message": f"与首行的机房「{site_name}」不一致"})
+                continue
+            if rack_name and row_rack and row_rack != rack_name:
+                errors.append({"row": excel_row, "message": f"与首行的机柜「{rack_name}」不一致"})
+                continue
+            result = IMPORT_RESULT_ALIASES.get(result_raw.lower() if result_raw.isascii() else result_raw)
+            if not result:
+                errors.append({"row": excel_row, "message": f"结论「{result_raw}」无法识别（可用：正常/异常/不适用）"})
+                continue
+            if result == "fail" and not notes:
+                errors.append({"row": excel_row, "message": "异常项必须填写说明"})
+                continue
+            site_name = site_name or row_site
+            rack_name = rack_name or row_rack
+            items.append(
+                {
+                    "category": self._import_cell(row, mapping.get("category"))[:64] or "通用",
+                    "title": title[:200],
+                    "checkMethod": self._import_cell(row, mapping.get("checkMethod"))[:255],
+                    "valueText": self._import_cell(row, mapping.get("valueText"))[:255],
+                    "notes": notes,
+                    "result": result,
+                }
+            )
+
+        if not items:
+            raise self.api_error("没有可导入的巡检项，请检查表格内容。")
+
+        site = self.db.json(
+            f"""
+            SELECT JSON_OBJECT(
+              'id', CAST(site_id AS CHAR),
+              'name', site_name,
+              'siteType', site_type,
+              'orgId', COALESCE(CAST(org_unit_id AS CHAR), '')
+            )
+            FROM asset_site
+            WHERE site_name = {self.db.quote(site_name)} AND is_active = 1
+            LIMIT 1
+            """,
+            None,
+        )
+        if not site:
+            raise self.api_error(f"机房/弱电间「{site_name}」不存在，请先在「机房与机柜」里创建。")
+        site_id = self.db.integer(site.get("id"), 0)
+        site_type = self.db.text(site.get("siteType"))
+        self.scope.assert_org_access(context, self.db.integer(site.get("orgId"), 0))
+
+        scope_kind = "site"
+        rack_id = 0
+        if rack_name:
+            rack = self.db.json(
+                f"""
+                SELECT JSON_OBJECT('id', CAST(rack_id AS CHAR), 'name', rack_name)
+                FROM asset_rack
+                WHERE rack_name = {self.db.quote(rack_name)}
+                  AND site_id = {site_id}
+                  AND is_active = 1
+                LIMIT 1
+                """,
+                None,
+            )
+            if not rack:
+                raise self.api_error(f"机柜「{rack_name}」不在 {site_name} 下，请先创建或核对名称。")
+            scope_kind = "rack"
+            rack_id = self.db.integer(rack.get("id"), 0)
+
+        inspector_id = self._actor_id(context)
+        inspector_name = self._actor_name(context)
+        task_no = self._next_task_no()
+        fails = [item for item in items if item["result"] == "fail"]
+        na_items = [item for item in items if item["result"] == "na"]
+        ok_items = [item for item in items if item["result"] == "ok"]
+        summary = "；".join(f"{item['title']}：{item['notes']}" for item in fails)[:1000]
+        remarks = self.db.text(payload.get("remarks"))[:500] or f"由表格导入：{file_name}"
+        item_values = []
+        for index, item in enumerate(items, start=1):
+            item_values.append(
+                "("
+                + ", ".join(
+                    [
+                        "@new_task_id",
+                        str(index * 10),
+                        self.db.quote(item["category"]),
+                        self.db.quote(item["title"]),
+                        self.db.quote(item["checkMethod"]),
+                        "'ok_fail'",
+                        "''",
+                        "''",
+                        "1",
+                        self.db.quote(item["result"]),
+                        self.db.quote(item["valueText"]),
+                        self.db.quote(item["notes"]),
+                        "1" if item["result"] == "fail" else "0",
+                        "NOW()",
+                        str(inspector_id) if inspector_id > 0 else "NULL",
+                        self.db.quote(inspector_name),
+                    ]
+                )
+                + ")"
+            )
+        output = self.db.execute(
+            f"""
+            START TRANSACTION;
+            INSERT INTO inspection_task (
+              task_no, template_id, template_name, scope_kind, site_id, site_name,
+              rack_id, rack_name, inspector_user_id, inspector_name, status,
+              submitted_at, item_total, item_ok, item_fail, item_na, abnormal_summary, remarks
+            )
+            VALUES (
+              {self.db.quote(task_no)},
+              NULL,
+              '表格导入',
+              {self.db.quote(scope_kind)},
+              {site_id},
+              {self.db.quote(site_name)},
+              {rack_id if rack_id > 0 else 'NULL'},
+              {self.db.quote(rack_name)},
+              {inspector_id if inspector_id > 0 else 'NULL'},
+              {self.db.quote(inspector_name)},
+              'submitted',
+              NOW(),
+              {len(items)},
+              {len(ok_items)},
+              {len(fails)},
+              {len(na_items)},
+              {self.db.quote(summary)},
+              {self.db.quote(remarks)}
+            );
+            SET @new_task_id = LAST_INSERT_ID();
+            INSERT INTO inspection_task_item (
+              task_id, seq_no, category, item_title, check_method, value_type, unit, normal_range,
+              is_required, result, value_text, notes, is_abnormal, checked_at,
+              checked_by_user_id, checked_by_name
+            ) VALUES {", ".join(item_values)};
+            {self._audit_sql(
+                "inspection_imported",
+                "inspection_task",
+                "'new'",
+                task_no,
+                f"导入巡检表：{task_no} / {site_name}{rack_name}",
+                context,
+                None,
+                {
+                    "taskNo": task_no,
+                    "fileName": file_name,
+                    "siteName": site_name,
+                    "rackName": rack_name,
+                    "itemTotal": len(items),
+                    "itemFail": len(fails),
+                },
+            )};
+            UPDATE audit_log
+            SET entity_id = CAST(@new_task_id AS CHAR)
+            WHERE audit_log_id = LAST_INSERT_ID();
+            SELECT @new_task_id;
+            COMMIT;
+            """
+        )
+        task_id = self._last_int(output)
+        if task_id <= 0:
+            raise self.conflict_error("巡检表导入失败，请重试。")
+        return {
+            "id": str(task_id),
+            "taskNo": task_no,
+            "siteName": site_name,
+            "rackName": rack_name,
+            "siteType": site_type,
+            "itemTotal": len(items),
+            "itemOk": len(ok_items),
+            "itemFail": len(fails),
+            "itemNa": len(na_items),
+            "errors": errors[:50],
+            "errorCount": len(errors),
+        }
 
     def _task_items(self, task_id: int) -> list[dict]:
         return list(
