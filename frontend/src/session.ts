@@ -31,6 +31,8 @@ interface SessionState {
   permissions: Permission[];
   isSuperAdmin: boolean;
   meta: AppMeta | null;
+  /** 无操作多久自动退出（分钟），来自 /api/auth/session。 */
+  idleMinutes: number;
 }
 
 export const session = reactive<SessionState>({
@@ -39,6 +41,7 @@ export const session = reactive<SessionState>({
   permissions: [],
   isSuperAdmin: false,
   meta: null,
+  idleMinutes: 0,
 });
 
 export function hasPermission(resource: string, action = "view"): boolean {
@@ -71,8 +74,13 @@ export function expireSession(): void {
 
 export async function refreshSession(): Promise<boolean> {
   try {
-    const payload = await api<{ authenticated: boolean; user: SessionUser }>("/api/auth/session");
+    const payload = await api<{
+      authenticated: boolean;
+      user: SessionUser;
+      idleMinutes?: number;
+    }>("/api/auth/session");
     session.user = payload.user;
+    session.idleMinutes = Number(payload.idleMinutes ?? 0) || 0;
     const granted = await api<{ isSuperAdmin: boolean; permissions: Permission[] }>(
       "/api/auth/permissions",
     );

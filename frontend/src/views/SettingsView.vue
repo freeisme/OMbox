@@ -767,7 +767,7 @@ onMounted(async () => {
             <el-form-item label="系统名称" required>
               <el-input v-model="systemForm.app_name" :disabled="!canUpdateSettings" />
             </el-form-item>
-            <el-form-item label="会话时长（小时）" required>
+            <el-form-item label="无操作自动退出（小时）" required>
               <el-input-number
                 v-model="systemForm.session_hours"
                 :min="1"
@@ -775,6 +775,9 @@ onMounted(async () => {
                 :disabled="!canUpdateSettings"
                 class="oa-full-width"
               />
+              <div class="oa-hint">
+                连续无操作超过这个时长就结束会话，页面会退回登录页；有操作时自动顺延。
+              </div>
             </el-form-item>
             <el-form-item label="登录页提示语">
               <el-input

@@ -2972,6 +2972,71 @@ class InspectionEntryRegressionTests(TestCase):
         self.assertIn("mode: importMode.value,", view)
         # 后端只接受这两个值（不要放宽成布尔，否则前端再写错也不会被发现）
         self.assertIn('if mode not in {"skip", "update"}:', service)
+
+    def test_person_usage_keeps_dropdown_and_supports_custom_models(self):
+        """领用型号：下拉保留（可选仓库同型号），同时允许直接输入自定义型号。"""
+        view = (ROOT / "frontend" / "src" / "views" / "EmployeesView.vue").read_text(
+            encoding="utf-8"
+        )
+
+        # 自定义型号直接输入，不再靠"自定义（解释）"这种选项
+        self.assertNotIn("自定义（无库存记录", view)
+        self.assertIn("allow-create", view)
+        self.assertIn("const usageIsCustom = computed(", view)
+        # 出库仓库始终可见，自定义时也能对照仓库里的同型号
+        self.assertNotIn('v-if="!usageForm.customMode"', view)
+        # 必填用标签星号表达，不再往标签里塞括号说明
+        self.assertIn('<el-form-item label="品牌" required>', view)
+        self.assertNotIn("品牌（", view)
+        # 自定义型号提交时不扣库存、回收时建档入库
+        self.assertIn("stockAdjusted: false,", view)
+        self.assertIn("model: String(usageForm.modelId).trim(),", view)
+
+    def test_option_labels_avoid_inline_explanations(self):
+        """下拉选项 / 表单标签里不塞解释性括号，说明改到选项下方的提示文字。"""
+        devices = (ROOT / "frontend" / "src" / "views" / "DatacenterDeviceView.vue").read_text(
+            encoding="utf-8"
+        )
+        panel = (ROOT / "frontend" / "src" / "views" / "DevicePanelView.vue").read_text(
+            encoding="utf-8"
+        )
+        tickets = (ROOT / "frontend" / "src" / "views" / "TicketsView.vue").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('<el-option label="上架" value="installed" disabled />', devices)
+        self.assertNotIn("上架（由上架操作设置）", devices)
+        self.assertNotIn("型号库（可选，选中后自动带出型号、类型与 U 高）", devices)
+        self.assertIn("可选；选中后自动带出品牌型号、设备类型与占用高度。", devices)
+        self.assertNotIn("型号编码（可留空，自动按厂商+型号生成）", panel)
+        self.assertNotIn("端口列表（每行一个：端口名,类型；类型可留空）", panel)
+        self.assertIn("每行一个端口：端口名,类型；类型可留空。", panel)
+        self.assertNotIn("处理结果（标记已解决时必填）", tickets)
+        self.assertIn("标记「已解决」时必填。", tickets)
+
+    def test_session_uses_idle_timeout(self):
+        """会话按"无操作时长"过期：请求刷新最后活动时间，空闲超时后回登录页。"""
+        server = (ROOT / "server.py").read_text(encoding="utf-8")
+        activity = (ROOT / "frontend" / "src" / "activity.ts").read_text(encoding="utf-8")
+        shell = (ROOT / "frontend" / "src" / "layouts" / "AppShell.vue").read_text(encoding="utf-8")
+        session_api = (ROOT / "frontend" / "src" / "session.ts").read_text(encoding="utf-8")
+        settings = (ROOT / "frontend" / "src" / "views" / "SettingsView.vue").read_text(
+            encoding="utf-8"
+        )
+
+        # 后端：空闲判定 + 滑动刷新 + 把空闲时长下发给前端
+        self.assertIn("session.last_seen_at > DATE_SUB(NOW(), INTERVAL {idle_hours} HOUR)", server)
+        self.assertIn("def touch_auth_session(", server)
+        self.assertIn("last_seen_at = NOW(),", server)
+        self.assertIn('"idleMinutes"', server)
+        self.assertIn("session_cookie_refresh", server)
+        self.assertIn("无操作自动退出时长必须在 1-168 小时之间。", server)
+        # 前端：跟踪真实操作 + 空闲时停止后台轮询（否则轮询会一直刷新会话）
+        self.assertIn("export function isIdleBeyond(", activity)
+        self.assertIn("installActivityTracking();", shell)
+        self.assertIn("isIdleBeyond(session.idleMinutes)", shell)
+        self.assertIn("idleMinutes: number;", session_api)
+        self.assertIn("无操作自动退出（小时）", settings)
     def test_inspection_sites_and_racks_can_be_deleted(self):
         """机房 / 机柜要能删除，且带引用保护：有柜的机房、柜内有设备的机柜都不能删。"""
         api = (ROOT / "frontend" / "src" / "api" / "governance.ts").read_text(encoding="utf-8")
@@ -3024,11 +3089,12 @@ class InspectionEntryRegressionTests(TestCase):
         # 领用：类型下拉用真实物资类型（显示屏 / 鼠标 / 键盘…），并支持自定义（无库存）物资
         self.assertIn("const usageTypeOptions = computed(", view)
         self.assertIn("v-for=\"type in usageTypeOptions\"", view)
-        self.assertIn('const CUSTOM_MODEL_VALUE = "__custom__";', view)
-        self.assertIn("自定义（无库存记录，回收时入库）", view)
+        # 自定义型号改为在下拉里直接输入（allow-create），下拉本身保留
+        self.assertIn("allow-create", view)
+        self.assertIn("const usageIsCustom = computed(", view)
         self.assertIn("stockAdjusted: false,", view)
         self.assertIn("brand: usageForm.brand.trim(),", view)
-        self.assertIn("自定义物资没有出库记录，不扣库存", view)
+        self.assertIn("自定义型号没有出库记录、不扣库存", view)
         # 前端 API 支持自定义领用（typeId + brand + model，不扣库存）
         self.assertIn("stockAdjusted?: boolean;", api)
         self.assertIn("typeId?: string;", api)

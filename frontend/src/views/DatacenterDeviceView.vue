@@ -468,7 +468,7 @@ onMounted(async () => {
         class="oa-mb-2"
       />
       <el-form label-position="top" size="small">
-        <el-form-item label="型号库（可选，选中后自动带出型号、类型与 U 高）">
+        <el-form-item label="型号库">
           <el-select
             v-model="form.catalogId"
             filterable
@@ -483,6 +483,7 @@ onMounted(async () => {
               :label="`${item.manufacturer} ${item.model}（${item.uHeight}U，${item.portCount} 口）`"
             />
           </el-select>
+          <div class="oa-hint">可选；选中后自动带出品牌型号、设备类型与占用高度。</div>
         </el-form-item>
         <el-form-item label="设备编号">
           <el-input v-model="form.code" placeholder="例如 SW-A01 / SRV-A01" />
@@ -548,10 +549,11 @@ onMounted(async () => {
         <el-form-item label="状态">
           <el-select v-model="form.status" class="oa-full-width" :disabled="form.status === 'installed'">
             <el-option label="未上架" value="stock" />
-            <el-option label="上架（由上架操作设置）" value="installed" disabled />
+            <el-option label="上架" value="installed" disabled />
             <el-option label="维修" value="repair" />
             <el-option label="报废" value="scrapped" />
           </el-select>
+          <div class="oa-hint">「上架」由机柜视图的上架操作写入，这里不能手工选择。</div>
         </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="form.notes" type="textarea" :rows="2" />

@@ -719,7 +719,8 @@ def current_auth_context(handler: SimpleHTTPRequestHandler) -> dict | None:
     token = cookie_value(handler, AUTH_COOKIE_NAME)
     if not token:
         return None
-    return json_query_one(
+    idle_hours = configured_session_hours()
+    context = json_query_one(
         f"""
         SELECT JSON_OBJECT(
           'id', CAST(user.user_id AS CHAR),
@@ -727,6 +728,7 @@ def current_auth_context(handler: SimpleHTTPRequestHandler) -> dict | None:
           'displayName', user.display_name,
           'role', COALESCE(user.role_code, user.user_role),
           'roleCode', COALESCE(user.role_code, user.user_role),
+          'sessionId', CAST(session.session_id AS CHAR),
           'isSuperAdmin', EXISTS(
             SELECT 1 FROM auth_role role_row
             WHERE role_row.role_code = COALESCE(user.role_code, user.user_role)
@@ -754,11 +756,42 @@ def current_auth_context(handler: SimpleHTTPRequestHandler) -> dict | None:
         WHERE session.session_token_hash = {sql_quote(encode_token(token))}
           AND session.revoked_at IS NULL
           AND session.expires_at > NOW()
+          -- 无操作超时：最后一次活动超过设置的时长就视为过期，用户需重新登录
+          AND session.last_seen_at > DATE_SUB(NOW(), INTERVAL {idle_hours} HOUR)
           AND user.is_active = 1
         LIMIT 1
         """,
         None,
     )
+    if context:
+        touch_auth_session(handler, context)
+    return context
+
+
+def touch_auth_session(handler: SimpleHTTPRequestHandler, context: dict) -> None:
+    """滑动刷新会话：把“最后活动时间”与绝对过期时间一起往后推，并顺带续期浏览器 Cookie。
+
+    为了避免每个请求都写库，只有距上次刷新超过 1 分钟才更新；Cookie 的 Max-Age 也随之下发。
+    """
+    session_id = text_value(context.get("sessionId"))
+    if not session_id:
+        return
+    hours = configured_session_hours()
+    run_mysql(
+        f"""
+        UPDATE auth_session
+        SET last_seen_at = NOW(),
+            expires_at = DATE_ADD(NOW(), INTERVAL {hours} HOUR)
+        WHERE session_id = {sql_quote(session_id)}
+          AND revoked_at IS NULL
+          AND last_seen_at < DATE_SUB(NOW(), INTERVAL 1 MINUTE);
+        """,
+        database=DB_NAME,
+    )
+    session_token = cookie_value(handler, AUTH_COOKIE_NAME)
+    csrf_token = cookie_value(handler, CSRF_COOKIE_NAME)
+    if session_token and csrf_token:
+        handler.session_cookie_refresh = (session_token, csrf_token)
 
 
 def require_auth(handler: SimpleHTTPRequestHandler) -> dict:
@@ -5325,7 +5358,15 @@ class AppHandler(SimpleHTTPRequestHandler):
             if not context:
                 self.send_json({"authenticated": False}, status=HTTPStatus.UNAUTHORIZED)
                 return
-            self.send_json({"authenticated": True, "user": auth_user_public(context)})
+            self.send_json(
+                {
+                    "authenticated": True,
+                    "user": auth_user_public(context),
+                    # 无操作多久自动退出（分钟）：前端据此在空闲时停止后台轮询，
+                    # 否则定时请求会不断刷新会话，超时永远不会发生。
+                    "idleMinutes": configured_session_hours() * 60,
+                }
+            )
             return
 
         if parsed.path == "/api/auth/bootstrap" and self.command == "POST":
@@ -5648,7 +5689,7 @@ class AppHandler(SimpleHTTPRequestHandler):
             if "session_hours" in updates:
                 hours = sql_int(updates["session_hours"], 0)
                 if hours < 1 or hours > 168:
-                    raise ApiError("登录会话时长必须在 1-168 小时之间。")
+                    raise ApiError("无操作自动退出时长必须在 1-168 小时之间。")
                 updates["session_hours"] = str(hours)
             if "app_name" in updates and not updates["app_name"]:
                 raise ApiError("系统名称不能为空。")
@@ -6085,6 +6126,12 @@ class AppHandler(SimpleHTTPRequestHandler):
             )
 
     def end_headers(self) -> None:
+        # 会话滑动续期：鉴权通过时把 Cookie 的 Max-Age 一起往前推，避免"用着用着突然掉线"。
+        refresh = getattr(self, "session_cookie_refresh", None)
+        if refresh:
+            for name, value in cookie_headers(refresh[0], refresh[1]):
+                self.send_header(name, value)
+            self.session_cookie_refresh = None
         origin = self.headers.get("Origin", "")
         parsed_path = urlparse(self.path).path
         if origin in {"http://127.0.0.1:8011", "http://localhost:8011"}:

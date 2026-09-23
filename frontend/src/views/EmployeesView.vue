@@ -335,13 +335,11 @@ const deviceSaving = ref(false);
 const inventoryData = ref<InventoryData | null>(null);
 const assignComputerId = ref("");
 
-/** 领用表单：类型用真实物资类型（显示屏 / 鼠标 / 键盘…），型号可选库存型号或自定义。 */
+/** 领用表单：类型用真实物资类型（显示屏 / 鼠标 / 键盘…），型号可选库存型号，也可直接输入新型号。 */
 const usageForm = reactive({
   typeId: "",
   modelId: "",
-  customMode: false,
   brand: "",
-  model: "",
   quantity: 1,
   warehouseId: "",
   notes: "",
@@ -355,8 +353,6 @@ const recoverTarget = ref<{
   label: string;
 } | null>(null);
 const recoverForm = reactive({ warehouseId: "", notes: "" });
-
-const CUSTOM_MODEL_VALUE = "__custom__";
 
 /**
  * 当前人员名下的办公终端 / 可分配的办公终端。
@@ -417,7 +413,7 @@ const usageAllocationType = computed<"monitor" | "non_asset">(() =>
   usageIsMonitor.value ? "monitor" : "non_asset",
 );
 
-/** 当前类型下、所选仓库有库存的型号；另提供"自定义（无库存记录）"这一项。 */
+/** 当前类型下、所选仓库有库存的型号（自定义型号直接输入，不占下拉项）。 */
 const usageModelOptions = computed(() => {
   const models = inventoryData.value?.models ?? [];
   const stocks = inventoryData.value?.stocks ?? [];
@@ -437,23 +433,20 @@ const usageModelOptions = computed(() => {
     .filter((entry) => entry.available > 0);
 });
 
+/** 型号填的是下拉里没有的值 → 视为自定义物资（无库存记录，回收时再建档入库）。 */
+const usageIsCustom = computed(
+  () =>
+    Boolean(String(usageForm.modelId ?? "").trim()) &&
+    !usageModelOptions.value.some((option) => option.model.id === usageForm.modelId),
+);
+
 /** 切换类型后，原先选中的型号不再适用，清空避免提交错型号。 */
 watch(
   () => usageForm.typeId,
   () => {
     usageForm.modelId = "";
-    usageForm.customMode = false;
     usageForm.brand = "";
-    usageForm.model = "";
     usageForm.quantity = 1;
-  },
-);
-
-/** 型号下拉选到"自定义"时切到手工填写品牌型号。 */
-watch(
-  () => usageForm.modelId,
-  (value) => {
-    usageForm.customMode = value === CUSTOM_MODEL_VALUE;
   },
 );
 
@@ -464,9 +457,7 @@ async function openDeviceManager(row: EmployeeDetailRow): Promise<void> {
   Object.assign(usageForm, {
     typeId: "",
     modelId: "",
-    customMode: false,
     brand: "",
-    model: "",
     quantity: 1,
     warehouseId: "",
     notes: "",
@@ -538,10 +529,10 @@ async function submitAllocate(): Promise<void> {
     ElMessage.warning("请选择物资类型。");
     return;
   }
-  const custom = usageForm.modelId === CUSTOM_MODEL_VALUE;
+  const custom = usageIsCustom.value;
   if (custom) {
-    if (!usageForm.brand.trim() || !usageForm.model.trim()) {
-      ElMessage.warning("自定义物资需要填写品牌与型号。");
+    if (!usageForm.brand.trim()) {
+      ElMessage.warning("自定义型号需要填写品牌。");
       return;
     }
   } else if (!usageForm.modelId || !usageForm.warehouseId) {
@@ -561,7 +552,7 @@ async function submitAllocate(): Promise<void> {
             // 自定义物资不扣库存；回收时按品牌型号自动补进目录并入库
             typeId: usageForm.typeId,
             brand: usageForm.brand.trim(),
-            model: usageForm.model.trim(),
+            model: String(usageForm.modelId).trim(),
             displayName: usageForm.brand.trim(),
             stockAdjusted: false,
           }
@@ -572,9 +563,7 @@ async function submitAllocate(): Promise<void> {
     );
     Object.assign(usageForm, {
       modelId: "",
-      customMode: false,
       brand: "",
-      model: "",
       quantity: 1,
       notes: "",
     });
@@ -1145,7 +1134,7 @@ onMounted(async () => {
             </el-select>
           </el-form-item>
         </el-col>
-        <el-col v-if="!usageForm.customMode" :xs="12" :sm="5">
+        <el-col :xs="12" :sm="5">
           <el-form-item label="出库仓库">
             <el-select v-model="usageForm.warehouseId" clearable class="oa-full-width">
               <el-option
@@ -1157,13 +1146,15 @@ onMounted(async () => {
             </el-select>
           </el-form-item>
         </el-col>
-        <el-col :xs="24" :sm="usageForm.customMode ? 10 : 8">
+        <el-col :xs="24" :sm="9">
           <el-form-item label="型号">
             <el-select
               v-model="usageForm.modelId"
               filterable
+              allow-create
+              default-first-option
               clearable
-              placeholder="选择库存型号，或选「自定义」手工填写"
+              placeholder="选择库存型号，或直接输入型号"
               class="oa-full-width"
             >
               <el-option
@@ -1171,10 +1162,6 @@ onMounted(async () => {
                 :key="option.model.id"
                 :label="`${inventoryModelLabel(option.model)} · 库存 ${option.available}`"
                 :value="option.model.id"
-              />
-              <el-option
-                label="自定义（无库存记录，回收时入库）"
-                :value="CUSTOM_MODEL_VALUE"
               />
             </el-select>
           </el-form-item>
@@ -1190,20 +1177,15 @@ onMounted(async () => {
           </el-form-item>
         </el-col>
       </el-row>
-      <el-row v-if="usageForm.customMode" :gutter="12">
+      <el-row v-if="usageIsCustom" :gutter="12">
         <el-col :xs="12" :sm="6">
           <el-form-item label="品牌" required>
             <el-input v-model="usageForm.brand" placeholder="例如 罗技" />
           </el-form-item>
         </el-col>
-        <el-col :xs="12" :sm="6">
-          <el-form-item label="型号" required>
-            <el-input v-model="usageForm.model" placeholder="例如 M185" />
-          </el-form-item>
-        </el-col>
-        <el-col :xs="24" :sm="12">
+        <el-col :xs="24" :sm="18">
           <div class="oa-hint">
-            自定义物资没有出库记录，不扣库存；回收时按填写的品牌型号自动补进目录并入库到所选仓库。
+            自定义型号没有出库记录、不扣库存；回收时按品牌型号自动补进目录并入库到所选仓库。
           </div>
         </el-col>
       </el-row>

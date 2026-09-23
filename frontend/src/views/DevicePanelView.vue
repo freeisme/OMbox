@@ -681,8 +681,9 @@ onMounted(async () => {
           <el-input v-model="typeForm.manufacturer" placeholder="厂商，例如 华为" style="width: 40%" />
           <el-input v-model="typeForm.model" placeholder="型号，例如 S5731-H48T4XC" style="width: 58%; margin-left: 2%" />
         </el-form-item>
-        <el-form-item label="型号编码（可留空，自动按厂商+型号生成）">
+        <el-form-item label="型号编码">
           <el-input v-model="typeForm.slug" placeholder="例如 huawei-s5731-h48t4xc" />
+          <div class="oa-hint">可留空，自动按厂商 + 型号生成。</div>
         </el-form-item>
         <el-form-item label="U 高 / 类别">
           <el-input-number v-model="typeForm.uHeight" :min="1" :max="50" />
@@ -690,13 +691,14 @@ onMounted(async () => {
             <el-option v-for="(label, value) in CATEGORY_LABELS" :key="value" :value="value" :label="label" />
           </el-select>
         </el-form-item>
-        <el-form-item label="端口列表（每行一个：端口名,类型；类型可留空）">
+        <el-form-item label="端口列表">
           <el-input
             v-model="portText"
             type="textarea"
             :rows="5"
             placeholder="GE1,1000base-t&#10;GE2,1000base-t&#10;XGE1,10gbase-x-sfpp&#10;PSU1,iec-60320-c14"
           />
+          <div class="oa-hint">每行一个端口：端口名,类型；类型可留空。</div>
         </el-form-item>
       </el-form>
 
