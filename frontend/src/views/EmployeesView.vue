@@ -334,15 +334,29 @@ const deviceEmployee = ref<EmployeeDetailRow | null>(null);
 const deviceSaving = ref(false);
 const inventoryData = ref<InventoryData | null>(null);
 const assignComputerId = ref("");
-const recoveryWarehouseId = ref("");
-const recoveryNotes = ref("");
+
+/** 领用表单：类型用真实物资类型（显示屏 / 鼠标 / 键盘…），型号可选库存型号或自定义。 */
 const usageForm = reactive({
-  allocationType: "monitor" as "monitor" | "non_asset",
+  typeId: "",
   modelId: "",
+  customMode: false,
+  brand: "",
+  model: "",
   quantity: 1,
   warehouseId: "",
   notes: "",
 });
+
+/** 回收弹窗：选中某条物资点「回收」时才弹出，仓库必选（自定义物资也在这里选入库仓库）。 */
+const recoverVisible = ref(false);
+const recoverTarget = ref<{
+  allocationType: "monitor" | "non_asset";
+  usageId: string;
+  label: string;
+} | null>(null);
+const recoverForm = reactive({ warehouseId: "", notes: "" });
+
+const CUSTOM_MODEL_VALUE = "__custom__";
 
 /**
  * 当前人员名下的办公终端 / 可分配的办公终端。
@@ -392,17 +406,24 @@ const monitorTypeIds = computed(
     ),
 );
 
-/** 按领用类型过滤可领用的库存型号（显示器 / 其他非资产物资），并要求所选仓库有库存。 */
+/** 领用类型下拉：台账里全部物资类型（显示屏 / 鼠标 / 键盘 / 拓展坞…），类型编码用于区分显示屏。 */
+const usageTypeOptions = computed(() => inventoryData.value?.types ?? []);
+
+/** 该类型是否属于"显示屏"——显示屏按单台登记，且发放走 monitor 通道。 */
+const usageIsMonitor = computed(() => monitorTypeIds.value.has(String(usageForm.typeId)));
+
+/** 领用提交时的 allocationType：显示屏走 monitor，其余都算 non_asset。 */
+const usageAllocationType = computed<"monitor" | "non_asset">(() =>
+  usageIsMonitor.value ? "monitor" : "non_asset",
+);
+
+/** 当前类型下、所选仓库有库存的型号；另提供"自定义（无库存记录）"这一项。 */
 const usageModelOptions = computed(() => {
   const models = inventoryData.value?.models ?? [];
   const stocks = inventoryData.value?.stocks ?? [];
   const warehouseId = usageForm.warehouseId;
   return models
-    .filter((model) => {
-      const isMonitor = monitorTypeIds.value.has(String(model.typeId));
-      if (usageForm.allocationType === "monitor") return isMonitor;
-      return !isMonitor;
-    })
+    .filter((model) => String(model.typeId) === String(usageForm.typeId))
     .map((model: InventoryModelRow) => {
       const available = warehouseId
         ? stocks.find(
@@ -416,23 +437,36 @@ const usageModelOptions = computed(() => {
     .filter((entry) => entry.available > 0);
 });
 
-/** 切换领用类型后，原先选中的型号可能不属于新类型，清空避免提交错型号。 */
+/** 切换类型后，原先选中的型号不再适用，清空避免提交错型号。 */
 watch(
-  () => usageForm.allocationType,
+  () => usageForm.typeId,
   () => {
     usageForm.modelId = "";
+    usageForm.customMode = false;
+    usageForm.brand = "";
+    usageForm.model = "";
     usageForm.quantity = 1;
+  },
+);
+
+/** 型号下拉选到"自定义"时切到手工填写品牌型号。 */
+watch(
+  () => usageForm.modelId,
+  (value) => {
+    usageForm.customMode = value === CUSTOM_MODEL_VALUE;
   },
 );
 
 async function openDeviceManager(row: EmployeeDetailRow): Promise<void> {
   deviceEmployee.value = row;
   assignComputerId.value = "";
-  recoveryWarehouseId.value = "";
-  recoveryNotes.value = "";
+  recoverTarget.value = null;
   Object.assign(usageForm, {
-    allocationType: "monitor",
+    typeId: "",
     modelId: "",
+    customMode: false,
+    brand: "",
+    model: "",
     quantity: 1,
     warehouseId: "",
     notes: "",
@@ -440,6 +474,10 @@ async function openDeviceManager(row: EmployeeDetailRow): Promise<void> {
   deviceVisible.value = true;
   try {
     if (!inventoryData.value) inventoryData.value = await loadInventoryData();
+    Object.assign(usageForm, {
+      typeId: inventoryData.value?.types[0]?.id ?? "",
+      warehouseId: warehouseOptions.value[0]?.id ?? "",
+    });
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "库存数据加载失败。");
   }
@@ -462,7 +500,7 @@ async function submitAssignComputer(): Promise<void> {
   }
   deviceSaving.value = true;
   try {
-    await assignComputerToEmployee(assignComputerId.value, employee.id, recoveryNotes.value.trim());
+    await assignComputerToEmployee(assignComputerId.value, employee.id, "人员设备清单分配");
     ElMessage.success("办公终端已分配。");
     assignComputerId.value = "";
     await reloadEmployees(employee.id);
@@ -483,7 +521,7 @@ async function releaseComputer(row: ComputerRow): Promise<void> {
   if (!confirmed) return;
   deviceSaving.value = true;
   try {
-    await releaseComputerFromEmployee(row.id, recoveryNotes.value.trim());
+    await releaseComputerFromEmployee(row.id, "人员设备清单解除");
     ElMessage.success("已解除分配，设备回到闲置。");
     await reloadEmployees(employee.id);
   } catch (error) {
@@ -496,23 +534,50 @@ async function releaseComputer(row: ComputerRow): Promise<void> {
 async function submitAllocate(): Promise<void> {
   const employee = deviceEmployee.value;
   if (!employee) return;
-  if (!usageForm.modelId || !usageForm.warehouseId) {
+  if (!usageForm.typeId) {
+    ElMessage.warning("请选择物资类型。");
+    return;
+  }
+  const custom = usageForm.modelId === CUSTOM_MODEL_VALUE;
+  if (custom) {
+    if (!usageForm.brand.trim() || !usageForm.model.trim()) {
+      ElMessage.warning("自定义物资需要填写品牌与型号。");
+      return;
+    }
+  } else if (!usageForm.modelId || !usageForm.warehouseId) {
     ElMessage.warning("请选择库存型号与出库仓库。");
     return;
   }
   deviceSaving.value = true;
   try {
     await allocateInventoryToEmployee({
-      allocationType: usageForm.allocationType,
+      allocationType: usageAllocationType.value,
       employeeId: employee.id,
-      modelId: usageForm.modelId,
       // 显示屏按单台登记，后端也会拒绝 quantity !== 1。
-      quantity: usageForm.allocationType === "monitor" ? 1 : Number(usageForm.quantity) || 1,
-      warehouseId: usageForm.warehouseId,
+      quantity: usageIsMonitor.value ? 1 : Number(usageForm.quantity) || 1,
       notes: usageForm.notes.trim(),
+      ...(custom
+        ? {
+            // 自定义物资不扣库存；回收时按品牌型号自动补进目录并入库
+            typeId: usageForm.typeId,
+            brand: usageForm.brand.trim(),
+            model: usageForm.model.trim(),
+            displayName: usageForm.brand.trim(),
+            stockAdjusted: false,
+          }
+        : { modelId: usageForm.modelId, warehouseId: usageForm.warehouseId }),
     });
-    ElMessage.success("领用已登记。");
-    Object.assign(usageForm, { modelId: "", quantity: 1, notes: "" });
+    ElMessage.success(
+      custom ? "自定义物资已登记（未扣库存，回收时入库）。" : "领用已登记。",
+    );
+    Object.assign(usageForm, {
+      modelId: "",
+      customMode: false,
+      brand: "",
+      model: "",
+      quantity: 1,
+      notes: "",
+    });
     await reloadEmployees(employee.id);
     inventoryData.value = await loadInventoryData(true);
   } catch (error) {
@@ -522,32 +587,38 @@ async function submitAllocate(): Promise<void> {
   }
 }
 
-async function recoverUsage(
+/** 点某条物资的「回收」时才弹出回收弹窗：现场选入库仓库（自定义物资也在这里选）。 */
+function openRecoverDialog(
   allocationType: "monitor" | "non_asset",
   usageId: string,
   label: string,
-): Promise<void> {
+): void {
+  recoverTarget.value = { allocationType, usageId, label };
+  recoverForm.warehouseId = warehouseOptions.value[0]?.id ?? "";
+  recoverForm.notes = "";
+  recoverVisible.value = true;
+}
+
+async function submitRecover(): Promise<void> {
   const employee = deviceEmployee.value;
-  if (!employee) return;
-  if (!recoveryWarehouseId.value) {
-    ElMessage.warning("请先选择回收仓库。");
+  const target = recoverTarget.value;
+  if (!employee || !target) return;
+  if (!recoverForm.warehouseId) {
+    ElMessage.warning("请选择回收入库的仓库。");
     return;
   }
-  const confirmed = await confirmAction(`把「${label}」回收到所选仓库？`, {
-    title: "回收设备",
-    confirmText: "回收",
-  });
-  if (!confirmed) return;
   deviceSaving.value = true;
   try {
     await returnEmployeeUsage(
       employee.id,
-      allocationType,
-      usageId,
-      recoveryWarehouseId.value,
-      recoveryNotes.value.trim(),
+      target.allocationType,
+      target.usageId,
+      recoverForm.warehouseId,
+      recoverForm.notes.trim(),
     );
-    ElMessage.success("已回收并回补库存。");
+    ElMessage.success("已回收并入库。");
+    recoverVisible.value = false;
+    recoverTarget.value = null;
     await reloadEmployees(employee.id);
     inventoryData.value = await loadInventoryData(true);
   } catch (error) {
@@ -1025,8 +1096,7 @@ onMounted(async () => {
             link
             type="danger"
             :loading="deviceSaving"
-            :disabled="!recoveryWarehouseId"
-            @click="recoverUsage('monitor', row.id ?? '', employeeUsageLabel(row))"
+            @click="openRecoverDialog('monitor', row.id ?? '', employeeUsageLabel(row))"
           >
             回收
           </el-button>
@@ -1052,8 +1122,7 @@ onMounted(async () => {
             link
             type="danger"
             :loading="deviceSaving"
-            :disabled="!recoveryWarehouseId"
-            @click="recoverUsage('non_asset', row.id ?? '', employeeUsageLabel(row))"
+            @click="openRecoverDialog('non_asset', row.id ?? '', employeeUsageLabel(row))"
           >
             回收
           </el-button>
@@ -1061,46 +1130,22 @@ onMounted(async () => {
       </el-table-column>
     </el-table>
 
-    <el-divider content-position="left">回收设置（解除 / 回收时使用）</el-divider>
+    <el-divider content-position="left">领用设备 / 物资</el-divider>
     <el-form label-position="top">
       <el-row :gutter="12">
-        <el-col :xs="24" :sm="12">
-          <el-form-item label="回收仓库">
-            <el-select
-              v-model="recoveryWarehouseId"
-              clearable
-              placeholder="回收后回补到该仓库"
-              class="oa-full-width"
-            >
+        <el-col :xs="12" :sm="5">
+          <el-form-item label="类型" required>
+            <el-select v-model="usageForm.typeId" filterable class="oa-full-width">
               <el-option
-                v-for="warehouse in warehouseOptions"
-                :key="warehouse.id"
-                :label="warehouse.name"
-                :value="warehouse.id"
+                v-for="type in usageTypeOptions"
+                :key="type.id"
+                :label="type.name"
+                :value="type.id"
               />
             </el-select>
           </el-form-item>
         </el-col>
-        <el-col :xs="24" :sm="12">
-          <el-form-item label="操作备注">
-            <el-input v-model="recoveryNotes" placeholder="例如 离职回收" />
-          </el-form-item>
-        </el-col>
-      </el-row>
-    </el-form>
-
-    <el-divider content-position="left">领用设备 / 物资</el-divider>
-    <el-form label-position="top">
-      <el-row :gutter="12">
-        <el-col :xs="12" :sm="6">
-          <el-form-item label="类型">
-            <el-select v-model="usageForm.allocationType" class="oa-full-width">
-              <el-option label="显示屏" value="monitor" />
-              <el-option label="非资产设备" value="non_asset" />
-            </el-select>
-          </el-form-item>
-        </el-col>
-        <el-col :xs="12" :sm="6">
+        <el-col v-if="!usageForm.customMode" :xs="12" :sm="5">
           <el-form-item label="出库仓库">
             <el-select v-model="usageForm.warehouseId" clearable class="oa-full-width">
               <el-option
@@ -1112,13 +1157,13 @@ onMounted(async () => {
             </el-select>
           </el-form-item>
         </el-col>
-        <el-col :xs="16" :sm="8">
+        <el-col :xs="24" :sm="usageForm.customMode ? 10 : 8">
           <el-form-item label="型号">
             <el-select
               v-model="usageForm.modelId"
               filterable
               clearable
-              placeholder="请选择库存型号"
+              placeholder="选择库存型号，或选「自定义」手工填写"
               class="oa-full-width"
             >
               <el-option
@@ -1127,18 +1172,39 @@ onMounted(async () => {
                 :label="`${inventoryModelLabel(option.model)} · 库存 ${option.available}`"
                 :value="option.model.id"
               />
+              <el-option
+                label="自定义（无库存记录，回收时入库）"
+                :value="CUSTOM_MODEL_VALUE"
+              />
             </el-select>
           </el-form-item>
         </el-col>
-        <el-col :xs="8" :sm="4">
+        <el-col :xs="12" :sm="3">
           <el-form-item label="数量">
             <el-input-number
               v-model="usageForm.quantity"
               :min="1"
-              :disabled="usageForm.allocationType === 'monitor'"
+              :disabled="usageIsMonitor"
               class="oa-full-width"
             />
           </el-form-item>
+        </el-col>
+      </el-row>
+      <el-row v-if="usageForm.customMode" :gutter="12">
+        <el-col :xs="12" :sm="6">
+          <el-form-item label="品牌" required>
+            <el-input v-model="usageForm.brand" placeholder="例如 罗技" />
+          </el-form-item>
+        </el-col>
+        <el-col :xs="12" :sm="6">
+          <el-form-item label="型号" required>
+            <el-input v-model="usageForm.model" placeholder="例如 M185" />
+          </el-form-item>
+        </el-col>
+        <el-col :xs="24" :sm="12">
+          <div class="oa-hint">
+            自定义物资没有出库记录，不扣库存；回收时按填写的品牌型号自动补进目录并入库到所选仓库。
+          </div>
         </el-col>
       </el-row>
       <el-form-item label="备注">
@@ -1157,6 +1223,35 @@ onMounted(async () => {
     <template #footer>
       <el-button @click="deviceVisible = false">关闭</el-button>
     </template>
+  </FormDialog>
+
+  <FormDialog
+    v-model="recoverVisible"
+    :title="`回收物资 · ${recoverTarget?.label ?? ''}`"
+    size="sm"
+    confirm-text="确认回收"
+    confirm-type="danger"
+    :loading="deviceSaving"
+    @confirm="submitRecover"
+  >
+    <el-form label-position="top">
+      <el-form-item label="回收入库仓库" required>
+        <el-select v-model="recoverForm.warehouseId" class="oa-full-width" placeholder="请选择仓库">
+          <el-option
+            v-for="warehouse in warehouseOptions"
+            :key="warehouse.id"
+            :label="warehouse.name"
+            :value="warehouse.id"
+          />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="回收备注">
+        <el-input v-model="recoverForm.notes" placeholder="例如 离职回收 / 换机回收" />
+      </el-form-item>
+      <div class="oa-hint">
+        回收后物资进入所选仓库库存；自定义物资若目录里没有对应品牌型号，会自动创建。
+      </div>
+    </el-form>
   </FormDialog>
 </template>
 
