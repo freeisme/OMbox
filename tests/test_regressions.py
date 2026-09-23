@@ -1428,7 +1428,8 @@ class RecoveryInboundTests(TestCase):
         self.assertIn("回收仓库 / 接收人", view)
         self.assertIn("处理说明", view)
         self.assertIn("异常待处理必填", view)
-        self.assertIn("已回收并回补库存。", view)
+        # 单条回收改成了弹窗选仓库，提示语变成"已回收并入库"
+        self.assertIn("已回收并入库。", view)
 
 
 class OffboardingRecoveryWarehouseTests(TestCase):
@@ -3008,15 +3009,29 @@ class InspectionEntryRegressionTests(TestCase):
         self.assertIn('@click="submitAssignComputer"', view)
         self.assertIn("@click=\"releaseComputer(row)\"", view)
 
-        # 回收显示屏 / 非资产设备，并带回收仓库与备注
-        self.assertIn("recoverUsage('monitor'", view)
-        self.assertIn("recoverUsage('non_asset'", view)
-        self.assertIn("回收设置（解除 / 回收时使用）", view)
+        # 回收改为"点某条物资时才弹窗选仓库"，不再在设备信息栏里常驻回收设置
+        self.assertIn("openRecoverDialog('monitor'", view)
+        self.assertIn("openRecoverDialog('non_asset'", view)
+        self.assertIn("回收入库仓库", view)
+        self.assertIn("@confirm=\"submitRecover\"", view)
+        self.assertNotIn("回收设置（解除 / 回收时使用）", view)
         self.assertIn('@click="submitAllocate"', view)
 
         # 物资类型的 id 是数字主键，"monitor" 是编码，必须按编码判断显示屏。
         self.assertIn('String(type.code).toLowerCase() === "monitor"', view)
-        self.assertIn("monitorTypeIds.value.has(String(model.typeId))", view)
+        self.assertIn("monitorTypeIds.value.has(String(usageForm.typeId))", view)
+
+        # 领用：类型下拉用真实物资类型（显示屏 / 鼠标 / 键盘…），并支持自定义（无库存）物资
+        self.assertIn("const usageTypeOptions = computed(", view)
+        self.assertIn("v-for=\"type in usageTypeOptions\"", view)
+        self.assertIn('const CUSTOM_MODEL_VALUE = "__custom__";', view)
+        self.assertIn("自定义（无库存记录，回收时入库）", view)
+        self.assertIn("stockAdjusted: false,", view)
+        self.assertIn("brand: usageForm.brand.trim(),", view)
+        self.assertIn("自定义物资没有出库记录，不扣库存", view)
+        # 前端 API 支持自定义领用（typeId + brand + model，不扣库存）
+        self.assertIn("stockAdjusted?: boolean;", api)
+        self.assertIn("typeId?: string;", api)
 
         # 前端 API 走现有的命令接口，而不是旧的本地状态
         self.assertIn("export async function assignComputerToEmployee(", api)

@@ -207,13 +207,25 @@ export async function releaseComputerFromEmployee(computerId: string, notes = ""
   });
 }
 
-/** 给人员领用显示屏或非资产物资（按库存型号与仓库扣减）。 */
+/**
+ * 给人员领用显示屏或非资产物资。
+ *
+ * 两种走法：
+ * - 库存型号：传 `modelId` + `warehouseId`，按仓库库存扣减；
+ * - 自定义（无库存记录，用来补台账里没有的物资）：传 `typeId` + `brand` + `model`，
+ *   并把 `stockAdjusted` 设为 false——不扣库存，回收时再入库并自动补品牌型号。
+ */
 export async function allocateInventoryToEmployee(payload: {
   allocationType: "monitor" | "non_asset";
   employeeId: string;
-  modelId: string;
+  modelId?: string;
+  typeId?: string;
+  brand?: string;
+  model?: string;
+  displayName?: string;
+  stockAdjusted?: boolean;
   quantity: number;
-  warehouseId: string;
+  warehouseId?: string;
   notes?: string;
 }): Promise<void> {
   await api("/api/inventory/allocations", { method: "POST", body: payload });
