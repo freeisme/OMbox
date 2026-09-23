@@ -194,9 +194,7 @@ class DatacenterDeviceService:
         name = self.db.text(payload.get("name", current.get("name")))[:128]
         if not name:
             raise self.api_error("设备名称不能为空。")
-        category = self.db.text(payload.get("category", current.get("category"))) or "other"
-        if category not in CATEGORIES:
-            raise self.api_error("设备类型无效。")
+        category = self._normalise_category(payload.get("category", current.get("category")))
         status = self.db.text(payload.get("status", current.get("status"))) or "stock"
         if status not in STATUSES:
             raise self.api_error("设备状态无效。")
@@ -234,6 +232,18 @@ class DatacenterDeviceService:
             "orgId": org_id,
             "notes": self.db.text(payload.get("notes", current.get("notes")))[:500],
         }
+
+    def _normalise_category(self, value: object) -> str:
+        """设备类型不再限枚举：已知中文名/枚举值归一化，其余按原文保留（最多 64 字符）。"""
+        raw = self.db.text(value)
+        if not raw:
+            return "other"
+        mapped = CATEGORY_ALIASES.get(normalise_key(raw))
+        if mapped:
+            return mapped
+        if len(raw) > 64:
+            raise self.api_error("设备类型最多 64 个字符。")
+        return raw
 
     def _placement_of(self, device_id: int) -> dict | None:
         return self.db.json(
@@ -569,9 +579,11 @@ class DatacenterDeviceService:
         }
         category_raw = self._cell(row, mapping.get("category"))
         if category_raw:
-            payload["category"] = CATEGORY_ALIASES.get(self._normalise_header(category_raw))
-            if not payload["category"]:
-                problems.append(f"设备类型「{category_raw}」无法识别")
+            if len(category_raw) > 64:
+                problems.append("设备类型最多 64 个字符")
+            else:
+                # 已知中文名/枚举值归一化成标准值，其余（如「光模块」）按原文保留
+                payload["category"] = self._normalise_category(category_raw)
         height_raw = self._cell(row, mapping.get("uHeight"))
         if height_raw:
             match = re.search(r"\d+(?:\.\d+)?", height_raw)

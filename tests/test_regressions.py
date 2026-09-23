@@ -2503,11 +2503,12 @@ class DatacenterImportRegressionTests(TestCase):
         self.assertEqual(record["uHeight"], 2)
         self.assertEqual(record["status"], "stock")
 
-        _, problems = service._row_to_payload(
+        # 设备类型不再限制在预设枚举内：未知类型按原文保留，只拦高度与状态
+        custom, problems = service._row_to_payload(
             ["SW-A02", "交换机", "", "不认识的类型", "0", "", "", "", "上架", ""],
             mapping,
         )
-        self.assertTrue(any("无法识别" in item for item in problems), problems)
+        self.assertEqual(custom["category"], "不认识的类型", custom)
         self.assertTrue(any("超出 1-50U" in item for item in problems), problems)
         self.assertTrue(any("不能是「上架」" in item for item in problems), problems)
 
@@ -2924,6 +2925,32 @@ class InspectionEntryRegressionTests(TestCase):
         self.assertEqual(len(sample), len(header), "示例行的列数必须与表头一致")
         # 导入说明也要列出同样的列，避免界面提示落后于功能
         self.assertIn("用途、远程访问地址、CPU、内存、硬盘", view)
+
+    def test_datacenter_device_category_is_free_form(self):
+        """设备类型不再限预设枚举：去掉 CHECK 约束，导入与表单都接受自定义类型。"""
+        migration = (
+            ROOT
+            / "database"
+            / "migrations"
+            / "20260923_001_datacenter_device_category_free.sql"
+        ).read_text(encoding="utf-8")
+        service = (ROOT / "office_asset" / "datacenter_devices.py").read_text(encoding="utf-8")
+        view = (ROOT / "frontend" / "src" / "views" / "DatacenterDeviceView.vue").read_text(
+            encoding="utf-8"
+        )
+
+        # 数据库：去掉枚举约束并放宽列宽
+        self.assertIn("DROP CHECK ck_datacenter_device_category", migration)
+        self.assertIn("VARCHAR(64)", migration)
+        # 后端：未知类型按原文保留，不再按枚举拒绝
+        self.assertIn("def _normalise_category(", service)
+        self.assertIn("CATEGORY_ALIASES.get(normalise_key(raw))", service)
+        self.assertNotIn("设备类型无效。", service)
+        self.assertNotIn("设备类型「", service)
+        # 前端：类型下拉由已有类型生成，并允许直接输入新类型
+        self.assertIn("const categoryOptions = computed(", view)
+        self.assertIn("allow-create", view)
+        self.assertIn("设备类型候选来自台账里", view)
 
     def test_inspection_sites_and_racks_can_be_deleted(self):
         """机房 / 机柜要能删除，且带引用保护：有柜的机房、柜内有设备的机柜都不能删。"""

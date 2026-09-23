@@ -41,6 +41,25 @@ const importBusy = ref(false);
 const canCreate = computed(() => hasPermission("rack_layout", "create"));
 const canUpdate = computed(() => hasPermission("rack_layout", "update"));
 const canDelete = computed(() => hasPermission("rack_layout", "delete"));
+
+/**
+ * 设备类型候选来自台账里**已有的类型**（预设覆盖不了多样化的网络设备），
+ * 首次使用、台账为空时回落到预设列表；下拉允许直接输入新类型。
+ */
+const categoryOptions = computed(() => {
+  const seen = new Map<string, string>();
+  devices.value.forEach((item) => {
+    const value = String(item.category ?? "").trim();
+    if (!value) return;
+    seen.set(value, CATEGORY_LABELS[value] ?? value);
+  });
+  if (!seen.size) {
+    Object.entries(CATEGORY_LABELS).forEach(([value, label]) => seen.set(value, label));
+  }
+  return Array.from(seen, ([value, label]) => ({ value, label })).sort((a, b) =>
+    a.label.localeCompare(b.label, "zh-Hans-CN"),
+  );
+});
 const summary = computed(() => {
   const counts: Record<string, number> = { stock: 0, installed: 0, repair: 0, scrapped: 0 };
   devices.value.forEach((item) => {
@@ -475,8 +494,20 @@ onMounted(async () => {
           <el-input v-model="form.brandModel" placeholder="例如 华为 S5731-H48T4XC" />
         </el-form-item>
         <el-form-item label="设备类型">
-          <el-select v-model="form.category" class="oa-full-width">
-            <el-option v-for="(label, value) in CATEGORY_LABELS" :key="value" :value="value" :label="label" />
+          <el-select
+            v-model="form.category"
+            class="oa-full-width"
+            filterable
+            allow-create
+            default-first-option
+            placeholder="选择已有类型，或直接输入新的类型名称"
+          >
+            <el-option
+              v-for="option in categoryOptions"
+              :key="option.value"
+              :value="option.value"
+              :label="option.label"
+            />
           </el-select>
         </el-form-item>
         <el-form-item label="占用高度（U）">
@@ -559,7 +590,8 @@ onMounted(async () => {
         可识别的列：设备编号、设备名称、品牌型号、设备类型、占用高度、SN/ST、固资编码、使用人、
         用途、远程访问地址、CPU、内存、硬盘、状态、备注。
         状态只接受「未上架 / 维修 / 报废」（「上架」由机柜视图的上架操作写入）；设备类型支持中文名，
-        如 服务器、网络设备、配线架、UPS、存储。
+        <strong>也可以自由填写</strong>——常见的 服务器、网络设备、配线架、UPS、存储 会自动归一化，
+        其余（如 光模块、KVM 延长器）按填写的原文保存，最多 64 个字符。
       </div>
 
       <template v-if="importPreview">

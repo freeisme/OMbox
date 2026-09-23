@@ -46,10 +46,14 @@
 ## 数据模型
 
 迁移文件：`database/migrations/20260918_004_datacenter_devices.sql`、
-`database/migrations/20260922_001_datacenter_device_details.sql`（补充运维字段）。
+`database/migrations/20260922_001_datacenter_device_details.sql`（补充运维字段）、
+`database/migrations/20260923_001_datacenter_device_category_free.sql`（设备类型改为自由填写）。
 
 * 新增 `datacenter_device`：设备编号（唯一）、名称、型号库关联、品牌型号、类型、U 高、
   SN/ST、固资编码、使用人、用途、远程访问地址、CPU、内存、硬盘、状态、所在机房与机柜、备注；
+* 设备类型 `category` **不再有枚举 CHECK 约束**：常见的 12 个预设值仍会被归一化
+  （例如「交换机」→ `network`），预设外的取值按原文保存（最长 64 字符）；
+  台账页的类型下拉按"已有类型"生成，并允许直接输入新类型；
 * `rack_device_placement` 新增 `datacenter_device_id`（唯一索引：一台设备只能在一个机柜位置）
   与 FK，并把 `source_kind` 扩成 `computer | custom | datacenter`（历史记录继续有效）。
 
