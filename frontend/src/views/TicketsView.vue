@@ -351,9 +351,10 @@ onMounted(load);
         v-model="resolutionText"
         type="textarea"
         :rows="2"
-        placeholder="处理结果（标记已解决时必填）"
+        placeholder="处理结果"
         class="oa-mt-2"
       />
+      <div class="oa-hint">标记「已解决」时必填。</div>
       <div class="oa-text-right oa-mt-2">
         <el-button
           type="primary"

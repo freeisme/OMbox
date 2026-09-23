@@ -5,6 +5,7 @@ import { ElMessage } from "element-plus";
 import { NAV_GROUPS, NAV_ITEMS, PATH_BY_PAGE } from "../navigation";
 import { canViewPage, hasPermission, loadMeta, logout, session } from "../session";
 import { fetchNotifications } from "../api/service";
+import { installActivityTracking, isIdleBeyond } from "../activity";
 
 const route = useRoute();
 const router = useRouter();
@@ -53,10 +54,14 @@ async function signOut(): Promise<void> {
 }
 
 onMounted(async () => {
+  installActivityTracking();
   document.documentElement.classList.toggle("dark", theme.value === "dark");
   if (!session.meta) await loadMeta();
   await refreshNotificationCount();
   pollTimer = window.setInterval(() => {
+    // 用户已经空闲超过会话时长（或页面在后台）时不再轮询：
+    // 否则定时请求会不断刷新会话，服务端的"无操作超时"永远不会生效。
+    if (document.visibilityState !== "visible" || isIdleBeyond(session.idleMinutes)) return;
     void refreshNotificationCount();
   }, 60_000);
 });
