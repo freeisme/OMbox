@@ -274,7 +274,9 @@ async function submitOffboard(): Promise<void> {
       ElMessage.warning(`请为「${row.item.label}」选择处理方式。`);
       return;
     }
-    if (row.action === "recover" && !row.recoveryWarehouseId) {
+    // 办公终端回收是直接回到办公终端台账的闲置设备，不进仓库，所以不要求选仓库
+    const recoverToWarehouse = row.action === "recover" && row.item.itemType !== "computer";
+    if (recoverToWarehouse && !row.recoveryWarehouseId) {
       ElMessage.warning(`「${row.item.label}」选择回收时必须指定回收目标仓库。`);
       return;
     }
@@ -304,7 +306,11 @@ async function submitOffboard(): Promise<void> {
         action: row.action,
         note: row.note.trim(),
         targetEmployeeId: row.action === "transfer" ? row.targetEmployeeId : "",
-        recoveryWarehouseId: row.action === "recover" ? row.recoveryWarehouseId : "",
+        // 办公终端回收不需要仓库（直接回到办公终端台账的闲置设备）
+        recoveryWarehouseId:
+          row.action === "recover" && row.item.itemType !== "computer"
+            ? row.recoveryWarehouseId
+            : "",
       })),
     });
     ElMessage.success("已完成离职办理。");
@@ -956,7 +962,7 @@ onMounted(async () => {
       <el-table-column label="回收仓库 / 接收人" width="220">
         <template #default="{ row }">
           <el-select
-            v-if="row.action === 'recover'"
+            v-if="row.action === 'recover' && row.item.itemType !== 'computer'"
             v-model="row.recoveryWarehouseId"
             placeholder="回收目标仓库"
             class="oa-full-width"
@@ -968,6 +974,9 @@ onMounted(async () => {
               :value="warehouse.id"
             />
           </el-select>
+          <span v-else-if="row.action === 'recover'" class="oa-cell-sub">
+            回收到办公终端闲置设备，不进仓库
+          </span>
           <el-select
             v-else-if="row.action === 'transfer'"
             v-model="row.targetEmployeeId"

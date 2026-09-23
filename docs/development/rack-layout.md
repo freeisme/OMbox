@@ -15,7 +15,7 @@
 | `computer_id` | 办公终端 ID，唯一索引保证一台设备只在一个机柜上架 |
 | `inventory_model_id` | 来自 IT 物资型号时记录型号 ID，仅作追溯，不扣库存 |
 | `display_name` / `brand_model` | 图上显示的名称与品牌型号 |
-| `category` | 机柜内设备类型（server、network、patch-panel、power、storage、kvm 等 12 类） |
+| `category` | 机柜内设备类型；常见写法（server、network、patch-panel…）归一化成预设值，其余按台账原文保留（v3.0.13 起不再限定枚举） |
 | `position_u` / `u_height` | 起始 U 位（从下往上编号）与占用高度（整数 U，1-50） |
 | `face` | `front`、`rear` 或 `both`（整机深度） |
 | `status_snapshot` / `asset_code` / `serial_number` / `owner_label` | 上架时的台账快照；读取时优先显示台账实时值 |

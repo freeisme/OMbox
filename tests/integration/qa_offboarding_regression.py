@@ -383,7 +383,8 @@ def main() -> int:
                 "itemType": "computer",
                 "itemId": computer_id,
                 "action": "recover",
-                "recoveryWarehouseId": recovery_warehouse,
+                # 办公终端回收直接回到办公终端台账的闲置设备，不进仓库。
+                "recoveryWarehouseId": "",
             },
         ]
 
@@ -476,7 +477,15 @@ def main() -> int:
     recorded_warehouses = snapshot.count(
         f'"recoveryWarehouseId":"{warehouse_b}"'
     ) + snapshot.count(f'"recoveryWarehouseId": "{warehouse_b}"')
-    assert recorded_warehouses == 3, f"归档快照必须记录三件物资的回收仓库: {snapshot[:400]}"
+    assert recorded_warehouses == 2, f"归档快照必须记录显示屏与登记物资的回收仓库: {snapshot[:400]}"
+    empty_warehouses = snapshot.count('"recoveryWarehouseId":""') + snapshot.count(
+        '"recoveryWarehouseId": ""'
+    )
+    assert empty_warehouses == 1, f"办公终端回收不进入仓库，归档快照应为空仓库: {snapshot[:400]}"
+    assert (
+        sql_scalar(f"SELECT it_asset_status FROM computer_asset WHERE computer_id = {computer_id};")
+        == "idle"
+    ), "办公终端回收后必须回到办公终端台账的闲置设备"
     print("offboarding recovery warehouse enforced:", result.get("archiveId"))
 
     # 5. 公用人员：可挂靠设备、禁止绑定账号、办理离职等同删除且不进入离职人员档案。

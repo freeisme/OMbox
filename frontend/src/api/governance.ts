@@ -54,10 +54,13 @@ export interface InspectionTask {
 export interface InspectionTaskItem {
   id: string;
   title: string;
+  category?: string;
   checkMethod?: string;
   result?: string;
   notes?: string;
   valueText?: string;
+  checkedByName?: string;
+  checkedAt?: string;
 }
 
 export const INSPECTION_TASK_STATUS_LABELS: Record<string, string> = {
@@ -220,6 +223,43 @@ export async function submitInspectionTask(
 
 export async function voidInspectionTask(taskId: string, reason: string): Promise<void> {
   await api(`/api/inspection/tasks/${taskId}/void`, { method: "POST", body: { reason } });
+}
+
+/** 巡检表导入的列（与「下载模板」生成的表头一致）。 */
+export const INSPECTION_IMPORT_COLUMNS = [
+  "机房",
+  "机柜",
+  "检查项分类",
+  "检查项",
+  "检查方法",
+  "结论",
+  "实测值",
+  "说明",
+] as const;
+
+export interface InspectionImportResult {
+  id: string;
+  taskNo: string;
+  siteName: string;
+  rackName: string;
+  itemTotal: number;
+  itemOk: number;
+  itemFail: number;
+  itemNa: number;
+  errors: Array<{ row: number; message: string }>;
+  errorCount: number;
+}
+
+/** 按模板上传表格并生成一份"已提交"的巡检记录。 */
+export async function importInspectionTask(payload: {
+  fileName: string;
+  contentBase64: string;
+  remarks?: string;
+}): Promise<InspectionImportResult> {
+  return api<InspectionImportResult>("/api/inspection/tasks/import", {
+    method: "POST",
+    body: payload,
+  });
 }
 
 export interface SyncRun {

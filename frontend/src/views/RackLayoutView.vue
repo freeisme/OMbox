@@ -548,7 +548,15 @@ onMounted(async () => {
               </el-select>
             </el-form-item>
             <el-form-item label="设备类型">
-              <el-select v-model="form.category" class="oa-full-width" :disabled="!canUpdate">
+              <!-- 台账里的设备类型可以是自定义值，这里允许直接输入，避免只能选预设 -->
+              <el-select
+                v-model="form.category"
+                class="oa-full-width"
+                filterable
+                allow-create
+                default-first-option
+                :disabled="!canUpdate"
+              >
                 <el-option v-for="(label, value) in CATEGORY_LABELS" :key="value" :value="value" :label="label" />
               </el-select>
             </el-form-item>
