@@ -581,6 +581,8 @@ onMounted(async () => {
         <input type="file" accept=".xlsx,.xlsm,.csv" @change="onFileChange" />
         <el-switch
           v-model="importMode"
+          active-value="update"
+          inactive-value="skip"
           active-text="更新已存在的设备"
           inactive-text="跳过已存在的设备"
           @change="importPreview = null"
