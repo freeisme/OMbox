@@ -2952,6 +2952,25 @@ class InspectionEntryRegressionTests(TestCase):
         self.assertIn("allow-create", view)
         self.assertIn("设备类型候选来自台账里", view)
 
+    def test_datacenter_import_mode_sends_string_values(self):
+        """导入的"跳过 / 更新"开关必须写字符串 skip / update。
+
+        之前 el-switch 没声明 active-value / inactive-value，拨动后会把布尔值写进 importMode，
+        后端收到 mode=true 直接拒绝——表现就是"导入更新文件无法更新设备"。
+        """
+        view = (ROOT / "frontend" / "src" / "views" / "DatacenterDeviceView.vue").read_text(
+            encoding="utf-8"
+        )
+        service = (ROOT / "office_asset" / "datacenter_devices.py").read_text(encoding="utf-8")
+
+        switch_block = view.split('v-model="importMode"', 1)[1].split("/>", 1)[0]
+        self.assertIn('active-value="update"', switch_block)
+        self.assertIn('inactive-value="skip"', switch_block)
+        self.assertIn('ref<"skip" | "update">("skip")', view)
+        # 预览与正式导入都发字符串
+        self.assertIn("mode: importMode.value,", view)
+        # 后端只接受这两个值（不要放宽成布尔，否则前端再写错也不会被发现）
+        self.assertIn('if mode not in {"skip", "update"}:', service)
     def test_inspection_sites_and_racks_can_be_deleted(self):
         """机房 / 机柜要能删除，且带引用保护：有柜的机房、柜内有设备的机柜都不能删。"""
         api = (ROOT / "frontend" / "src" / "api" / "governance.ts").read_text(encoding="utf-8")
