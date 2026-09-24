@@ -1266,6 +1266,20 @@ class AssetService:
 
     def _shared_employee_number(self, org_id: object, exclude_employee_id: object = 0) -> str:
         """Generate ``SHARED-<组织编码>-NN`` for a shared (non-personal) holder."""
+        return self._generated_employee_number(org_id, exclude_employee_id, shared=True)
+
+    def _generated_employee_number(
+        self,
+        org_id: object,
+        exclude_employee_id: object = 0,
+        *,
+        shared: bool = False,
+    ) -> str:
+        """按组织自动分配工号：``<组织编码>-NN``；公用人员加 ``SHARED-`` 前缀。
+
+        取该前缀下已占用的最小编号 +1，与手工填写的工号共用同一个唯一索引，
+        所以生成结果不会和已有工号冲突。
+        """
         org = self.db.json(
             f"""
             SELECT JSON_OBJECT('code', org_code)
@@ -1275,7 +1289,7 @@ class AssetService:
             None,
         )
         org_code = self.db.text((org or {}).get("code")).upper() or "ORG"
-        prefix = f"SHARED-{org_code}-"
+        prefix = f"SHARED-{org_code}-" if shared else f"{org_code}-"
         existing = self.db.json(
             f"""
             SELECT COALESCE(JSON_ARRAYAGG(employee_no), JSON_ARRAY())
@@ -1304,11 +1318,23 @@ class AssetService:
         self.scope.assert_org_access(context, org_id)
         employee_id = self.db.integer(resource_id, 0)
         employee_no = self.db.text(payload.get("employeeNo"))
-        if not employee_no and status == "shared":
-            employee_no = self._shared_employee_number(org_id, employee_id)
+        old = self._employee(employee_id) if employee_id else None
+        if not employee_no and not employee_id:
+            # 新增人员：工号留空时按"组织编码 + 序号"自动分配（公用人员带 SHARED- 前缀）。
+            if org_id <= 0:
+                raise self.api_error("工号留空时必须选择所属组织，才能按组织自动分配工号。")
+            employee_no = self._generated_employee_number(
+                org_id, employee_id, shared=status == "shared"
+            )
+        elif not employee_no and employee_id:
+            # 编辑时清空工号：公用人员重新按组织生成，其他人保留原工号，避免误改编号。
+            employee_no = (
+                self._shared_employee_number(org_id, employee_id)
+                if status == "shared"
+                else self.db.text((old or {}).get("employeeNo"))
+            )
         if not employee_no or not name:
             raise self.api_error("Employee number and name are required.")
-        old = self._employee(employee_id) if employee_id else None
         if old:
             self.scope.assert_org_access(context, old.get("orgId"))
         assignments = {

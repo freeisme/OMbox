@@ -41,6 +41,8 @@ interface OrgNode {
   sortOrder: number;
   children: OrgNode[];
   label: string;
+  /** el-tree-select 用 value 作为节点值，缺少它会导致"选不中组织"。 */
+  value: string;
 }
 
 interface OffboardRow {
@@ -86,7 +88,12 @@ const offboardForm = reactive({ leaveDate: "", leaveReason: "", leaveRemark: "" 
 const orgTree = computed<OrgNode[]>(() => {
   const nodes = new Map<string, OrgNode>();
   orgs.value.forEach((item) =>
-    nodes.set(item.id, { ...item, children: [], label: `${item.name}（${item.code}）` }),
+    nodes.set(item.id, {
+      ...item,
+      value: item.id,
+      children: [],
+      label: `${item.name}（${item.code}）`,
+    }),
   );
   const roots: OrgNode[] = [];
   orgs.value.forEach((item) => {
@@ -214,17 +221,19 @@ function openEdit(row: EmployeeDetailRow): void {
 }
 
 async function submitForm(): Promise<void> {
-  if (!form.name.trim() || !form.employeeNo.trim()) {
-    ElMessage.warning("工号与姓名必填。");
+  if (!form.name.trim()) {
+    ElMessage.warning("姓名必填。");
     return;
   }
   if (!form.orgId) {
-    ElMessage.warning("请选择所属组织。");
+    ElMessage.warning(
+      form.employeeNo.trim() ? "请选择所属组织。" : "请选择所属组织，留空的工号会按组织自动分配。",
+    );
     return;
   }
   saving.value = true;
   try {
-    await saveEmployee(
+    const result = await saveEmployee(
       {
         ...form,
         name: form.name.trim(),
@@ -232,7 +241,12 @@ async function submitForm(): Promise<void> {
       },
       editingId.value,
     );
-    ElMessage.success(editingId.value ? "人员已更新。" : "人员已创建。");
+    const assignedNo = result?.employee?.employeeNo ?? "";
+    ElMessage.success(
+      editingId.value
+        ? `人员已更新${assignedNo ? `，工号 ${assignedNo}。` : "。"}`
+        : `人员已创建${assignedNo ? `，自动分配工号 ${assignedNo}` : ""}。`,
+    );
     formVisible.value = false;
     invalidateEmployeesCache();
     await load(true);
@@ -860,8 +874,9 @@ onMounted(async () => {
     <el-form label-position="top">
       <el-row :gutter="12">
         <el-col :xs="12" :md="8">
-          <el-form-item label="工号" required>
-            <el-input v-model="form.employeeNo" placeholder="公用人员可留空自动生成" />
+          <el-form-item label="工号">
+            <el-input v-model="form.employeeNo" placeholder="留空按组织自动分配" />
+            <div class="oa-hint">留空时会按「组织编码-序号」分配，例如 IT-01。</div>
           </el-form-item>
         </el-col>
         <el-col :xs="12" :md="8">

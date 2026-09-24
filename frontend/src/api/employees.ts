@@ -107,12 +107,11 @@ export function formFromEmployee(row: EmployeeDetailRow): EmployeeFormPayload {
 export async function saveEmployee(
   payload: EmployeeFormPayload,
   employeeId = "",
-): Promise<void> {
+): Promise<{ employee?: { id: string; employeeNo: string; name: string; orgId: string; status: string } }> {
   if (employeeId) {
-    await api(`/api/resources/employee/${employeeId}`, { method: "PUT", body: payload });
-    return;
+    return api(`/api/resources/employee/${employeeId}`, { method: "PUT", body: payload });
   }
-  await api("/api/resources/employee", { method: "POST", body: payload });
+  return api("/api/resources/employee", { method: "POST", body: payload });
 }
 
 export interface OffboardItem {

@@ -28,6 +28,8 @@ interface OrgNode {
   parentId: string;
   children: OrgNode[];
   label: string;
+  /** el-tree-select 需要 value 才能选中节点。 */
+  value: string;
 }
 
 const loading = ref(true);
@@ -108,7 +110,12 @@ const modelForm = reactive({
 const orgTree = computed<OrgNode[]>(() => {
   const nodes = new Map<string, OrgNode>();
   data.value.orgs.forEach((item) =>
-    nodes.set(item.id, { ...item, children: [], label: `${item.name}（${item.code}）` }),
+    nodes.set(item.id, {
+      ...item,
+      value: item.id,
+      children: [],
+      label: `${item.name}（${item.code}）`,
+    }),
   );
   const roots: OrgNode[] = [];
   data.value.orgs.forEach((item) => {

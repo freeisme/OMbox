@@ -2631,6 +2631,56 @@ class StageThreeRegressionTests(TestCase):
         self.assertIn("topology_positions_saved", service)
 
 
+class EmployeeOrgSelectionAndNumberingTests(TestCase):
+    """新增人员：组织可选，工号留空按组织自动分配。"""
+
+    def test_org_tree_nodes_carry_a_value_for_tree_select(self):
+        """el-tree-select 用 value 作为节点值，缺了它就会出现"选不中组织"。"""
+        for name in ("EmployeesView.vue", "InventoryView.vue", "DictionaryView.vue"):
+            view = (ROOT / "frontend" / "src" / "views" / name).read_text(encoding="utf-8")
+            self.assertIn("value: item.id", view, name)
+            self.assertIn("value: string", view, name)
+
+        employees = (ROOT / "frontend" / "src" / "views" / "EmployeesView.vue").read_text(
+            encoding="utf-8"
+        )
+        # 用户可见的入口仍然是树选择器，且组织为必填
+        self.assertIn('<el-form-item label="所属组织" required>', employees)
+        self.assertIn(':data="orgTree"', employees)
+
+    def test_employee_number_can_be_left_blank(self):
+        view = (ROOT / "frontend" / "src" / "views" / "EmployeesView.vue").read_text(
+            encoding="utf-8"
+        )
+        api = (ROOT / "frontend" / "src" / "api" / "employees.ts").read_text(encoding="utf-8")
+
+        # 只校验姓名；工号留空时按组织自动分配
+        self.assertNotIn("工号与姓名必填。", view)
+        self.assertIn("留空按组织自动分配", view)
+        self.assertIn("留空时会按「组织编码-序号」分配", view)
+        self.assertIn("留空的工号会按组织自动分配", view)
+        # 保存后把后端分配的工号提示出来
+        self.assertIn("自动分配工号", view)
+        self.assertIn("Promise<{ employee?:", api)
+
+    def test_backend_generates_the_number_from_the_org(self):
+        service = (ROOT / "office_asset" / "asset_service.py").read_text(encoding="utf-8")
+        save_employee = service.split("    def _save_employee(", 1)[1].split(
+            "\n    def _save_organization(",
+            1,
+        )[0]
+
+        self.assertIn("def _generated_employee_number(", service)
+        self.assertIn('prefix = f"SHARED-{org_code}-" if shared else f"{org_code}-"', service)
+        # 公用人员沿用原方法，避免破坏既有行为
+        self.assertIn("return self._generated_employee_number(org_id, exclude_employee_id, shared=True)", service)
+        # 新增时留空 → 按组织生成；编辑时留空 → 保留原工号，避免误改编号
+        self.assertIn("if not employee_no and not employee_id:", save_employee)
+        self.assertIn("工号留空时必须选择所属组织", save_employee)
+        self.assertIn("elif not employee_no and employee_id:", save_employee)
+        self.assertIn('self.db.text((old or {}).get("employeeNo"))', save_employee)
+
+
 class TopologyEditingRegressionTests(TestCase):
     """拓扑图直接编辑：给设备加端口、连两台设备、改链路属性。"""
 
