@@ -5315,13 +5315,13 @@ class AppHandler(SimpleHTTPRequestHandler):
                         "'asset_site', 'asset_rack', 'inspection_template', 'inspection_template_item', "
                         "'inspection_task', 'inspection_task_item', 'rack_device_placement'"
                         ", 'device_type_catalog', 'device_type_port_template', 'rack_device_port', "
-                        "'rack_cable_run', 'topology_node_position', 'datacenter_device'"
+                        "'rack_cable_run', 'topology_node_position', 'datacenter_device', 'site_device'"
                         ");",
                         database=DB_NAME,
                     ).strip(),
                     0,
                 )
-                required_table_count = 70
+                required_table_count = 71
                 healthy = probe == 1 and table_count == required_table_count
                 self.send_json(
                     {

@@ -256,6 +256,9 @@ export interface ImportSummary {
   skipped: number;
   errors: { row: number; code: string; message: string }[];
   errorCount: number;
+  /** 不影响导入的提示，例如"状态「上架」已按「未上架」导入"。 */
+  warnings?: { row: number; code: string; message: string }[];
+  warningCount?: number;
   dryRun: boolean;
 }
 

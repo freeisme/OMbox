@@ -144,7 +144,7 @@ python .\tests\integration\qa_device_topology_regression.py
 机柜端口清单、建链路与幂等重复提交、端口占用冲突、同端口重复连接、拓扑节点与链路、
 坐标保存、删除链路与端口、审计留痕、只读账号被拒绝。
 
-健康检查 `/api/health` 的必需表数量为 70。
+健康检查 `/api/health` 的必需表数量为 71（v3.0.18 起加入 `site_device`）。
 
 ## 本版不做的事
 

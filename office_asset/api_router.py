@@ -465,6 +465,30 @@ class DomainApiRouter:
                 self.inspection.delete_site(site_id, self._payload(handler, allow_empty=True), context)
             )
             return True
+        # 会议室（或任意巡检对象）里的设备：IT 物资分配 + 自定义登记
+        if path.startswith("/api/inspection/sites/") and path.endswith("/devices"):
+            parts = path.split("/")
+            if len(parts) == 6 and parts[4]:
+                if method == "GET":
+                    context = self._read_context(handler, "inspection_management")
+                    send_json(self.inspection.list_site_devices(parts[4], context))
+                    return True
+                if method == "POST":
+                    context = self._write_context(handler, "inspection_management", "create")
+                    send_json(
+                        self.inspection.add_site_device(parts[4], self._payload(handler), context),
+                        status=201,
+                    )
+                    return True
+        if path.startswith("/api/inspection/site-devices/") and method == "DELETE":
+            device_id = path.split("/")[-1]
+            context = self._write_context(handler, "inspection_management", "delete")
+            send_json(
+                self.inspection.remove_site_device(
+                    device_id, self._payload(handler, allow_empty=True), context
+                )
+            )
+            return True
 
         if path == "/api/inspection/racks" and method == "GET":
             context = self._read_context(handler, "inspection_management")
@@ -505,6 +529,14 @@ class DomainApiRouter:
                 context = self._write_context(handler, "inspection_management", "update")
                 send_json(self.inspection.update_template(template_id, self._payload(handler), context))
                 return True
+            if method == "DELETE":
+                context = self._write_context(handler, "inspection_management", "delete")
+                send_json(
+                    self.inspection.delete_template(
+                        template_id, self._payload(handler, allow_empty=True), context
+                    )
+                )
+                return True
 
         if path == "/api/inspection/tasks" and method == "GET":
             context = self._read_context(handler, "inspection_management")
@@ -527,6 +559,14 @@ class DomainApiRouter:
             return True
         if path.startswith("/api/inspection/tasks/"):
             parts = path.split("/")
+            if len(parts) == 5 and method == "DELETE":
+                context = self._write_context(handler, "inspection_management", "delete")
+                send_json(
+                    self.inspection.delete_task(
+                        parts[4], self._payload(handler, allow_empty=True), context
+                    )
+                )
+                return True
             if len(parts) == 8 and parts[5] == "items" and parts[7] == "check" and method == "POST":
                 context = self._write_context(handler, "inspection_management", "update")
                 send_json(

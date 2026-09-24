@@ -321,7 +321,8 @@ async function runImport(): Promise<void> {
     });
     importPreview.value = result;
     ElMessage.success(
-      `导入完成：新增 ${result.created}，更新 ${result.updated}，跳过 ${result.skipped}，错误 ${result.errorCount}。`,
+      `导入完成：新增 ${result.created}，更新 ${result.updated}，跳过 ${result.skipped}，` +
+        `错误 ${result.errorCount}${result.warningCount ? `，提示 ${result.warningCount}` : ""}。`,
     );
     await loadDevices();
   } catch (error) {
@@ -593,7 +594,8 @@ onMounted(async () => {
       <div class="hint">
         可识别的列：设备编号、设备名称、品牌型号、设备类型、占用高度、SN/ST、固资编码、使用人、
         用途、远程访问地址、CPU、内存、硬盘、状态、备注。
-        状态只接受「未上架 / 维修 / 报废」（「上架」由机柜视图的上架操作写入）；设备类型支持中文名，
+        状态只接受「未上架 / 维修 / 报废」：<strong>导入的设备都还没有上架</strong>，写了「上架」会按
+        「未上架」导入（真正的上架状态由机柜视图的上架操作写入）；设备类型支持中文名，
         <strong>也可以自由填写</strong>——常见的 服务器、网络设备、配线架、UPS、存储 会自动归一化，
         其余（如 光模块、KVM 延长器）按填写的原文保存，最多 64 个字符。
       </div>
@@ -613,6 +615,16 @@ onMounted(async () => {
             {{ IMPORT_FIELD_LABELS[field] ?? field }} ← {{ header }}
           </span>
         </div>
+        <el-table
+          v-if="importPreview.warnings?.length"
+          :data="importPreview.warnings"
+          size="small"
+          class="oa-mt-2"
+        >
+          <el-table-column prop="row" label="行号" width="80" />
+          <el-table-column prop="code" label="设备编号" width="160" />
+          <el-table-column prop="message" label="提示" />
+        </el-table>
         <el-table
           v-if="importPreview.errors.length"
           :data="importPreview.errors"

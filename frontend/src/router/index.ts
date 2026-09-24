@@ -22,6 +22,7 @@ const VIEW_LOADERS: Record<string, () => Promise<unknown>> = {
   rackLayout: () => import("../views/RackLayoutView.vue"),
   devicePanel: () => import("../views/DevicePanelView.vue"),
   topology: () => import("../views/TopologyView.vue"),
+  meetingRooms: () => import("../views/MeetingRoomView.vue"),
 };
 
 const vueRoutes = NAV_ITEMS.filter((item) => VIEW_LOADERS[item.page]).map((item) => ({
