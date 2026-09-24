@@ -18,6 +18,8 @@ import PageHeader from "../components/ui/PageHeader.vue";
 interface OrgTreeNode extends OrgNode {
   children: OrgTreeNode[];
   label: string;
+  /** el-tree-select 需要 value 才能选中节点。 */
+  value: string;
 }
 
 const loading = ref(true);
@@ -39,7 +41,12 @@ const typeForm = reactive({ code: "", name: "", unit: "件" });
 const orgTree = computed<OrgTreeNode[]>(() => {
   const nodes = new Map<string, OrgTreeNode>();
   orgs.value.forEach((item) =>
-    nodes.set(item.id, { ...item, label: `${item.name}（${item.code}）`, children: [] }),
+    nodes.set(item.id, {
+      ...item,
+      value: item.id,
+      label: `${item.name}（${item.code}）`,
+      children: [],
+    }),
   );
   const roots: OrgTreeNode[] = [];
   orgs.value.forEach((item) => {
