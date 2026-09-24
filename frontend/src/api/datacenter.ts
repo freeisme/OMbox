@@ -87,6 +87,10 @@ export interface RackPort {
   direction: string;
   speed: string;
   status: "up" | "down" | "disabled" | "unknown";
+  /** 可选：端口上的 IP/掩码或管理地址。 */
+  ipAddress?: string;
+  /** 可选：端口所属 VLAN。 */
+  vlan?: string;
   notes: string;
   cableId?: string;
   cableLabel?: string;
@@ -306,6 +310,38 @@ export function importPortsFromTemplate(
   });
 }
 
+/** 复制另一台已上架设备的端口配置（跳过同名端口）。 */
+export function copyPortsFromPlacement(
+  placementId: string,
+  sourcePlacementId: string,
+): Promise<{ created: number; skipped: number }> {
+  return api(`/api/rack-layout/placements/${encodeURIComponent(placementId)}/ports/copy`, {
+    method: "POST",
+    body: { sourcePlacementId },
+  });
+}
+
+/** 按命名模板批量生成端口，例如 GE1/0/{n} 生成 1-24。 */
+export function generatePlacementPorts(
+  placementId: string,
+  payload: {
+    pattern: string;
+    start: number;
+    end: number;
+    step?: number;
+    perRow?: number;
+    kind?: string;
+    face?: string;
+    type?: string;
+    speed?: string;
+  },
+): Promise<{ created: number; skipped: number }> {
+  return api(`/api/rack-layout/placements/${encodeURIComponent(placementId)}/ports/batch`, {
+    method: "POST",
+    body: payload,
+  });
+}
+
 export function createPort(placementId: string, payload: Record<string, unknown>): Promise<{ id: string }> {
   return api(`/api/rack-layout/placements/${encodeURIComponent(placementId)}/ports`, {
     method: "POST",
@@ -337,6 +373,13 @@ export function listCables(params: { rackId?: string; siteId?: string } = {}): P
 
 export function createCable(payload: Record<string, unknown>): Promise<{ id: string }> {
   return api("/api/rack-layout/cables", { method: "POST", body: payload });
+}
+
+export function updateCable(cableId: string, payload: Record<string, unknown>): Promise<unknown> {
+  return api(`/api/rack-layout/cables/${encodeURIComponent(cableId)}`, {
+    method: "PUT",
+    body: payload,
+  });
 }
 
 export function removeCable(cableId: string, reason: string): Promise<unknown> {

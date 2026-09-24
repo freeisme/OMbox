@@ -327,6 +327,8 @@ class DeviceTopologyService:
               'direction', port.direction,
               'speed', port.speed,
               'status', port.status,
+              'ipAddress', port.ip_address,
+              'vlan', port.vlan,
               'notes', port.notes
             )
             FROM rack_device_port port
@@ -692,6 +694,8 @@ class DeviceTopologyService:
                              'direction', port.direction,
                              'speed', port.speed,
                              'status', port.status,
+                             'ipAddress', port.ip_address,
+                             'vlan', port.vlan,
                              'notes', port.notes,
                              'cableId', COALESCE(CAST(cable.cable_id AS CHAR), ''),
                              'cableLabel', COALESCE(cable.label, ''),
@@ -760,6 +764,9 @@ class DeviceTopologyService:
             "direction": direction,
             "speed": self.db.text(payload.get("speed"))[:32],
             "status": status,
+            # 端口扩展字段：可选，不填就是空串
+            "ipAddress": self.db.text(payload.get("ipAddress"))[:64],
+            "vlan": self.db.text(payload.get("vlan"))[:32],
             "notes": self.db.text(payload.get("notes"))[:255],
         }
 
@@ -775,7 +782,7 @@ class DeviceTopologyService:
                 f"""
             INSERT INTO rack_device_port (
               placement_id, face, port_name, port_type, port_kind, row_index, position_index,
-              direction, speed, status, notes
+              direction, speed, status, ip_address, vlan, notes
             )
             VALUES (
               {placement_id_int},
@@ -788,6 +795,8 @@ class DeviceTopologyService:
               {self.db.quote(fields['direction'])},
               {self.db.quote(fields['speed'])},
               {self.db.quote(fields['status'])},
+              {self.db.quote(fields['ipAddress'])},
+              {self.db.quote(fields['vlan'])},
               {self.db.quote(fields['notes'])}
             );
             SELECT LAST_INSERT_ID();
@@ -826,6 +835,8 @@ class DeviceTopologyService:
             "direction": payload.get("direction", port.get("direction")),
             "speed": payload.get("speed", port.get("speed")),
             "status": payload.get("status", port.get("status")),
+            "ipAddress": payload.get("ipAddress", port.get("ipAddress")),
+            "vlan": payload.get("vlan", port.get("vlan")),
             "notes": payload.get("notes", port.get("notes")),
         }
         fields = self._validate_port_payload(merged)
@@ -842,6 +853,8 @@ class DeviceTopologyService:
                 direction = {self.db.quote(fields['direction'])},
                 speed = {self.db.quote(fields['speed'])},
                 status = {self.db.quote(fields['status'])},
+                ip_address = {self.db.quote(fields['ipAddress'])},
+                vlan = {self.db.quote(fields['vlan'])},
                 notes = {self.db.quote(fields['notes'])}
             WHERE port_id = {port_id_int};
             """
@@ -930,47 +943,7 @@ class DeviceTopologyService:
         if not templates:
             raise self.conflict_error("该型号还没有端口模板。")
         placement_id_int = self.db.integer(placement.get("id"), 0)
-        existing = {
-            self.db.text(item)
-            for item in (
-                self.db.json(
-                    f"""
-                    SELECT COALESCE(JSON_ARRAYAGG(CONCAT(face, ':', port_name)), JSON_ARRAY())
-                    FROM rack_device_port WHERE placement_id = {placement_id_int}
-                    """,
-                    [],
-                )
-                or []
-            )
-        }
-        values = []
-        created = 0
-        for item in templates:
-            key = f"{self.db.text(item.get('face'))}:{self.db.text(item.get('name'))}"
-            if key in existing:
-                continue
-            values.append(
-                "("
-                + ", ".join(
-                    [
-                        str(placement_id_int),
-                        self.db.quote(self.db.text(item.get("face"))),
-                        self.db.quote(self.db.text(item.get("name"))),
-                        self.db.quote(self.db.text(item.get("type"))),
-                        self.db.quote(self.db.text(item.get("kind"))),
-                        str(self.db.integer(item.get("rowIndex"), 1)),
-                        str(self.db.integer(item.get("positionIndex"), 1)),
-                    ]
-                )
-                + ")"
-            )
-            created += 1
-        if values:
-            self.db.execute(
-                "INSERT INTO rack_device_port ("
-                "placement_id, face, port_name, port_type, port_kind, row_index, position_index"
-                ") VALUES " + ", ".join(values) + ";"
-            )
+        created, skipped = self._insert_ports(placement_id_int, templates)
         apply_height = parse_bool(payload.get("applyHeight"))
         if apply_height:
             u_height = self.db.integer(payload.get("uHeight"), self.db.integer(placement.get("uHeight"), 1))
@@ -986,12 +959,189 @@ class DeviceTopologyService:
                 self.db.text(placement.get("name")),
                 f"按型号模板生成端口：{self.db.text(placement.get('name'))}（新增 {created} 个）",
                 context,
-                {"existing": len(existing)},
+                {"existing": skipped},
                 {"created": created, "catalogId": str(catalog_id), "applyHeight": bool(apply_height)},
             )
             + ";"
         )
-        return {"placementId": str(placement_id_int), "created": created, "skipped": len(existing)}
+        return {"placementId": str(placement_id_int), "created": created, "skipped": skipped}
+
+    def _insert_ports(self, placement_id: int, rows: list[dict]) -> tuple[int, int]:
+        """批量插入端口，按 (face, name) 去重；返回 (新增数, 跳过数)。
+
+        三个入口（按型号生成 / 复制其他设备 / 批量生成）共用，插入语句只在这里写一次。
+        """
+        existing = {
+            self.db.text(item)
+            for item in (
+                self.db.json(
+                    f"""
+                    SELECT COALESCE(JSON_ARRAYAGG(CONCAT(face, ':', port_name)), JSON_ARRAY())
+                    FROM rack_device_port WHERE placement_id = {placement_id}
+                    """,
+                    [],
+                )
+                or []
+            )
+        }
+        values: list[str] = []
+        for row in rows:
+            face = self.db.text(row.get("face")) or "front"
+            name = self.db.text(row.get("name"))[:64]
+            if not name:
+                continue
+            key = f"{face}:{name}"
+            if key in existing:
+                continue
+            existing.add(key)
+            kind = self.db.text(row.get("kind")) or "network"
+            direction = self.db.text(row.get("direction")) or "bidi"
+            status = self.db.text(row.get("status")) or "unknown"
+            values.append(
+                "("
+                + ", ".join(
+                    [
+                        str(placement_id),
+                        self.db.quote(face if face in FACES else "front"),
+                        self.db.quote(name),
+                        self.db.quote(self.db.text(row.get("type"))[:64]),
+                        self.db.quote(kind if kind in PORT_KINDS else "other"),
+                        str(max(1, self.db.integer(row.get("rowIndex"), 1))),
+                        str(max(1, self.db.integer(row.get("positionIndex"), 1))),
+                        self.db.quote(direction if direction in DIRECTIONS else "bidi"),
+                        self.db.quote(self.db.text(row.get("speed"))[:32]),
+                        self.db.quote(status if status in PORT_STATUSES else "unknown"),
+                        self.db.quote(self.db.text(row.get("ipAddress"))[:64]),
+                        self.db.quote(self.db.text(row.get("vlan"))[:32]),
+                        self.db.quote(self.db.text(row.get("notes"))[:255]),
+                    ]
+                )
+                + ")"
+            )
+        if values:
+            self.db.execute(
+                "INSERT INTO rack_device_port ("
+                "placement_id, face, port_name, port_type, port_kind, row_index, position_index,"
+                " direction, speed, status, ip_address, vlan, notes"
+                ") VALUES " + ", ".join(values) + ";"
+            )
+        return len(values), len(rows) - len(values)
+
+    def copy_ports(self, placement_id: object, payload: dict, context: dict) -> dict:
+        """把另一台已上架设备的端口配置整份复制过来（跳过同名端口）。"""
+        placement = self._placement_row(placement_id)
+        if not placement:
+            raise self.api_error("设备不在机柜里，无法复制端口。")
+        self._assert_org(context, placement.get("orgId"))
+        placement_id_int = self.db.integer(placement.get("id"), 0)
+        source_id = self.db.integer(payload.get("sourcePlacementId"), 0)
+        if source_id <= 0:
+            raise self.api_error("请选择要复制的来源设备。")
+        if source_id == placement_id_int:
+            raise self.api_error("不能从设备自身复制端口。")
+        source = self._placement_row(source_id)
+        if not source:
+            raise self.api_error("来源设备不在机柜里。")
+        self._assert_org(context, source.get("orgId"))
+        rows = list(
+            self.db.json(
+                f"""
+                SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
+                  'face', port.face,
+                  'name', port.port_name,
+                  'type', port.port_type,
+                  'kind', port.port_kind,
+                  'rowIndex', port.row_index,
+                  'positionIndex', port.position_index,
+                  'direction', port.direction,
+                  'speed', port.speed,
+                  'status', port.status,
+                  'ipAddress', port.ip_address,
+                  'vlan', port.vlan,
+                  'notes', port.notes
+                )), JSON_ARRAY())
+                FROM (
+                  SELECT * FROM rack_device_port
+                  WHERE placement_id = {source_id}
+                  ORDER BY face, row_index, position_index, port_id
+                ) port
+                """,
+                [],
+            )
+            or []
+        )
+        if not rows:
+            raise self.conflict_error("来源设备还没有端口。")
+        created, skipped = self._insert_ports(placement_id_int, rows)
+        self.db.execute(
+            self._audit_sql(
+                "placement_ports_copied",
+                "rack_device_placement",
+                str(placement_id_int),
+                self.db.text(placement.get("name")),
+                f"复制端口：{self.db.text(source.get('name'))} → "
+                f"{self.db.text(placement.get('name'))}（新增 {created} 个）",
+                context,
+                {"sourcePlacementId": str(source_id), "sourcePortCount": len(rows)},
+                {"created": created, "skipped": skipped},
+            )
+            + ";"
+        )
+        return {"placementId": str(placement_id_int), "created": created, "skipped": skipped}
+
+    def generate_ports(self, placement_id: object, payload: dict, context: dict) -> dict:
+        """按命名模板批量生成端口，例如 GE1/0/{n} 生成 1-24。"""
+        placement = self._placement_row(placement_id)
+        if not placement:
+            raise self.api_error("设备不在机柜里，无法生成端口。")
+        self._assert_org(context, placement.get("orgId"))
+        pattern = self.db.text(payload.get("pattern"))[:64] or "GE1/0/{n}"
+        if "{n}" not in pattern:
+            raise self.api_error("端口名模板必须包含 {n} 占位符，例如 GE1/0/{n}。")
+        start = self.db.integer(payload.get("start"), 1)
+        end = self.db.integer(payload.get("end"), 0)
+        if start < 0 or end <= 0 or end < start:
+            raise self.api_error("端口的起止序号无效。")
+        if end - start > 255:
+            raise self.api_error("一次最多生成 256 个端口。")
+        step = max(1, min(64, self.db.integer(payload.get("step"), 1)))
+        per_row = max(1, min(64, self.db.integer(payload.get("perRow"), 24)))
+        kind = self.db.text(payload.get("kind")) or "network"
+        face = self.db.text(payload.get("face")) or "front"
+        port_type = self.db.text(payload.get("type"))[:64]
+        speed = self.db.text(payload.get("speed"))[:32]
+        rows = []
+        index = 0
+        for number in range(start, end + 1, step):
+            rows.append(
+                {
+                    "name": pattern.replace("{n}", str(number)),
+                    "type": port_type,
+                    "kind": kind,
+                    "face": face,
+                    "rowIndex": index // per_row + 1,
+                    "positionIndex": index % per_row + 1,
+                    "speed": speed,
+                    "status": "unknown",
+                }
+            )
+            index += 1
+        placement_id_int = self.db.integer(placement.get("id"), 0)
+        created, skipped = self._insert_ports(placement_id_int, rows)
+        self.db.execute(
+            self._audit_sql(
+                "placement_ports_generated",
+                "rack_device_placement",
+                str(placement_id_int),
+                self.db.text(placement.get("name")),
+                f"批量生成端口：{self.db.text(placement.get('name'))}（{pattern}，新增 {created} 个）",
+                context,
+                {"requested": len(rows)},
+                {"created": created, "skipped": skipped, "pattern": pattern},
+            )
+            + ";"
+        )
+        return {"placementId": str(placement_id_int), "created": created, "skipped": skipped}
 
     # -------------------------------------------------------------------- cables
 

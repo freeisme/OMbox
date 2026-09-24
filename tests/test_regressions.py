@@ -2631,6 +2631,101 @@ class StageThreeRegressionTests(TestCase):
         self.assertIn("topology_positions_saved", service)
 
 
+class TopologyEditingRegressionTests(TestCase):
+    """拓扑图直接编辑：给设备加端口、连两台设备、改链路属性。"""
+
+    def test_view_offers_the_point_and_click_connect_wizard(self):
+        view = (ROOT / "frontend" / "src" / "views" / "TopologyView.vue").read_text(
+            encoding="utf-8"
+        )
+
+        # 连线：选连线 → 点 A 设备 → 选/建端口 → 点 B 设备 → 选/建端口
+        self.assertIn("function startConnect(", view)
+        self.assertIn("async function pickWizardDevice(", view)
+        self.assertIn("function choosePort(", view)
+        self.assertIn("请点击 A 端设备", view)
+        self.assertIn("请点击 B 端设备", view)
+        self.assertIn("取消连线", view)
+        # 前端先拦明显错误，后端规则不变
+        self.assertIn("B 端不能选同一台设备", view)
+        self.assertIn("已经连接，请先断开或换一个端口", view)
+        self.assertIn("两端不能是同一条端口", view)
+
+    def test_port_dialog_has_three_creation_entries(self):
+        view = (ROOT / "frontend" / "src" / "views" / "TopologyView.vue").read_text(
+            encoding="utf-8"
+        )
+
+        for label in ("按型号生成", "批量生成", "手工添加"):
+            self.assertIn(label, view)
+        # 按型号生成既能用型号库模板，也能整份复制已有设备的端口配置
+        self.assertIn("importPortsFromTemplate", view)
+        self.assertIn("copyPortsFromPlacement", view)
+        self.assertIn("已有设备的端口配置", view)
+        self.assertIn("generatePlacementPorts", view)
+        self.assertIn("{n}", view)
+        self.assertIn("createPort", view)
+        self.assertIn("updatePort", view)
+        self.assertIn("removePort", view)
+        # 端口扩展字段是可选填的
+        self.assertIn("ipAddress", view)
+        self.assertIn("vlan", view)
+        self.assertIn("除端口名称外都是可选项", view)
+
+    def test_link_attributes_can_be_edited_and_deleted(self):
+        view = (ROOT / "frontend" / "src" / "views" / "TopologyView.vue").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("async function saveLink(", view)
+        self.assertIn("async function deleteLink(", view)
+        self.assertIn("链路属性", view)
+        self.assertIn("createCable", view)
+        self.assertIn("updateCable", view)
+        self.assertIn("removeCable", view)
+        self.assertIn("建立链路", view)
+
+    def test_visuals_and_exports(self):
+        view = (ROOT / "frontend" / "src" / "views" / "TopologyView.vue").read_text(
+            encoding="utf-8"
+        )
+
+        # 多条链路并排显示（不合并）、按介质着色、可切走线、网格吸附、聚焦查看
+        self.assertIn("linkOffsets", view)
+        self.assertIn("mediumColor", view)
+        self.assertIn("routeMode", view)
+        self.assertIn("正交走线", view)
+        self.assertIn("直线走线", view)
+        self.assertIn("snapGrid", view)
+        self.assertIn("focusSelected", view)
+        self.assertIn("只看选中设备相关", view)
+        # 导出：原有 SVG/PNG/打印 + 链路清单 / 节点清单
+        self.assertIn("exportLinkList", view)
+        self.assertIn("exportNodeList", view)
+        self.assertIn("链路清单.csv", view)
+        self.assertIn("拓扑节点清单.csv", view)
+        # 编辑能力挂在既有权限上，不新增权限模块
+        self.assertIn('hasPermission("rack_layout", "update")', view)
+
+    def test_backend_endpoints_and_port_fields_are_unchanged(self):
+        router = (ROOT / "office_asset" / "api_router.py").read_text(encoding="utf-8")
+        service = (ROOT / "office_asset" / "device_topology.py").read_text(encoding="utf-8")
+        api = (ROOT / "frontend" / "src" / "api" / "datacenter.ts").read_text(encoding="utf-8")
+
+        # 拓扑编辑复用设备面板那套接口，不新增迁移
+        self.assertIn('parts[6] == "copy"', router)
+        self.assertIn('parts[6] == "batch"', router)
+        self.assertIn('parts[6] == "import"', router)
+        self.assertIn('path == "/api/rack-layout/cables" and method == "POST"', router)
+        self.assertIn("def generate_ports(", service)
+        self.assertIn("def copy_ports(", service)
+        # 端口扩展字段（可选）落库
+        self.assertIn('"ipAddress": self.db.text(payload.get("ipAddress"))[:64]', service)
+        self.assertIn('"vlan": self.db.text(payload.get("vlan"))[:32]', service)
+        for name in ("copyPortsFromPlacement", "generatePlacementPorts", "createCable"):
+            self.assertIn(f"export function {name}", api)
+
+
 class InspectionEntryRegressionTests(TestCase):
     """巡检执行页：填写即暂存、单行保存、提交前列出未填项。"""
 
