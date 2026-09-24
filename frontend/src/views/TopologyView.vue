@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
 import FormDialog from "../components/ui/FormDialog.vue";
 import { confirmAction } from "../composables/useConfirm";
@@ -100,6 +100,14 @@ const localPositions = ref<Record<string, { x: number; y: number }>>({});
 const selectedId = ref("");
 const selectedLinkId = ref("");
 const dirty = ref(false);
+/** 多选：参与整体拖动的节点（单击=单选，Shift/Ctrl+单击=加减，框选=批量）。 */
+const groupIds = ref<string[]>([]);
+/** 布局改动的撤销 / 重做栈（只回退节点坐标，端口与链路属于服务端数据，不进这个栈）。 */
+const undoStack = ref<Array<Record<string, { x: number; y: number }>>>([]);
+const redoStack = ref<Array<Record<string, { x: number; y: number }>>>([]);
+const marquee = ref<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
+/** 从节点上的连线手柄拖到另一台设备时的橡皮筋。 */
+const connectDrag = ref<{ fromId: string; x: number; y: number; overId: string } | null>(null);
 
 /** 机柜端口缓存：端口列表、占用情况与对端都在这里取，点开弹窗时按机柜懒加载。 */
 const rackPorts = ref<Record<string, RackPortDevice[]>>({});
@@ -152,6 +160,15 @@ const modelForm = reactive({
   sourcePlacementId: "",
 });
 const cableDialog = reactive({ open: false, saving: false });
+/** 拖拽连线：松手后在这两个下拉里确认两端的端口，链路属性与点选式共用同一套字段。 */
+const connectDialog = reactive({
+  open: false,
+  saving: false,
+  aDeviceId: "",
+  bDeviceId: "",
+  aPortId: "",
+  bPortId: "",
+});
 const cableForm = reactive({
   medium: "cat6",
   lengthM: 3,
@@ -351,6 +368,72 @@ function positionOf(nodeId: string): { x: number; y: number } {
   return placed.value.find((item) => item.node.id === nodeId) ?? { x: 0, y: 0 };
 }
 
+/** 鼠标位置换算成画布坐标（画布用 viewBox 缩放，必须按比例换算）。 */
+function toCanvasPoint(event: PointerEvent | MouseEvent): { x: number; y: number } {
+  const svg = document.querySelector<SVGSVGElement>(".topology-canvas");
+  const rect = svg?.getBoundingClientRect();
+  if (!rect) return { x: 0, y: 0 };
+  const scaleX = canvas.value.width / rect.width;
+  const scaleY = canvas.value.height / rect.height;
+  return { x: (event.clientX - rect.left) * scaleX, y: (event.clientY - rect.top) * scaleY };
+}
+
+function snap(value: number): number {
+  const grid = snapGrid.value ? GRID : 1;
+  return Math.max(0, Math.round(value / grid) * grid);
+}
+
+function clonePositions(): Record<string, { x: number; y: number }> {
+  return Object.fromEntries(Object.entries(localPositions.value).map(([key, value]) => [key, { ...value }]));
+}
+
+/** 拖动开始前先记一份坐标，松手时压入撤销栈。 */
+function pushHistory(snapshot: Record<string, { x: number; y: number }>): void {
+  undoStack.value = [...undoStack.value, snapshot].slice(-50);
+  redoStack.value = [];
+}
+
+function undoLayout(): void {
+  if (!undoStack.value.length) {
+    ElMessage.info("没有可撤销的布局改动。");
+    return;
+  }
+  const previous = undoStack.value[undoStack.value.length - 1];
+  redoStack.value = [...redoStack.value, clonePositions()];
+  undoStack.value = undoStack.value.slice(0, -1);
+  localPositions.value = previous;
+  dirty.value = true;
+}
+
+function redoLayout(): void {
+  if (!redoStack.value.length) {
+    ElMessage.info("没有可重做的布局改动。");
+    return;
+  }
+  const next = redoStack.value[redoStack.value.length - 1];
+  undoStack.value = [...undoStack.value, clonePositions()];
+  redoStack.value = redoStack.value.slice(0, -1);
+  localPositions.value = next;
+  dirty.value = true;
+}
+
+function onShortcut(event: KeyboardEvent): void {
+  const target = event.target as HTMLElement | null;
+  const typing =
+    target &&
+    (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+  if (typing || !canUpdate.value) return;
+  if (!(event.ctrlKey || event.metaKey)) return;
+  const key = event.key.toLowerCase();
+  if (key === "z" && !event.shiftKey) {
+    event.preventDefault();
+    undoLayout();
+  } else if (key === "y" || (key === "z" && event.shiftKey)) {
+    event.preventDefault();
+    redoLayout();
+  }
+}
+
 function mediumColor(medium: string): string {
   return MEDIUM_COLORS[medium] ?? MEDIUM_COLORS.other;
 }
@@ -420,6 +503,11 @@ async function loadData(): Promise<void> {
     );
     localPositions.value = {};
     dirty.value = false;
+    undoStack.value = [];
+    redoStack.value = [];
+    groupIds.value = [];
+    marquee.value = null;
+    connectDrag.value = null;
     if (selectedId.value && !nodes.value.some((item) => item.id === selectedId.value)) {
       selectedId.value = "";
     }
@@ -451,54 +539,195 @@ async function refreshAfterEdit(...changedRackIds: string[]): Promise<void> {
   await loadData();
 }
 
-let drag: { id: string; offsetX: number; offsetY: number; moved: boolean } | null = null;
+/** 拖动上下文：整体拖动的每个节点记录它与鼠标的相对偏移；框选与连线拖动共用一套监听。 */
+let dragGroup: { nodes: Array<{ id: string; offsetX: number; offsetY: number }>; before: Record<string, { x: number; y: number }> } | null =
+  null;
 
 function onNodePointerDown(event: PointerEvent, item: PlacedNode): void {
   if (wizard.step === "aDevice" || wizard.step === "bDevice") {
     void pickWizardDevice(item.node);
     return;
   }
-  selectedId.value = item.node.id;
   selectedLinkId.value = "";
-  if (!canUpdate.value) return;
-  const rect = (event.currentTarget as SVGGElement).ownerSVGElement?.getBoundingClientRect();
-  const scaleX = rect ? canvas.value.width / rect.width : 1;
-  const scaleY = rect ? canvas.value.height / rect.height : 1;
-  drag = {
-    id: item.node.id,
-    offsetX: item.x - (event.clientX - (rect?.left ?? 0)) * scaleX,
-    offsetY: item.y - (event.clientY - (rect?.top ?? 0)) * scaleY,
-    moved: false,
+  if (event.shiftKey || event.ctrlKey) {
+    groupIds.value = groupIds.value.includes(item.node.id)
+      ? groupIds.value.filter((id) => id !== item.node.id)
+      : [...groupIds.value, item.node.id];
+  } else if (!groupIds.value.includes(item.node.id) || groupIds.value.length <= 1) {
+    groupIds.value = [item.node.id];
+  }
+  selectedId.value = item.node.id;
+  if (!canUpdate.value || !groupIds.value.includes(item.node.id)) return;
+  const point = toCanvasPoint(event);
+  const members = placed.value.filter((entry) => groupIds.value.includes(entry.node.id));
+  dragGroup = {
+    nodes: members.map((entry) => ({
+      id: entry.node.id,
+      offsetX: entry.x - point.x,
+      offsetY: entry.y - point.y,
+    })),
+    before: clonePositions(),
   };
   window.addEventListener("pointermove", onPointerMove);
   window.addEventListener("pointerup", onPointerUp, { once: true });
 }
 
+/** 空白处按下：清空选择并开始框选。 */
+function onCanvasPointerDown(event: PointerEvent): void {
+  if (event.target !== event.currentTarget) return;
+  selectedId.value = "";
+  selectedLinkId.value = "";
+  groupIds.value = [];
+  if (!canUpdate.value) return;
+  const point = toCanvasPoint(event);
+  marquee.value = { x1: point.x, y1: point.y, x2: point.x, y2: point.y };
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp, { once: true });
+}
+
+/** 节点右边缘的连线手柄：按住往另一台设备拖。 */
+function onConnectHandleDown(event: PointerEvent, item: PlacedNode): void {
+  if (!canUpdate.value) return;
+  event.stopPropagation();
+  const from = positionOf(item.node.id);
+  connectDrag.value = { fromId: item.node.id, x: from.x + NODE_W, y: from.y + NODE_H / 2, overId: "" };
+  selectedId.value = item.node.id;
+  groupIds.value = [item.node.id];
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp, { once: true });
+}
+
 function onPointerMove(event: PointerEvent): void {
-  if (!drag) return;
-  const svg = document.querySelector<SVGSVGElement>(".topology-canvas");
-  const rect = svg?.getBoundingClientRect();
-  if (!rect) return;
-  const scaleX = canvas.value.width / rect.width;
-  const scaleY = canvas.value.height / rect.height;
-  const grid = snapGrid.value ? GRID : 1;
-  const rawX = Math.max(0, Math.round((event.clientX - rect.left) * scaleX + drag.offsetX));
-  const rawY = Math.max(0, Math.round((event.clientY - rect.top) * scaleY + drag.offsetY));
-  const x = Math.round(rawX / grid) * grid;
-  const y = Math.round(rawY / grid) * grid;
-  localPositions.value = { ...localPositions.value, [drag.id]: { x, y } };
-  drag.moved = true;
+  if (marquee.value) {
+    const point = toCanvasPoint(event);
+    marquee.value = { ...marquee.value, x2: point.x, y2: point.y };
+    return;
+  }
+  if (connectDrag.value) {
+    const point = toCanvasPoint(event);
+    const hit = document.elementFromPoint(event.clientX, event.clientY);
+    const container = hit?.closest("[data-node-id]") as HTMLElement | null;
+    const overId = container?.dataset.nodeId ?? "";
+    connectDrag.value = {
+      ...connectDrag.value,
+      x: point.x,
+      y: point.y,
+      overId: overId === connectDrag.value.fromId ? "" : overId,
+    };
+    return;
+  }
+  if (!dragGroup) return;
+  const point = toCanvasPoint(event);
+  const next = { ...localPositions.value };
+  dragGroup.nodes.forEach((entry) => {
+    next[entry.id] = { x: snap(point.x + entry.offsetX), y: snap(point.y + entry.offsetY) };
+  });
+  localPositions.value = next;
   dirty.value = true;
 }
 
 function onPointerUp(): void {
   window.removeEventListener("pointermove", onPointerMove);
-  drag = null;
+  if (marquee.value) {
+    const { x1, y1, x2, y2 } = marquee.value;
+    const left = Math.min(x1, x2);
+    const right = Math.max(x1, x2);
+    const top = Math.min(y1, y2);
+    const bottom = Math.max(y1, y2);
+    // 拖出的框太小就当成"点空白清空选择"，避免误触。
+    if (right - left > 6 || bottom - top > 6) {
+      const picked = placed.value.filter(
+        (entry) =>
+          entry.x + NODE_W >= left &&
+          entry.x <= right &&
+          entry.y + NODE_H >= top &&
+          entry.y <= bottom,
+      );
+      groupIds.value = picked.map((entry) => entry.node.id);
+      selectedId.value = groupIds.value[0] ?? "";
+      if (groupIds.value.length > 1) {
+        ElMessage.info(`已框选 ${groupIds.value.length} 台设备，拖动其中任意一台会整体移动。`);
+      }
+    }
+    marquee.value = null;
+  }
+  if (connectDrag.value) {
+    const { fromId, overId } = connectDrag.value;
+    connectDrag.value = null;
+    if (overId && overId !== fromId) openConnectDialog(fromId, overId);
+  }
+  if (dragGroup) {
+    const changed = JSON.stringify(dragGroup.before) !== JSON.stringify(localPositions.value);
+    if (changed) pushHistory(dragGroup.before);
+    dragGroup = null;
+  }
+}
+
+/** 拖拽连线的落点弹窗：两端各选一条空闲端口。 */
+async function openConnectDialog(aDeviceId: string, bDeviceId: string): Promise<void> {
+  connectDialog.aDeviceId = aDeviceId;
+  connectDialog.bDeviceId = bDeviceId;
+  connectDialog.aPortId = "";
+  connectDialog.bPortId = "";
+  const aNode = nodes.value.find((item) => item.id === aDeviceId);
+  const bNode = nodes.value.find((item) => item.id === bDeviceId);
+  await ensureRackPorts(aNode?.rackId ?? "");
+  await ensureRackPorts(bNode?.rackId ?? "");
+  const aFree = freePorts(aDeviceId);
+  const bFree = freePorts(bDeviceId);
+  connectDialog.aPortId = aFree[0]?.id ?? "";
+  connectDialog.bPortId = bFree[0]?.id ?? "";
+  Object.assign(cableForm, {
+    medium: "cat6",
+    lengthM: 3,
+    label: "",
+    status: "connected",
+    notes: "",
+  });
+  connectDialog.open = true;
+}
+
+/** 某台设备上还没连线的端口，用于拖拽连线时直接预选。 */
+function freePorts(deviceId: string): RackPort[] {
+  const node = nodes.value.find((item) => item.id === deviceId);
+  if (!node) return [];
+  const placements = rackPorts.value[node.rackId] ?? [];
+  const ports = placements.find((item) => item.placementId === deviceId)?.ports ?? [];
+  return ports.filter((port) => !port.cableId);
+}
+
+async function submitConnectDialog(): Promise<void> {
+  if (!connectDialog.aPortId || !connectDialog.bPortId) {
+    ElMessage.warning("两端都要选一条空闲端口。");
+    return;
+  }
+  connectDialog.saving = true;
+  try {
+    const aRack = rackIdOfPort(connectDialog.aPortId);
+    const bRack = rackIdOfPort(connectDialog.bPortId);
+    await createCable({
+      aPortId: connectDialog.aPortId,
+      bPortId: connectDialog.bPortId,
+      medium: cableForm.medium,
+      lengthM: cableForm.lengthM || undefined,
+      label: cableForm.label,
+      status: cableForm.status,
+      notes: cableForm.notes,
+    });
+    ElMessage.success("链路已建立。");
+    connectDialog.open = false;
+    await refreshAfterEdit(aRack, bRack);
+  } catch (error) {
+    ElMessage.error(`建立链路失败：${(error as Error).message}`);
+  } finally {
+    connectDialog.saving = false;
+  }
 }
 
 function selectLink(link: Cable): void {
   selectedLinkId.value = link.id;
   selectedId.value = "";
+  groupIds.value = [];
   linkForm.medium = link.medium;
   linkForm.lengthM = link.lengthM ?? 0;
   linkForm.label = link.label;
@@ -820,6 +1049,7 @@ async function savePositions(): Promise<void> {
 }
 
 function resetLayout(): void {
+  if (Object.keys(localPositions.value).length) pushHistory(clonePositions());
   localPositions.value = {};
   dirty.value = false;
   ElMessage.info("已按端口连接重新分层，未保存的拖动已清除。");
@@ -978,6 +1208,7 @@ function printTopology(): void {
 }
 
 onMounted(async () => {
+  window.addEventListener("keydown", onShortcut);
   try {
     const payload = await listRacks();
     racks.value = payload.racks;
@@ -993,6 +1224,11 @@ onMounted(async () => {
     }
   }
   await loadData();
+});
+
+onUnmounted(() => {
+  window.removeEventListener("keydown", onShortcut);
+  window.removeEventListener("pointermove", onPointerMove);
 });
 </script>
 
@@ -1031,6 +1267,24 @@ onMounted(async () => {
           新建链路
         </el-button>
         <el-button size="small" @click="resetLayout">{{ dirty ? "丢弃未保存" : "重新布局" }}</el-button>
+        <el-button
+          v-if="canUpdate"
+          size="small"
+          :disabled="!undoStack.length"
+          title="撤销布局拖动（Ctrl+Z）"
+          @click="undoLayout"
+        >
+          撤销
+        </el-button>
+        <el-button
+          v-if="canUpdate"
+          size="small"
+          :disabled="!redoStack.length"
+          title="重做布局拖动（Ctrl+Y）"
+          @click="redoLayout"
+        >
+          重做
+        </el-button>
         <el-button v-if="canUpdate" size="small" :disabled="!dirty" @click="savePositions">
           保存布局
         </el-button>
@@ -1058,7 +1312,16 @@ onMounted(async () => {
           :style="{ minHeight: `${Math.min(680, canvas.height)}px` }"
           role="img"
           aria-label="由端口连接自动生成的网络拓扑图"
+          @pointerdown="onCanvasPointerDown"
         >
+          <rect
+            v-if="marquee"
+            class="marquee"
+            :x="Math.min(marquee.x1, marquee.x2)"
+            :y="Math.min(marquee.y1, marquee.y2)"
+            :width="Math.abs(marquee.x2 - marquee.x1)"
+            :height="Math.abs(marquee.y2 - marquee.y1)"
+          />
           <text
             v-for="item in levelLabels"
             :key="`tier-${item.level}`"
@@ -1088,10 +1351,13 @@ onMounted(async () => {
           <g
             v-for="item in placed"
             :key="item.node.id"
+            :data-node-id="item.node.id"
             class="node"
             :class="{
               selected: item.node.id === selectedId,
               picked: item.node.id === wizard.aDeviceId || item.node.id === wizard.bDeviceId,
+              grouped: groupIds.length > 1 && groupIds.includes(item.node.id),
+              dropTarget: connectDrag?.overId === item.node.id,
             }"
             :transform="`translate(${item.x},${item.y})`"
             @pointerdown="onNodePointerDown($event, item)"
@@ -1102,7 +1368,25 @@ onMounted(async () => {
               {{ CATEGORY_LABELS[item.node.category] ?? item.node.category }} ·
               {{ item.node.linkedPortCount }}/{{ item.node.portCount }} 端口
             </text>
+            <circle
+              v-if="canUpdate"
+              class="connect-handle"
+              :cx="NODE_W - 8"
+              :cy="NODE_H / 2"
+              r="6"
+              @pointerdown="onConnectHandleDown($event, item)"
+            >
+              <title>拖到另一台设备建立链路</title>
+            </circle>
           </g>
+          <line
+            v-if="connectDrag"
+            class="rubber-band"
+            :x1="positionOf(connectDrag.fromId).x + NODE_W"
+            :y1="positionOf(connectDrag.fromId).y + NODE_H / 2"
+            :x2="connectDrag.overId ? positionOf(connectDrag.overId).x : connectDrag.x"
+            :y2="connectDrag.overId ? positionOf(connectDrag.overId).y + NODE_H / 2 : connectDrag.y"
+          />
         </svg>
       </section>
 
@@ -1425,6 +1709,77 @@ onMounted(async () => {
     </FormDialog>
 
     <FormDialog
+      v-model="connectDialog.open"
+      title="连接两台设备"
+      size="sm"
+      confirm-text="建立链路"
+      :loading="connectDialog.saving"
+      @confirm="submitConnectDialog"
+    >
+      <el-form label-position="top" size="small">
+        <el-form-item
+          :label="`A 端（${nodes.find((item) => item.id === connectDialog.aDeviceId)?.name ?? ''}）`"
+        >
+          <el-select v-model="connectDialog.aPortId" filterable class="oa-full-width" placeholder="选择空闲端口">
+            <el-option
+              v-for="port in freePorts(connectDialog.aDeviceId)"
+              :key="port.id"
+              :value="port.id"
+              :label="`${port.name}（${KIND_LABELS[port.kind] ?? port.kind}）`"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item
+          :label="`B 端（${nodes.find((item) => item.id === connectDialog.bDeviceId)?.name ?? ''}）`"
+        >
+          <el-select v-model="connectDialog.bPortId" filterable class="oa-full-width" placeholder="选择空闲端口">
+            <el-option
+              v-for="port in freePorts(connectDialog.bDeviceId)"
+              :key="port.id"
+              :value="port.id"
+              :label="`${port.name}（${KIND_LABELS[port.kind] ?? port.kind}）`"
+            />
+          </el-select>
+        </el-form-item>
+        <div
+          v-if="!freePorts(connectDialog.aDeviceId).length || !freePorts(connectDialog.bDeviceId).length"
+          class="oa-hint"
+        >
+          有一端没有空闲端口：先选中该设备用「端口管理」新建端口，或断开它已连接的链路。
+        </div>
+        <el-form-item label="介质">
+          <el-select v-model="cableForm.medium" class="oa-full-width">
+            <el-option
+              v-for="item in MEDIUM_OPTIONS"
+              :key="item.value"
+              :value="item.value"
+              :label="item.label"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="长度（米）">
+          <el-input-number v-model="cableForm.lengthM" :min="0.5" :max="10000" :step="0.5" />
+        </el-form-item>
+        <el-form-item label="标签">
+          <el-input v-model="cableForm.label" placeholder="例如：SW-A01-GE24 → SRV-A01-NIC1" />
+        </el-form-item>
+        <el-form-item label="状态">
+          <el-select v-model="cableForm.status" class="oa-full-width">
+            <el-option
+              v-for="item in CABLE_STATUS_OPTIONS"
+              :key="item.value"
+              :value="item.value"
+              :label="item.label"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="cableForm.notes" type="textarea" :rows="2" />
+        </el-form-item>
+      </el-form>
+    </FormDialog>
+
+    <FormDialog
       v-model="cableDialog.open"
       title="建立链路"
       size="sm"
@@ -1522,6 +1877,28 @@ onMounted(async () => {
 .link.picked {
   stroke-dasharray: 6 3;
 }
+.marquee {
+  fill: var(--el-color-primary-light-8);
+  stroke: var(--el-color-primary);
+  stroke-dasharray: 4 3;
+  pointer-events: none;
+}
+.rubber-band {
+  stroke: var(--el-color-primary);
+  stroke-width: 2;
+  stroke-dasharray: 6 4;
+  pointer-events: none;
+}
+.connect-handle {
+  fill: var(--el-color-primary-light-3);
+  stroke: var(--el-color-primary);
+  cursor: crosshair;
+  opacity: 0.35;
+}
+.node:hover .connect-handle,
+.node.selected .connect-handle {
+  opacity: 1;
+}
 .link-label {
   fill: var(--el-text-color-secondary);
   font-size: 10px;
@@ -1540,6 +1917,15 @@ onMounted(async () => {
 .node.picked rect {
   stroke: var(--el-color-warning);
   stroke-width: 2;
+}
+.node.grouped rect {
+  stroke: var(--el-color-primary-light-3);
+  stroke-width: 2;
+  stroke-dasharray: 5 3;
+}
+.node.dropTarget rect {
+  stroke: var(--el-color-success);
+  stroke-width: 3;
 }
 .node text {
   fill: var(--el-text-color-primary);

@@ -2725,6 +2725,37 @@ class TopologyEditingRegressionTests(TestCase):
         for name in ("copyPortsFromPlacement", "generatePlacementPorts", "createCable"):
             self.assertIn(f"export function {name}", api)
 
+    def test_canvas_supports_undo_multi_select_and_drag_connect(self):
+        view = (ROOT / "frontend" / "src" / "views" / "TopologyView.vue").read_text(
+            encoding="utf-8"
+        )
+
+        # 撤销 / 重做：只回退节点坐标，快捷键 Ctrl+Z / Ctrl+Y
+        self.assertIn("const undoStack = ref<", view)
+        self.assertIn("const redoStack = ref<", view)
+        self.assertIn("function undoLayout(", view)
+        self.assertIn("function redoLayout(", view)
+        self.assertIn("function pushHistory(", view)
+        self.assertIn("window.addEventListener(\"keydown\", onShortcut)", view)
+        self.assertIn('key === "z" && !event.shiftKey', view)
+        self.assertIn("撤销布局拖动（Ctrl+Z）", view)
+        # 框选与多选整体拖动
+        self.assertIn("const groupIds = ref<", view)
+        self.assertIn("const marquee = ref<", view)
+        self.assertIn("function onCanvasPointerDown(", view)
+        self.assertIn("已框选", view)
+        self.assertIn("event.shiftKey || event.ctrlKey", view)
+        self.assertIn("let dragGroup", view)
+        # 拖拽连线：节点上的连线手柄 → 橡皮筋 → 落点弹窗选两端空闲端口
+        self.assertIn("connect-handle", view)
+        self.assertIn("function onConnectHandleDown(", view)
+        self.assertIn("const connectDrag = ref<", view)
+        self.assertIn("rubber-band", view)
+        self.assertIn("function openConnectDialog(", view)
+        self.assertIn("async function submitConnectDialog(", view)
+        self.assertIn("function freePorts(", view)
+        self.assertIn("有一端没有空闲端口", view)
+
 
 class InspectionEntryRegressionTests(TestCase):
     """巡检执行页：填写即暂存、单行保存、提交前列出未填项。"""
