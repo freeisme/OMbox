@@ -6,12 +6,15 @@ import {
   INSPECTION_TASK_STATUS_LABELS,
   checkInspectionItem,
   createInspectionTask,
+  deleteInspectionTemplate,
+  deleteInspectionTask,
   deleteInspectionRack,
   deleteInspectionSite,
   fetchInspectionRacks,
   fetchInspectionSites,
   fetchInspectionTask,
   fetchInspectionTasks,
+  fetchInspectionTemplate,
   fetchInspectionTemplates,
   importInspectionTask,
   INSPECTION_IMPORT_COLUMNS,
@@ -49,12 +52,28 @@ const racks = ref<InspectionRack[]>([]);
 const createVisible = ref(false);
 const createForm = reactive({
   templateId: "",
-  scopeKind: "site",
   siteId: "",
   rackId: "",
+  /** 批量开检：一次可以勾选多个机房 / 弱电间 / 会议室 / 机柜。 */
+  siteIds: [] as string[],
+  rackIds: [] as string[],
   inspectorUserId: "",
   remarks: "",
 });
+
+/** 对象类型 → 中文标签，供列表、选择器与批次导出复用。 */
+const SITE_TYPE_LABELS: Record<string, string> = {
+  server_room: "机房",
+  weak_room: "弱电间",
+  meeting_room: "会议室",
+  both: "通用",
+};
+const TEMPLATE_TARGET_OPTIONS = [
+  { value: "server_room", label: "机房" },
+  { value: "weak_room", label: "弱电间" },
+  { value: "meeting_room", label: "会议室" },
+  { value: "both", label: "通用（机房 / 弱电间 / 会议室都能用）" },
+];
 
 // ---------------------------------------------------------------- 机房 / 机柜 / 巡检模板维护
 
@@ -81,6 +100,7 @@ const rackForm = reactive({
 });
 
 const templateVisible = ref(false);
+const templateEditingId = ref("");
 const templateForm = reactive({
   code: "",
   name: "",
@@ -91,30 +111,39 @@ const templateForm = reactive({
 
 // ---------------------------------------------------------------- 巡检表导入 / 导出
 
+/** 机房与弱电间（会议室已独立成模块，在「会议室」页面维护）。 */
+const serverRooms = computed(() =>
+  sites.value.filter((item) => (item.siteType ?? "server_room") !== "meeting_room"),
+);
+
 const importVisible = ref(false);
 const importBusy = ref(false);
 const importFileName = ref("");
 const importContent = ref("");
 const importResult = ref<InspectionImportResult | null>(null);
 
-/** 下载导入模板：表头与后端识别的一致，附一行示例。 */
+/** 下载导入模板：表头与后端识别的一致，附机房与会议室各一行示例。 */
 function downloadInspectionTemplate(): void {
-  const sample = [
-    "一号机房",
-    "A 列 01 柜",
-    "环境",
-    "指示灯状态",
-    "目视检查",
-    "正常",
-    "",
-    "",
+  const samples = [
+    // 机房（带机柜）
+    ["一号机房", "A 列 01 柜", "环境", "指示灯状态", "目视检查", "正常", "", ""],
+    // 会议室（不填机柜，写会议室名称即可）
+    [
+      "3F 大会议室",
+      "",
+      "环境",
+      "卫生与桌面",
+      "地面、桌面整洁，无明显杂物、污渍（目视检查）",
+      "正常",
+      "",
+      "",
+    ],
   ];
-  const csv = `\ufeff${INSPECTION_IMPORT_COLUMNS.join(",")}\n${sample
-    .map((cell) => `"${cell}"`)
-    .join(",")}\n`;
+  const rows = [INSPECTION_IMPORT_COLUMNS as readonly string[], ...samples];
+  const csv = `\ufeff${rows.map((row) => row.map((cell) => `"${cell}"`).join(",")).join("\r\n")}\r\n`;
   const link = document.createElement("a");
   link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-  link.download = "机房巡检表模板.csv";
+  link.download = "巡检表导入模板.csv";
   link.click();
   URL.revokeObjectURL(link.href);
 }
@@ -237,6 +266,91 @@ async function exportInspectionSheet(row?: InspectionTask | null): Promise<void>
   link.click();
   URL.revokeObjectURL(link.href);
   ElMessage.success("巡检表已开始下载。");
+}
+
+/** 本次巡检（同批次）的目标名，用于横向表头。 */
+function taskTargetLabel(task: InspectionTask): string {
+  const typeLabel = SITE_TYPE_LABELS[task.siteType ?? ""] ?? "";
+  if (task.rackName) return `${typeLabel}·${task.siteName} / ${task.rackName}`;
+  return `${typeLabel}·${task.siteName}` || task.scopeName || task.id;
+}
+
+function itemResultText(item?: InspectionTaskItem): string {
+  if (!item) return "";
+  if (item.result === "fail") return item.notes ? `异常：${item.notes}` : "异常";
+  return (
+    INSPECTION_RESULT_OPTIONS.find((option) => option.value === item.result)?.label ||
+    (item.result && item.result !== "pending" ? item.result : "未检查")
+  );
+}
+
+/**
+ * 横向导出本次巡检：一行一个检查项，一列一个巡检对象（机房 / 弱电间 / 会议室 / 机柜），
+ * 最后再汇总异常说明，和纸质巡检表的结构一致。
+ */
+async function exportBatchSheet(batchNo: string): Promise<void> {
+  const batchTasks = tasks.value.filter((task) => (task.batchNo ?? "") === batchNo);
+  if (!batchTasks.length) {
+    ElMessage.warning("该批次没有找到巡检任务。");
+    return;
+  }
+  let details: InspectionTask[] = [];
+  try {
+    details = await Promise.all(
+      batchTasks.map(async (task) =>
+        (task.items ?? []).length ? task : await fetchInspectionTask(task.id),
+      ),
+    );
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "读取批次巡检表失败。");
+    return;
+  }
+  const baseItems = details[0]?.items ?? [];
+  if (!baseItems.length) {
+    ElMessage.warning("该批次还没有可导出的巡检事项。");
+    return;
+  }
+  const columns = details.map((task) => taskTargetLabel(task));
+  const findItem = (task: InspectionTask, item: InspectionTaskItem, index: number) =>
+    (task.items ?? []).find((entry) => entry.seqNo === item.seqNo) ??
+    (task.items ?? [])[index];
+  const escape = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+  const lines: string[][] = [
+    ["巡检表（本次巡检目标横向排列）"],
+    ["批次号", batchNo],
+    ["模板", details[0]?.templateName ?? ""],
+    ["执行人", details[0]?.inspectorName ?? ""],
+    ["巡检对象数", String(details.length)],
+    [],
+    ["序号", "检查类别", "检查项目", "检查内容 / 判定标准", ...columns, "异常说明"],
+  ];
+  baseItems.forEach((item, index) => {
+    const results = details.map((task) => itemResultText(findItem(task, item, index)));
+    const abnormal = details
+      .map((task, columnIndex) => {
+        const match = findItem(task, item, index);
+        return match?.result === "fail"
+          ? `${columns[columnIndex]}：${match.notes || "异常"}`
+          : "";
+      })
+      .filter(Boolean)
+      .join("；");
+    lines.push([
+      String(index + 1),
+      item.category ?? "",
+      item.title ?? "",
+      item.checkMethod ?? "",
+      ...results,
+      abnormal,
+    ]);
+  });
+  const csv = lines.map((line) => line.map(escape).join(",")).join("\r\n");
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([`\ufeff${csv}`], { type: "text/csv;charset=utf-8" }));
+  link.download = `巡检表-批次${batchNo}.csv`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+  ElMessage.success("本次巡检表已开始下载。");
 }
 
 const TEMPLATE_VALUE_TYPES = [
@@ -407,12 +521,56 @@ async function removeRack(row: InspectionRack): Promise<void> {
 }
 
 function openTemplateDialog(): void {
+  templateEditingId.value = "";
   templateForm.code = "";
   templateForm.name = "";
   templateForm.siteType = "both";
   templateForm.description = "";
   templateForm.items = [emptyTemplateItem()];
   templateVisible.value = true;
+}
+
+/** 编辑已有模板：拉取模板明细（含事项），保存时整份替换事项。 */
+async function openTemplateEdit(row: InspectionTemplate): Promise<void> {
+  try {
+    const detail = await fetchInspectionTemplate(row.id);
+    templateEditingId.value = row.id;
+    templateForm.code = detail.code ?? row.code ?? "";
+    templateForm.name = detail.name ?? row.name ?? "";
+    templateForm.siteType = detail.siteType ?? "both";
+    templateForm.description = detail.description ?? "";
+    const items = detail.items ?? [];
+    templateForm.items = items.length
+      ? items.map((item) => ({
+          category: item.category ?? "通用",
+          title: item.title,
+          checkMethod: item.checkMethod ?? "",
+          valueType: item.valueType ?? "ok_fail",
+          unit: item.unit ?? "",
+          normalRange: item.normalRange ?? "",
+          isRequired: item.isRequired ?? true,
+        }))
+      : [emptyTemplateItem()];
+    templateVisible.value = true;
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "读取巡检模板失败。");
+  }
+}
+
+/** 删除模板：确认后删除，历史巡检表保留当时的模板名称与事项快照。 */
+async function deleteTemplate(row: InspectionTemplate): Promise<void> {
+  const confirmed = await confirmAction(
+    `删除巡检模板「${row.name}」？历史巡检表会保留当时的模板名称与检查项快照，但模板本身不能再被新巡检使用。`,
+    { title: "删除巡检模板", confirmText: "删除", danger: true },
+  );
+  if (!confirmed) return;
+  try {
+    await deleteInspectionTemplate(row.id, "巡检模板页删除");
+    ElMessage.success("巡检模板已删除。");
+    await load();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "删除巡检模板失败。");
+  }
 }
 
 function addTemplateItem(): void {
@@ -452,8 +610,8 @@ async function submitTemplate(): Promise<void> {
       siteType: templateForm.siteType,
       description: templateForm.description.trim(),
       items,
-    });
-    ElMessage.success("巡检模板已创建。");
+    }, templateEditingId.value);
+    ElMessage.success(templateEditingId.value ? "巡检模板已更新。" : "巡检模板已创建。");
     templateVisible.value = false;
     await load();
   } catch (error) {
@@ -519,9 +677,8 @@ async function load(): Promise<void> {
 
 function openCreate(): void {
   createForm.templateId = templates.value[0]?.id ?? "";
-  createForm.scopeKind = "site";
-  createForm.siteId = sites.value[0]?.id ?? "";
-  createForm.rackId = "";
+  createForm.siteIds = [];
+  createForm.rackIds = [];
   createForm.inspectorUserId = "";
   createForm.remarks = "";
   createVisible.value = true;
@@ -532,25 +689,47 @@ async function submitCreate(): Promise<void> {
     ElMessage.warning("请选择巡检模板。");
     return;
   }
-  if (createForm.scopeKind === "site" && !createForm.siteId) {
-    ElMessage.warning("请选择机房。");
+  const targets = [
+    ...createForm.siteIds.map((id) => ({ kind: "site" as const, id })),
+    ...createForm.rackIds.map((id) => ({ kind: "rack" as const, id })),
+  ];
+  if (!targets.length) {
+    ElMessage.warning("请至少勾选一个巡检对象（可多选，会按对象逐一生成巡检任务）。");
     return;
   }
-  if (createForm.scopeKind === "rack" && !createForm.rackId) {
-    ElMessage.warning("请选择机柜。");
-    return;
+  const template = templates.value.find((item) => item.id === createForm.templateId);
+  const templateType = template?.siteType ?? "both";
+  if (templateType !== "both") {
+    const mismatched = targets.filter((target) => {
+      const site =
+        target.kind === "site"
+          ? sites.value.find((item) => item.id === target.id)
+          : sites.value.find(
+              (item) => item.id === racks.value.find((rack) => rack.id === target.id)?.siteId,
+            );
+      return (site?.siteType ?? "server_room") !== templateType;
+    });
+    if (mismatched.length) {
+      ElMessage.warning(
+        `模板「${template?.name ?? ""}」适用于${SITE_TYPE_LABELS[templateType] ?? "指定对象"}，` +
+          `请取消勾选不匹配的 ${mismatched.length} 个对象。`,
+      );
+      return;
+    }
   }
   saving.value = true;
   try {
-    await createInspectionTask({
+    const result = await createInspectionTask({
       templateId: createForm.templateId,
-      scopeKind: createForm.scopeKind,
-      siteId: createForm.scopeKind === "site" ? createForm.siteId : "",
-      rackId: createForm.scopeKind === "rack" ? createForm.rackId : "",
+      targets,
       inspectorUserId: createForm.inspectorUserId,
       remarks: createForm.remarks.trim(),
     });
-    ElMessage.success("巡检任务已创建。");
+    ElMessage.success(
+      result.taskCount > 1
+        ? `已按 ${result.taskCount} 个对象开始巡检（批次 ${result.batchNo}）。`
+        : "巡检任务已创建。",
+    );
     createVisible.value = false;
     await load();
   } catch (error) {
@@ -668,6 +847,47 @@ async function voidTask(row: InspectionTask): Promise<void> {
   }
 }
 
+/** 删除已作废的任务；未作废的会由后端拒绝，这里先提示。 */
+async function deleteTask(row: InspectionTask): Promise<void> {
+  let reason = "";
+  try {
+    const result = await ElMessageBox.prompt(
+      `删除已作废的任务「${row.taskNo || row.id}」？它的检查项明细会一起删除，操作会写入审计。`,
+      "删除巡检任务",
+      {
+        confirmButtonText: "确认删除",
+        cancelButtonText: "取消",
+        inputPlaceholder: "删除原因（可选）",
+      },
+    );
+    reason = result.value ?? "";
+  } catch {
+    return;
+  }
+  try {
+    await deleteInspectionTask(row.id, reason.trim());
+    ElMessage.success("巡检任务已删除。");
+    await load();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "删除失败。");
+  }
+}
+
+/** 任务列表「操作」下拉：查看 / 下载 / 导出本次巡检表 / 作废 / 删除（已作废）。 */
+function onTaskAction(command: string, row: InspectionTask): void {
+  if (command === "view") {
+    void openDetail(row);
+  } else if (command === "download") {
+    void exportInspectionSheet(row);
+  } else if (command === "export") {
+    void exportBatchSheet(row.batchNo ?? "");
+  } else if (command === "void") {
+    void voidTask(row);
+  } else if (command === "delete") {
+    void deleteTask(row);
+  }
+}
+
 onMounted(async () => {
   // 机柜视图等页面可以带 ?tab=sites 直达「机房与机柜」，方便新增机柜。
   const requested = typeof route.query.tab === "string" ? route.query.tab : "";
@@ -678,8 +898,8 @@ onMounted(async () => {
 
 <template>
   <PageHeader
-    title="机房巡检"
-    description="按机房、弱电间或单个机柜发起巡检，逐项记录结论并在提交后输出完整巡检表"
+    title="巡检中心"
+    description="机房、弱电间、会议室与机柜的巡检：可选多个对象批量开检，逐项记录结论并输出巡检表"
   >
     <template #actions>
       <el-button @click="load">刷新</el-button>
@@ -708,7 +928,7 @@ onMounted(async () => {
       <el-tabs v-model="activeTab">
         <el-tab-pane label="巡检任务" name="tasks" />
         <el-tab-pane label="巡检模板" name="templates" />
-        <el-tab-pane label="机房与机柜" name="sites" />
+        <el-tab-pane label="巡检对象" name="sites" />
       </el-tabs>
     </template>
   </PageHeader>
@@ -719,8 +939,8 @@ onMounted(async () => {
       class="oa-mb-3"
       :hint="
         activeTab === 'sites'
-          ? '机柜必须归属一个机房或弱电间；先建机房，再建机柜'
-          : '模板定义一次检查项，可被机房或机柜的巡检任务反复使用'
+          ? '这里维护机房、弱电间与机柜；会议室在侧边栏「巡检管理 → 会议室」里维护'
+          : '模板定义一次检查项，可选择适用于机房、弱电间或会议室，并可反复编辑'
       "
     >
       <template v-if="activeTab === 'sites'">
@@ -731,6 +951,7 @@ onMounted(async () => {
         >
           ＋ 新增机房 / 弱电间
         </el-button>
+        <el-button @click="router.push('/meeting-rooms')">会议室模块</el-button>
         <el-button
           v-if="hasPermission('inspection_management', 'create')"
           @click="openRackDialog()"
@@ -764,7 +985,13 @@ onMounted(async () => {
       </el-table-column>
       <el-table-column label="范围" min-width="180">
         <template #default="{ row }">
-          {{ row.rackName || row.siteName || "—" }}
+          {{ taskTargetLabel(row) || "—" }}
+        </template>
+      </el-table-column>
+      <el-table-column label="批次" width="150">
+        <template #default="{ row }">
+          <span v-if="row.batchNo">{{ row.batchNo }}</span>
+          <span v-else class="oa-cell-sub">—</span>
         </template>
       </el-table-column>
       <el-table-column prop="templateName" label="模板" width="160" />
@@ -777,18 +1004,34 @@ onMounted(async () => {
       </el-table-column>
       <el-table-column prop="inspectorName" label="巡检人" width="110" />
       <el-table-column prop="abnormalSummary" label="异常说明" min-width="180" show-overflow-tooltip />
-      <el-table-column label="操作" width="200" fixed="right">
+      <el-table-column label="操作" width="120" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" @click="openDetail(row)">查看</el-button>
-          <el-button link @click="exportInspectionSheet(row)">下载巡检表</el-button>
-          <el-button
-            v-if="hasPermission('inspection_management', 'update') && row.status === 'running'"
-            link
-            type="danger"
-            @click="voidTask(row)"
-          >
-            作废
-          </el-button>
+          <el-dropdown trigger="click" @command="(command: string) => onTaskAction(command, row)">
+            <el-button link type="primary" size="small">
+              操作<span class="caret">▾</span>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="view">查看</el-dropdown-item>
+                <el-dropdown-item command="download">下载巡检表</el-dropdown-item>
+                <el-dropdown-item v-if="row.batchNo" command="export">导出本次巡检表</el-dropdown-item>
+                <el-dropdown-item
+                  v-if="hasPermission('inspection_management', 'update') && row.status === 'running'"
+                  command="void"
+                  divided
+                >
+                  作废
+                </el-dropdown-item>
+                <el-dropdown-item
+                  v-if="hasPermission('inspection_management', 'delete') && row.status === 'void'"
+                  command="delete"
+                  divided
+                >
+                  删除（已作废）
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </template>
       </el-table-column>
     </el-table>
@@ -810,12 +1053,37 @@ onMounted(async () => {
       <el-table-column label="启用" width="90">
         <template #default="{ row }">{{ row.isActive ? "是" : "否" }}</template>
       </el-table-column>
+      <el-table-column label="适用对象" width="110">
+        <template #default="{ row }">
+          {{ SITE_TYPE_LABELS[row.siteType ?? "both"] ?? row.siteType ?? "通用" }}
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" width="130" fixed="right">
+        <template #default="{ row }">
+          <el-button
+            v-if="hasPermission('inspection_management', 'update')"
+            link
+            type="primary"
+            @click="openTemplateEdit(row)"
+          >
+            编辑
+          </el-button>
+          <el-button
+            v-if="hasPermission('inspection_management', 'delete')"
+            link
+            type="danger"
+            @click="deleteTemplate(row)"
+          >
+            删除
+          </el-button>
+        </template>
+      </el-table-column>
     </el-table>
 
     <template v-else>
       <el-row :gutter="12">
         <el-col :xs="24" :md="12">
-          <el-table :data="sites" size="small" border empty-text="暂无机房">
+          <el-table :data="serverRooms" size="small" border empty-text="暂无机房">
             <el-table-column prop="name" label="机房 / 弱电间" min-width="160" />
             <el-table-column prop="code" label="编码" width="120" />
             <el-table-column label="类型" width="110">
@@ -856,6 +1124,19 @@ onMounted(async () => {
           </el-table>
         </el-col>
       </el-row>
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        class="oa-mt-3"
+        title="会议室已独立成模块"
+      >
+        <template #default>
+          会议室与会议室内设备的维护在侧边栏「巡检管理 → 会议室」；这里只维护机房、弱电间与机柜，
+          开始巡检时仍可直接勾选会议室。
+          <el-button link type="primary" @click="router.push('/meeting-rooms')">前往会议室</el-button>
+        </template>
+      </el-alert>
     </template>
   </DataPanel>
 
@@ -878,29 +1159,43 @@ onMounted(async () => {
           />
         </el-select>
       </el-form-item>
-      <el-form-item label="巡检范围" required>
-        <el-radio-group v-model="createForm.scopeKind">
-          <el-radio-button value="site">按机房</el-radio-button>
-          <el-radio-button value="rack">按机柜</el-radio-button>
-        </el-radio-group>
+      <el-form-item label="巡检对象（可多选，每个对象生成一张巡检表）" required>
+        <el-select
+          v-model="createForm.siteIds"
+          multiple
+          filterable
+          collapse-tags
+          collapse-tags-tooltip
+          class="oa-full-width"
+          placeholder="选择机房 / 弱电间 / 会议室"
+        >
+          <el-option
+            v-for="site in sites"
+            :key="site.id"
+            :value="site.id"
+            :label="`${SITE_TYPE_LABELS[site.siteType ?? 'server_room'] ?? '机房'}·${site.name}`"
+          />
+        </el-select>
+        <div class="oa-hint">勾选多个对象后，会按对象逐一生成巡检任务（同一批次，可一起导出）。</div>
       </el-form-item>
-      <el-form-item v-if="createForm.scopeKind === 'site'" label="机房" required>
-        <el-select v-model="createForm.siteId" class="oa-full-width">
-          <el-option v-for="site in sites" :key="site.id" :label="site.name" :value="site.id" />
+      <el-form-item label="机柜（可选，也可多选）">
+        <el-select
+          v-model="createForm.rackIds"
+          multiple
+          filterable
+          collapse-tags
+          collapse-tags-tooltip
+          class="oa-full-width"
+          placeholder="选择机柜（可留空）"
+        >
+          <el-option
+            v-for="rack in racks"
+            :key="rack.id"
+            :value="rack.id"
+            :label="`${sites.find((item) => item.id === rack.siteId)?.name ?? ''} / ${rack.name}`"
+          />
         </el-select>
       </el-form-item>
-      <template v-else>
-        <el-form-item label="机房">
-          <el-select v-model="createForm.siteId" clearable class="oa-full-width">
-            <el-option v-for="site in sites" :key="site.id" :label="site.name" :value="site.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="机柜" required>
-          <el-select v-model="createForm.rackId" class="oa-full-width">
-            <el-option v-for="rack in racksOfSite" :key="rack.id" :label="rack.name" :value="rack.id" />
-          </el-select>
-        </el-form-item>
-      </template>
       <el-form-item label="备注"><el-input v-model="createForm.remarks" type="textarea" :rows="2" /></el-form-item>
     </el-form>
   </FormDialog>
@@ -1025,7 +1320,7 @@ onMounted(async () => {
       type="info"
       :closable="false"
       show-icon
-      title="按模板填写后上传：机房、机柜、检查项分类、检查项、检查方法、结论、实测值、说明。机柜留空表示按机房巡检；导入会直接生成一份「已提交」的巡检记录。"
+      title="按模板填写后上传：巡检对象（机房 / 弱电间 / 会议室名称）、机柜、检查项分类、检查项、检查方法、结论、实测值、说明。机柜留空表示按对象整体巡检；导入会直接生成一份「已提交」的巡检记录。"
     />
     <div class="oa-flex-row oa-mt-3">
       <input type="file" accept=".xlsx,.xlsm,.csv" @change="onImportFileChange" />
@@ -1148,7 +1443,7 @@ onMounted(async () => {
 
   <FormDialog
     v-model="templateVisible"
-    title="新增巡检模板"
+    :title="templateEditingId ? '编辑巡检模板' : '新增巡检模板'"
     size="lg"
     :loading="saving"
     @confirm="submitTemplate"
@@ -1168,10 +1463,14 @@ onMounted(async () => {
         <el-col :xs="24" :sm="8">
           <el-form-item label="适用对象">
             <el-select v-model="templateForm.siteType" class="oa-full-width">
-              <el-option label="机房与弱电间通用" value="both" />
-              <el-option label="仅机房" value="server_room" />
-              <el-option label="仅弱电间" value="weak_room" />
+              <el-option
+                v-for="option in TEMPLATE_TARGET_OPTIONS"
+                :key="option.value"
+                :label="option.label"
+                :value="option.value"
+              />
             </el-select>
+            <div class="oa-hint">开始巡检时只能勾选与该选项匹配的对象。</div>
           </el-form-item>
         </el-col>
       </el-row>
@@ -1233,3 +1532,11 @@ onMounted(async () => {
     <el-button class="oa-mt-2" @click="addTemplateItem">＋ 添加检查项</el-button>
   </FormDialog>
 </template>
+
+<style scoped>
+/* 任务列表「操作」下拉的小箭头 */
+.caret {
+  margin-left: 2px;
+  font-size: 10px;
+}
+</style>

@@ -561,8 +561,16 @@ class DatacenterDeviceService:
             return ""
         return (row[index] or "").strip()
 
-    def _row_to_payload(self, row: list[str], mapping: dict[str, int]) -> tuple[dict, list[str]]:
+    def _row_to_payload(
+        self, row: list[str], mapping: dict[str, int]
+    ) -> tuple[dict, list[str], list[str]]:
+        """把一行表格转成设备字段；返回 (字段, 错误, 提示)。
+
+        提示（warnings）不影响导入，只用来告诉用户"某个值被按另一种方式处理了"，
+        例如状态写「上架」时会按「未上架」导入。
+        """
         problems: list[str] = []
+        warnings: list[str] = []
         payload = {
             "code": self._cell(row, mapping.get("code")),
             "name": self._cell(row, mapping.get("name")),
@@ -601,14 +609,17 @@ class DatacenterDeviceService:
             if not status:
                 problems.append(f"状态「{status_raw}」无法识别（可用：未上架/维修/报废）")
             elif status == "installed":
-                problems.append("状态不能是「上架」，该状态由机柜视图的上架操作写入")
+                # 导入的设备都还没有上架：写「上架」时按「未上架」导入。
+                # 真正的"上架"只能由机柜视图的上架操作写入。
+                payload["status"] = "stock"
+                warnings.append("状态「上架」已按「未上架」导入（上架状态由机柜视图的上架操作写入）")
             else:
                 payload["status"] = status
         if not payload["code"]:
             problems.append("缺少设备编号")
         if not payload["name"]:
             problems.append("缺少设备名称")
-        return payload, problems
+        return payload, problems, warnings
 
     def import_workbook(self, payload: dict, context: dict) -> dict:
         file_name = self.db.text(payload.get("fileName"))[:200]
@@ -654,16 +665,19 @@ class DatacenterDeviceService:
 
         prepared: list[dict] = []
         errors: list[dict] = []
+        warnings: list[dict] = []
         seen: dict[str, int] = {}
         for offset, row in enumerate(data_rows):
             excel_row = header_index + offset + 2
-            record, problems = self._row_to_payload(row, mapping)
+            record, problems, row_warnings = self._row_to_payload(row, mapping)
             code = record.get("code", "")
             if code and code in seen:
                 problems.append(f"设备编号与第 {seen[code]} 行重复")
             if problems:
                 errors.append({"row": excel_row, "code": code, "message": "；".join(problems)})
                 continue
+            for message in row_warnings:
+                warnings.append({"row": excel_row, "code": code, "message": message})
             seen[code] = excel_row
             prepared.append(record)
 
@@ -712,6 +726,8 @@ class DatacenterDeviceService:
             "skipped": 0,
             "errors": errors[:50],
             "errorCount": len(errors),
+            "warnings": warnings[:50],
+            "warningCount": len(warnings),
             "dryRun": dry_run,
         }
         if dry_run:

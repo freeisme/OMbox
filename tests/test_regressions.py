@@ -1251,7 +1251,7 @@ class ScrapManagementRegressionTests(TestCase):
         self.assertIn("AND ca.is_archived = 0", state_reader)
         self.assertIn("AND asset.is_archived = 0", service)
         self.assertIn("'scrap_reason', 'inventory_scrap_record', 'asset_scrap_record', ", state_reader)
-        self.assertIn("required_table_count = 70", state_reader)
+        self.assertIn("required_table_count = 71", state_reader)
 
     def test_frontend_exposes_scrap_actions_and_records_page(self):
         scrap_view = (ROOT / "frontend" / "src" / "views" / "ScrapRecordsView.vue").read_text(
@@ -1678,6 +1678,32 @@ class InspectionManagementRegressionTests(TestCase):
         self.assertNotIn("schedule", service.lower())
         self.assertNotIn("cron", service.lower())
 
+    def test_task_actions_are_a_dropdown_and_voided_tasks_can_be_deleted(self):
+        view = (ROOT / "frontend" / "src" / "views" / "InspectionView.vue").read_text(
+            encoding="utf-8"
+        )
+        service = (ROOT / "office_asset" / "inspection.py").read_text(encoding="utf-8")
+        router = (ROOT / "office_asset" / "api_router.py").read_text(encoding="utf-8")
+        api = (ROOT / "frontend" / "src" / "api" / "governance.ts").read_text(encoding="utf-8")
+
+        # 任务列表的「操作」改成下拉：查看 / 下载 / 导出本次巡检表 / 作废 / 删除
+        self.assertIn("onTaskAction(command, row)", view)
+        for command in ("view", "download", "export", "void", "delete"):
+            self.assertIn(f'command="{command}"', view)
+        self.assertIn("删除（已作废）", view)
+        self.assertIn("async function deleteTask(", view)
+        self.assertIn("row.status === 'void'", view)
+        self.assertIn("deleteInspectionTask", api)
+
+        # 后端只允许删除"已作废"的任务，并且写审计
+        self.assertIn("def delete_task(", service)
+        self.assertIn("只有已作废的巡检任务才能删除，请先作废。", service)
+        self.assertIn("inspection_task_deleted", service)
+        self.assertIn("DELETE FROM inspection_task", service)
+        self.assertIn("AND status = 'void';", service)
+        self.assertIn('if len(parts) == 5 and method == "DELETE"', router)
+        self.assertIn("self.inspection.delete_task(", router)
+
     def test_void_requires_reason_and_records_audit(self):
         service = (ROOT / "office_asset" / "inspection.py").read_text(encoding="utf-8")
         void_task = service.split("    def void_task(", 1)[1]
@@ -1692,7 +1718,7 @@ class InspectionManagementRegressionTests(TestCase):
 
         self.assertIn("'asset_site', 'asset_rack', 'inspection_template', 'inspection_template_item', ", server)
         self.assertIn("'inspection_task'", server)
-        self.assertIn("required_table_count = 70", server)
+        self.assertIn("required_table_count = 71", server)
 
     def test_inspection_page_is_wired_into_navigation_and_exports(self):
         navigation = (ROOT / "frontend" / "src" / "navigation.ts").read_text(encoding="utf-8")
@@ -1712,7 +1738,8 @@ class InspectionManagementRegressionTests(TestCase):
             "/void",
         ):
             self.assertIn(endpoint, api_module)
-        for text in ("机房巡检", "巡检模板", "机房与机柜", "提交巡检"):
+        # v3.0.18 起页面叫「巡检中心」，页签是 巡检任务 / 巡检模板 / 巡检对象
+        for text in ("巡检中心", "巡检模板", "巡检对象", "提交巡检"):
             self.assertIn(text, view)
         self.assertIn("异常项必须填写说明。", view)
         # 巡检不生成周期计划，只允许手动开始。
@@ -2131,7 +2158,7 @@ class FrontendSpaMigrationTests(TestCase):
             "/api/data-quality/run",
         ):
             self.assertIn(endpoint, api_module)
-        for text in ("机房巡检", "巡检任务", "巡检模板", "机房与机柜", "提交巡检"):
+        for text in ("巡检中心", "巡检任务", "巡检模板", "巡检对象", "提交巡检"):
             self.assertIn(text, inspection_view)
         for text in ("同步与质量", "同步暂存批次", "数据质量问题", "运行质量检查"):
             self.assertIn(text, governance_view)
@@ -2271,7 +2298,7 @@ class DevicePanelTopologyRegressionTests(TestCase):
             "datacenter_device",
         ):
             self.assertIn(f"'{table}'", server_source)
-        self.assertIn("required_table_count = 70", server_source)
+        self.assertIn("required_table_count = 71", server_source)
 
 
 class DatacenterDeviceLedgerRegressionTests(TestCase):
@@ -2365,8 +2392,11 @@ class DatacenterDeviceLedgerRegressionTests(TestCase):
         self.assertIn('group: "机房管理"', navigation)
         self.assertIn('page: "datacenterDevices"', navigation)
         self.assertIn('path: "/datacenter-devices"', navigation)
-        self.assertIn('title: "机房巡检", group: "机房管理"', navigation)
-        self.assertIn('NAV_GROUPS = ["资产台账", "机房管理"', navigation)
+        # 巡检已独立成"巡检管理"分组（v3.0.18），不再挂在机房管理下
+        self.assertIn('title: "巡检中心"', navigation)
+        self.assertIn('group: "巡检管理"', navigation)
+        self.assertNotIn('title: "机房巡检"', navigation)
+        self.assertIn('"机房管理", "巡检管理"', navigation)
         self.assertIn("DatacenterDeviceView", vue_router)
         self.assertTrue(
             (ROOT / "frontend" / "src" / "views" / "DatacenterDeviceView.vue").exists()
@@ -2508,7 +2538,7 @@ class DatacenterImportRegressionTests(TestCase):
         self.assertEqual(mapping["status"], 8)
         self.assertEqual(mapping["notes"], 9)
 
-        record, problems = service._row_to_payload(
+        record, problems, _ = service._row_to_payload(
             ["SW-A01", "核心交换机", "华为 S5731", "交换机", "2U", "SN123", "FA-1", "机房公用", "未上架", "A 柜"],
             mapping,
         )
@@ -2518,15 +2548,30 @@ class DatacenterImportRegressionTests(TestCase):
         self.assertEqual(record["status"], "stock")
 
         # 设备类型不再限制在预设枚举内：未知类型按原文保留，只拦高度与状态
-        custom, problems = service._row_to_payload(
+        custom, problems, _ = service._row_to_payload(
             ["SW-A02", "交换机", "", "不认识的类型", "0", "", "", "", "上架", ""],
             mapping,
         )
         self.assertEqual(custom["category"], "不认识的类型", custom)
         self.assertTrue(any("超出 1-50U" in item for item in problems), problems)
-        self.assertTrue(any("不能是「上架」" in item for item in problems), problems)
 
-        _, missing = service._row_to_payload(["", "", "", "", "", "", "", "", "", ""], mapping)
+        # 导入的设备都还没上架：状态写「上架」按「未上架」导入，并给出一条提示（不再报错）
+        installed, installed_problems, warnings = service._row_to_payload(
+            ["SW-A03", "交换机", "", "交换机", "1U", "", "", "", "上架", ""],
+            mapping,
+        )
+        self.assertEqual(installed_problems, [], installed_problems)
+        self.assertEqual(installed["status"], "stock")
+        self.assertTrue(any("已按「未上架」导入" in item for item in warnings), warnings)
+
+        # 无法识别的状态仍然报错
+        _, unknown_status, _ = service._row_to_payload(
+            ["SW-A04", "交换机", "", "交换机", "1U", "", "", "", "借出中", ""],
+            mapping,
+        )
+        self.assertTrue(any("无法识别" in item for item in unknown_status), unknown_status)
+
+        _, missing, _ = service._row_to_payload(["", "", "", "", "", "", "", "", "", ""], mapping)
         self.assertIn("缺少设备编号", missing)
         self.assertIn("缺少设备名称", missing)
 
@@ -2547,6 +2592,10 @@ class DatacenterImportRegressionTests(TestCase):
         self.assertIn("base64.b64decode", service_source)
         self.assertIn('mode not in {"skip", "update"}', service_source)
         self.assertIn("contentBase64", service_source)
+        # 状态写「上架」按「未上架」导入，并用"提示"告诉用户（不再整行报错）
+        self.assertIn("warnings", service_source)
+        self.assertIn('"warningCount": len(warnings)', service_source)
+        self.assertIn("已按「未上架」导入", service_source)
 
     def test_import_route_and_ui_are_wired(self):
         router = (ROOT / "office_asset" / "api_router.py").read_text(encoding="utf-8")
@@ -2561,6 +2610,11 @@ class DatacenterImportRegressionTests(TestCase):
         self.assertIn("下载模板", view)
         self.assertIn("dryRun: true", view)
         self.assertIn('accept=".xlsx,.xlsm,.csv"', view)
+        # 导入弹窗把"上架"的提示单独列出来（提示不影响导入）
+        self.assertIn("importPreview.warnings?.length", view)
+        self.assertIn("会按", view)
+        self.assertIn("未上架」导入", view)
+        self.assertIn("warningCount", view)
 
 
 class StageThreeRegressionTests(TestCase):
@@ -3296,6 +3350,149 @@ class InspectionEntryRegressionTests(TestCase):
         self.assertIn('"/api/inventory/allocations"', api)
 
 
+class MeetingRoomInspectionTests(TestCase):
+    """会议室巡检：会议室对象、会议室内设备、模板编辑/删除、多选开检与横向导出。"""
+
+    def test_migration_adds_meeting_room_object_devices_and_batch_column(self):
+        migration = (
+            ROOT
+            / "database"
+            / "migrations"
+            / "20260924_003_meeting_rooms_and_batch_inspection.sql"
+        ).read_text(encoding="utf-8")
+
+        # 巡检对象与模板适用对象都放开到"会议室"
+        self.assertIn("CHECK (site_type IN ('server_room', 'weak_room', 'meeting_room'))", migration)
+        self.assertIn(
+            "CHECK (site_type IN ('server_room', 'weak_room', 'meeting_room', 'both'))",
+            migration,
+        )
+        # 批次号 + 对象类型快照
+        self.assertIn("ADD COLUMN batch_no VARCHAR(32) NOT NULL DEFAULT '' AFTER task_no", migration)
+        self.assertIn("ADD COLUMN site_type VARCHAR(32) NOT NULL DEFAULT '' AFTER site_name", migration)
+        # 会议室内设备台账 + 库存流转来源
+        self.assertIn("CREATE TABLE IF NOT EXISTS site_device", migration)
+        self.assertIn("CHECK (source IN ('inventory', 'custom'))", migration)
+        self.assertIn("ON DELETE CASCADE ON UPDATE CASCADE,\n  CONSTRAINT fk_site_device_model", migration)
+        # 默认会议室模板（33 项，来自会议室巡检表）
+        self.assertIn("'XJ-MEETING-ROOM'", migration)
+        self.assertIn("'会议室巡检'", migration)
+        self.assertEqual(migration.count("UNION ALL SELECT"), 32)
+        self.assertIn("WHERE @meeting_room_item_count = 0", migration)
+        # 迁移必须是增量、不改历史数据
+        self.assertNotIn("DROP TABLE", migration.upper())
+        self.assertNotIn("DELETE FROM employee", migration)
+        self.assertNotIn("UPDATE inspection_task", migration)
+
+    def test_service_supports_meeting_rooms_and_room_devices(self):
+        service = (ROOT / "office_asset" / "inspection.py").read_text(encoding="utf-8")
+
+        self.assertIn('SITE_TYPES = {"server_room", "weak_room", "meeting_room"}', service)
+        self.assertIn('"meeting_room": "会议室",', service)
+        self.assertIn('TEMPLATE_SITE_TYPES = {"server_room", "weak_room", "meeting_room", "both"}', service)
+        # 会议室内设备：IT 物资分配（扣库存）与自定义登记，移除时退回原仓库
+        self.assertIn("def list_site_devices(", service)
+        self.assertIn("def add_site_device(", service)
+        self.assertIn("def remove_site_device(", service)
+        self.assertIn("'site_allocation'", service)
+        self.assertIn("'site_return'", service)
+        self.assertIn("@model_available_quantity >= {quantity}", service)
+        self.assertIn("所选仓库的库存不足，无法分配。", service)
+        # 删除机房/会议室时先挡住还有设备的情况
+        self.assertIn("该会议室还有", service)
+
+    def test_service_starts_multiple_targets_in_one_batch(self):
+        service = (ROOT / "office_asset" / "inspection.py").read_text(encoding="utf-8")
+
+        self.assertIn("MAX_TASK_TARGETS = 30", service)
+        self.assertIn("def _resolve_start_targets(", service)
+        self.assertIn("def _resolve_start_target(", service)
+        self.assertIn("def _create_inspection_task(", service)
+        self.assertIn('"batchNo": batch_no', service)
+        self.assertIn("targets = self._resolve_start_targets(payload, context)", service)
+        # 模板适用对象与所选对象不匹配时直接拒绝
+        self.assertIn("不匹配。", service)
+        # 兼容旧的单目标调用
+        self.assertIn('payload.get("rackId") if scope_kind == "rack" else payload.get("siteId")', service)
+
+    def test_template_can_be_deleted_and_keeps_task_snapshots(self):
+        service = (ROOT / "office_asset" / "inspection.py").read_text(encoding="utf-8")
+        delete_template = service.split("    def delete_template(", 1)[1].split(
+            "\n    def _site_row(",
+            1,
+        )[0]
+
+        self.assertIn("UPDATE inspection_task", delete_template)
+        self.assertIn("SET template_id = NULL", delete_template)
+        self.assertIn("DELETE FROM inspection_template WHERE template_id", delete_template)
+        self.assertIn("inspection_template_deleted", delete_template)
+        router = (ROOT / "office_asset" / "api_router.py").read_text(encoding="utf-8")
+        self.assertIn('if method == "DELETE":', router)
+        self.assertIn("self.inspection.delete_template(", router)
+
+    def test_routes_expose_room_devices_and_batch_start(self):
+        router = (ROOT / "office_asset" / "api_router.py").read_text(encoding="utf-8")
+
+        self.assertIn('path.startswith("/api/inspection/sites/") and path.endswith("/devices")', router)
+        self.assertIn('path.startswith("/api/inspection/site-devices/") and method == "DELETE"', router)
+        self.assertIn("self.inspection.add_site_device(", router)
+        self.assertIn("self.inspection.list_site_devices(", router)
+        self.assertIn("self.inspection.remove_site_device(", router)
+
+    def test_frontend_edits_templates_and_supports_multi_target_start(self):
+        view = (ROOT / "frontend" / "src" / "views" / "InspectionView.vue").read_text(
+            encoding="utf-8"
+        )
+        api = (ROOT / "frontend" / "src" / "api" / "governance.ts").read_text(encoding="utf-8")
+        navigation = (ROOT / "frontend" / "src" / "navigation.ts").read_text(encoding="utf-8")
+
+        # 模板：编辑（含事项）+ 删除（带确认）
+        self.assertIn("async function openTemplateEdit(", view)
+        self.assertIn("async function deleteTemplate(", view)
+        self.assertIn(":title=\"templateEditingId ? '编辑巡检模板' : '新增巡检模板'\"", view)
+        self.assertIn("templateEditingId.value", view)
+        self.assertIn("TEMPLATE_TARGET_OPTIONS", view)
+        self.assertIn("deleteInspectionTemplate", api)
+        self.assertIn("fetchInspectionTemplate", api)
+        # 适用对象包含会议室
+        self.assertIn('{ value: "meeting_room", label: "会议室" }', view)
+        # 会议室独立成模块（侧边栏「巡检管理 → 会议室」），会议室 + 会议室内设备都在这个页面
+        room_view = (ROOT / "frontend" / "src" / "views" / "MeetingRoomView.vue").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("function openRoomDialog(", room_view)
+        self.assertIn("async function openDevices(", room_view)
+        self.assertIn("async function submitDevice(", room_view)
+        self.assertIn("async function removeDevice(", room_view)
+        self.assertIn("从 IT 物资分配", room_view)
+        self.assertIn("自定义设备记录", room_view)
+        self.assertIn("设备（{{ row.deviceCount ?? 0 }}）", room_view)
+        self.assertIn("fetchSiteDevices", api)
+        self.assertIn("addSiteDevice", api)
+        self.assertIn("removeSiteDevice", api)
+        # 巡检中心的「巡检对象」只维护机房/弱电间/机柜，并指向会议室模块
+        self.assertIn("router.push('/meeting-rooms')", view)
+        self.assertIn("会议室已独立成模块", view)
+        self.assertNotIn("async function openRoomDevices(", view)
+        # 多选开检
+        self.assertIn("multiple", view)
+        self.assertIn("siteIds", view)
+        self.assertIn("rackIds", view)
+        self.assertIn("targets", api)
+        # 横向导出本次巡检的目标
+        self.assertIn("async function exportBatchSheet(", view)
+        self.assertIn("导出本次巡检表", view)
+        self.assertIn("异常说明", view)
+        # 巡检独立成模块
+        self.assertIn('title: "巡检中心"', navigation)
+        self.assertIn('title: "会议室"', navigation)
+        self.assertIn('path: "/meeting-rooms"', navigation)
+        self.assertIn('group: "巡检管理"', navigation)
+        self.assertIn('"机房管理", "巡检管理"', navigation)
+        vue_router = (ROOT / "frontend" / "src" / "router" / "index.ts").read_text(encoding="utf-8")
+        self.assertIn("meetingRooms: () => import(\"../views/MeetingRoomView.vue\")", vue_router)
+
+
 class ThirdPartyLicenseTests(TestCase):
     """第三方组件与许可：清单要覆盖生产依赖、不含传染性许可，且能随发布一起分发。"""
 
@@ -3560,6 +3757,32 @@ class InspectionSheetImportExportTests(TestCase):
             re.findall(r'"([^"]+)"', backend_block),
             re.findall(r'"([^"]+)"', frontend_block),
         )
+        # v3.0.18 起首列是"巡检对象"（机房 / 弱电间 / 会议室都能写）
+        self.assertEqual(
+            re.findall(r'"([^"]+)"', backend_block)[0],
+            "巡检对象",
+        )
+
+    def test_downloadable_import_template_covers_meeting_rooms(self):
+        """下载的导入模板必须已经是新表头，并给出会议室的示例行。"""
+        service = (ROOT / "office_asset" / "inspection.py").read_text(encoding="utf-8")
+        view = (ROOT / "frontend" / "src" / "views" / "InspectionView.vue").read_text(
+            encoding="utf-8"
+        )
+        download_block = view.split("function downloadInspectionTemplate(", 1)[1].split(
+            "function openImportDialog(",
+            1,
+        )[0]
+
+        # 表头由 INSPECTION_IMPORT_COLUMNS 生成，示例行同时包含机房与会议室
+        self.assertIn("INSPECTION_IMPORT_COLUMNS", download_block)
+        self.assertIn("3F 大会议室", download_block)
+        self.assertIn("一号机房", download_block)
+        self.assertIn("巡检表导入模板.csv", download_block)
+        self.assertNotIn("机房巡检表模板.csv", download_block)
+        # 后端把这些写法都认成巡检对象，老文件仍可导入
+        for alias in ("巡检对象", "会议室", "会议室名称", "机房名称"):
+            self.assertIn(f'"{alias}"', service)
 
     def test_submitted_task_can_be_downloaded_as_a_sheet(self):
         view = (ROOT / "frontend" / "src" / "views" / "InspectionView.vue").read_text(

@@ -26,17 +26,39 @@ export interface InspectionTemplate {
   id: string;
   code?: string;
   name: string;
+  /** 适用对象：server_room / weak_room / meeting_room / both。 */
+  siteType?: string;
+  description?: string;
   scopeKind?: string;
   /** 列表接口返回的检查项数量（列表不带 items 明细）。 */
   itemCount?: number;
   isActive?: unknown;
-  items?: Array<{ id?: string; title?: string; checkMethod?: string }>;
+  items?: InspectionTemplateItem[];
+}
+
+export interface InspectionTemplateItem {
+  id?: string;
+  seqNo?: number;
+  category?: string;
+  title: string;
+  checkMethod?: string;
+  valueType?: string;
+  unit?: string;
+  normalRange?: string;
+  isRequired?: boolean;
 }
 
 export interface InspectionTask {
   id: string;
   number?: string;
+  taskNo?: string;
+  /** 一次多选开检的任务共用同一个批次号，用于横向导出本次巡检的目标。 */
+  batchNo?: string;
   status: string;
+  scopeKind?: string;
+  scopeName?: string;
+  /** 对象类型快照：server_room / weak_room / meeting_room（机柜为所属机房的类型）。 */
+  siteType?: string;
   siteId?: string;
   siteName?: string;
   rackId?: string;
@@ -59,6 +81,7 @@ export interface InspectionTaskItem {
   result?: string;
   notes?: string;
   valueText?: string;
+  seqNo?: number;
   checkedByName?: string;
   checkedAt?: string;
 }
@@ -89,6 +112,14 @@ export async function fetchInspectionRacks(): Promise<InspectionRack[]> {
 export async function fetchInspectionTemplates(): Promise<InspectionTemplate[]> {
   const payload = await api<{ templates?: InspectionTemplate[] }>("/api/inspection/templates");
   return payload.templates ?? [];
+}
+
+/** 单个模板详情（含事项明细），编辑模板时用。 */
+export async function fetchInspectionTemplate(templateId: string): Promise<InspectionTemplate> {
+  const payload = await api<{ template: InspectionTemplate }>(
+    `/api/inspection/templates/${encodeURIComponent(templateId)}`,
+  );
+  return payload.template;
 }
 
 export interface InspectionSitePayload {
@@ -185,6 +216,67 @@ export async function saveInspectionTemplate(
   await api("/api/inspection/templates", { method: "POST", body: payload });
 }
 
+/** 删除巡检模板；历史巡检任务保留当时的模板名称与事项快照。 */
+export async function deleteInspectionTemplate(templateId: string, reason = ""): Promise<void> {
+  await api(`/api/inspection/templates/${encodeURIComponent(templateId)}`, {
+    method: "DELETE",
+    body: { reason },
+  });
+}
+
+// ------------------------------------------------------- 巡检对象里的设备（会议室）
+
+export interface SiteDevice {
+  id: string;
+  source: "inventory" | "custom";
+  name: string;
+  deviceType: string;
+  brand: string;
+  model: string;
+  quantity: number;
+  status: string;
+  notes: string;
+  modelId?: string;
+  warehouseId?: string;
+  warehouseName?: string;
+  createdAt?: string;
+}
+
+export interface SiteDevicePayload {
+  source: "inventory" | "custom";
+  modelId?: string;
+  warehouseId?: string;
+  name?: string;
+  deviceType?: string;
+  brand?: string;
+  model?: string;
+  quantity?: number;
+  notes?: string;
+}
+
+export async function fetchSiteDevices(
+  siteId: string,
+): Promise<{ site: { id: string; name: string; siteType: string }; devices: SiteDevice[] }> {
+  return api(`/api/inspection/sites/${encodeURIComponent(siteId)}/devices`);
+}
+
+export async function addSiteDevice(siteId: string, payload: SiteDevicePayload): Promise<unknown> {
+  return api(`/api/inspection/sites/${encodeURIComponent(siteId)}/devices`, {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export async function removeSiteDevice(
+  deviceId: string,
+  payload: { reason?: string; warehouseId?: string } = {},
+): Promise<unknown> {
+  return api(`/api/inspection/site-devices/${encodeURIComponent(deviceId)}`, {
+    method: "DELETE",
+    body: payload,
+  });
+}
+
 export async function fetchInspectionTasks(): Promise<InspectionTask[]> {
   const payload = await api<{ tasks?: InspectionTask[] }>("/api/inspection/tasks");
   return payload.tasks ?? [];
@@ -195,15 +287,28 @@ export async function fetchInspectionTask(taskId: string): Promise<InspectionTas
   return payload.task;
 }
 
+export interface InspectionTargetPayload {
+  kind: "site" | "rack";
+  id: string;
+}
+
+export interface InspectionStartResult {
+  batchNo: string;
+  taskCount: number;
+  tasks: Array<{ id: string; taskNo: string; scopeLabel?: string; itemTotal?: number }>;
+}
+
+/**
+ * 开始巡检：targets 可以是一个或多个对象（机房 / 弱电间 / 会议室 / 机柜），
+ * 一个对象生成一张任务，同批次号用于横向导出本次巡检的目标。
+ */
 export async function createInspectionTask(body: {
   templateId: string;
-  scopeKind: string;
-  siteId: string;
-  rackId: string;
+  targets: InspectionTargetPayload[];
   inspectorUserId: string;
   remarks: string;
-}): Promise<void> {
-  await api("/api/inspection/tasks", { method: "POST", body });
+}): Promise<InspectionStartResult> {
+  return api<InspectionStartResult>("/api/inspection/tasks", { method: "POST", body });
 }
 
 export async function checkInspectionItem(
@@ -225,9 +330,17 @@ export async function voidInspectionTask(taskId: string, reason: string): Promis
   await api(`/api/inspection/tasks/${taskId}/void`, { method: "POST", body: { reason } });
 }
 
+/** 删除已作废的巡检任务（含明细）；未作废的任务必须先作废。 */
+export async function deleteInspectionTask(taskId: string, reason = ""): Promise<void> {
+  await api(`/api/inspection/tasks/${encodeURIComponent(taskId)}`, {
+    method: "DELETE",
+    body: { reason },
+  });
+}
+
 /** 巡检表导入的列（与「下载模板」生成的表头一致）。 */
 export const INSPECTION_IMPORT_COLUMNS = [
-  "机房",
+  "巡检对象",
   "机柜",
   "检查项分类",
   "检查项",

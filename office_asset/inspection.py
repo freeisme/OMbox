@@ -18,6 +18,7 @@ import hashlib
 import io
 import json
 import re
+import secrets
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -26,9 +27,16 @@ from .sql import SqlGateway, parse_bool
 from .xlsx import WorkbookError, read_sheet
 
 
-SITE_TYPES = {"server_room", "weak_room"}
-SITE_TYPE_LABELS = {"server_room": "机房", "weak_room": "弱电间", "both": "通用"}
-TEMPLATE_SITE_TYPES = {"server_room", "weak_room", "both"}
+SITE_TYPES = {"server_room", "weak_room", "meeting_room"}
+SITE_TYPE_LABELS = {
+    "server_room": "机房",
+    "weak_room": "弱电间",
+    "meeting_room": "会议室",
+    "both": "通用",
+}
+TEMPLATE_SITE_TYPES = {"server_room", "weak_room", "meeting_room", "both"}
+# 一次"批量开检"最多选择多少个目标
+MAX_TASK_TARGETS = 30
 SCOPE_KINDS = {"site", "rack"}
 VALUE_TYPES = {"ok_fail", "number", "text", "select"}
 CHECK_RESULTS = {"pending", "ok", "fail", "na"}
@@ -37,7 +45,19 @@ CODE_PATTERN = re.compile(r"^[A-Za-z0-9._-]{2,64}$")
 
 # 巡检表导入：允许的表头写法（大小写、空格与标点会被忽略）
 IMPORT_HEADER_ALIASES: dict[str, set[str]] = {
-    "site": {"机房", "机房名称", "弱电间", "弱电间名称", "site", "sitename"},
+    # 巡检对象：机房 / 弱电间 / 会议室（"巡检对象" 是模板表头，其余为兼容写法）
+    "site": {
+        "巡检对象",
+        "对象",
+        "机房",
+        "机房名称",
+        "弱电间",
+        "弱电间名称",
+        "会议室",
+        "会议室名称",
+        "site",
+        "sitename",
+    },
     "rack": {"机柜", "机柜名称", "rack", "rackname"},
     "category": {"检查项分类", "分类", "类别", "category"},
     "title": {"检查项", "检查内容", "巡检项", "巡检事项", "事项", "title", "item"},
@@ -59,7 +79,7 @@ IMPORT_RESULT_ALIASES = {
     "n/a": "na",
 }
 IMPORT_COLUMNS = (
-    "机房",
+    "巡检对象",
     "机柜",
     "检查项分类",
     "检查项",
@@ -236,14 +256,19 @@ class InspectionService:
                   'location', site.location_desc,
                   'remarks', site.remarks,
                   'isActive', site.is_active,
-                  'rackCount', site.rack_count
+                  'rackCount', site.rack_count,
+                  'deviceCount', site.device_count
                 )), JSON_ARRAY())
                 FROM (
                   SELECT site.*, COALESCE(org.org_name, '') AS org_name,
                     (
                     SELECT COUNT(*) FROM asset_rack rack
                     WHERE rack.site_id = site.site_id AND rack.is_active = 1
-                    ) AS rack_count
+                    ) AS rack_count,
+                    (
+                    SELECT COUNT(*) FROM site_device device
+                    WHERE device.site_id = site.site_id AND device.is_active = 1
+                    ) AS device_count
                   FROM asset_site site
                   LEFT JOIN org_unit org ON org.org_unit_id = site.org_unit_id
                   {active_filter}
@@ -535,20 +560,27 @@ class InspectionService:
             None,
         )
         if not site:
-            raise self.api_error("机房/弱电间不存在。")
+            raise self.api_error("巡检对象不存在。")
         site_id_int = self.db.integer(site.get("id"), 0)
         rack_count = self.db.scalar(
             f"SELECT COUNT(*) FROM asset_rack WHERE site_id = {site_id_int} AND is_active = 1;"
         )
         if self.db.integer(rack_count, 0) > 0:
             raise self.conflict_error(
-                f"该机房下还有 {self.db.integer(rack_count, 0)} 个机柜，请先删除或转移机柜。"
+                f"该对象下还有 {self.db.integer(rack_count, 0)} 个机柜，请先删除或转移机柜。"
+            )
+        device_count = self.db.scalar(
+            f"SELECT COUNT(*) FROM site_device WHERE site_id = {site_id_int} AND is_active = 1;"
+        )
+        if self.db.integer(device_count, 0) > 0:
+            raise self.conflict_error(
+                f"该会议室还有 {self.db.integer(device_count, 0)} 台设备，请先移除设备记录。"
             )
         task_count = self.db.scalar(
             f"SELECT COUNT(*) FROM inspection_task WHERE site_id = {site_id_int};"
         )
         if self.db.integer(task_count, 0) > 0:
-            raise self.conflict_error("该机房已有巡检任务记录，删除会破坏巡检历史，不能删除。")
+            raise self.conflict_error("该对象已有巡检任务记录，删除会破坏巡检历史，不能删除。")
         reason = self.db.text(payload.get("reason"))[:200]
         self.db.execute(
             f"""
@@ -559,7 +591,8 @@ class InspectionService:
                 "asset_site",
                 str(site_id_int),
                 self.db.text(site.get("name")),
-                f"删除机房/弱电间：{self.db.text(site.get('name'))}"
+                f"删除巡检对象：{SITE_TYPE_LABELS.get(self.db.text(site.get('siteType')), '机房')}"
+                f"·{self.db.text(site.get('name'))}"
                 + (f"（原因：{reason}）" if reason else ""),
                 context,
                 site,
@@ -633,6 +666,405 @@ class InspectionService:
         return {"id": str(rack_id_int), "code": self.db.text(rack.get("code"))}
 
     # ---------------------------------------------------------------- templates
+
+    # ----------------------------------------------------------- site devices
+
+    def _site_row(self, site_id: object) -> dict:
+        site = self.db.json(
+            f"""
+            SELECT JSON_OBJECT(
+              'id', CAST(site_id AS CHAR),
+              'code', site_code,
+              'name', site_name,
+              'siteType', site_type,
+              'isActive', is_active
+            )
+            FROM asset_site
+            WHERE site_id = {self.db.integer(site_id, 0)}
+            """,
+            None,
+        )
+        if not site:
+            raise self.api_error("巡检对象不存在。")
+        return dict(site)
+
+    def list_site_devices(self, site_id: object, context: dict) -> dict:
+        """会议室（或任意巡检对象）里的设备清单：IT 物资分配的 + 自定义登记的。"""
+        site = self._site_row(site_id)
+        site_id_int = self.db.integer(site.get("id"), 0)
+        devices = list(
+            self.db.json(
+                f"""
+                SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
+                  'id', CAST(device.device_id AS CHAR),
+                  'source', device.source,
+                  'name', device.device_name,
+                  'deviceType', device.device_type,
+                  'brand', device.brand,
+                  'model', device.model,
+                  'quantity', device.quantity,
+                  'status', device.status,
+                  'notes', device.notes,
+                  'modelId', COALESCE(CAST(device.inventory_model_id AS CHAR), ''),
+                  'warehouseId', COALESCE(CAST(device.warehouse_id AS CHAR), ''),
+                  'warehouseName', COALESCE(warehouse.warehouse_name, ''),
+                  'createdAt', DATE_FORMAT(device.created_at, '%Y-%m-%d %H:%i:%s')
+                )), JSON_ARRAY())
+                FROM site_device device
+                LEFT JOIN inventory_warehouse warehouse
+                  ON warehouse.warehouse_id = device.warehouse_id
+                WHERE device.site_id = {site_id_int}
+                  AND device.is_active = 1
+                ORDER BY device.source, device.device_id
+                """,
+                [],
+            )
+            or []
+        )
+        return {
+            "site": {
+                "id": str(site_id_int),
+                "name": self.db.text(site.get("name")),
+                "siteType": self.db.text(site.get("siteType")),
+            },
+            "devices": devices,
+        }
+
+    def add_site_device(self, site_id: object, payload: dict, context: dict) -> dict:
+        """把设备登记到会议室：来源可以是 IT 物资（按仓库出库）或自定义登记。"""
+        site = self._site_row(site_id)
+        if not parse_bool(site.get("isActive"), True):
+            raise self.conflict_error("该巡检对象已停用。")
+        site_id_int = self.db.integer(site.get("id"), 0)
+        site_name = self.db.text(site.get("name"))
+        source = self.db.text(payload.get("source")) or "custom"
+        if source not in {"inventory", "custom"}:
+            raise self.api_error("设备来源必须是 IT 物资或自定义登记。")
+        quantity = self.db.integer(payload.get("quantity"), 1)
+        if quantity <= 0 or quantity > 999:
+            raise self.api_error("数量必须在 1-999 之间。")
+        notes = self.db.text(payload.get("notes"))[:500]
+        actor_id = self._actor_id(context)
+
+        device_name = ""
+        device_type = ""
+        brand = ""
+        model = ""
+        model_id = 0
+        warehouse_id = 0
+        movement_sql = ""
+        stock_guard = "1 = 1"
+
+        if source == "inventory":
+            model_id = self.db.integer(payload.get("modelId"), 0)
+            if model_id <= 0:
+                raise self.api_error("请选择要分配的 IT 物资型号。")
+            model_row = self.db.json(
+                f"""
+                SELECT JSON_OBJECT(
+                  'name', model.model_name,
+                  'brand', brand.brand_name,
+                  'typeName', type_row.type_name
+                )
+                FROM it_inventory_model model
+                JOIN it_inventory_brand brand ON brand.brand_id = model.brand_id
+                JOIN non_asset_type type_row ON type_row.non_asset_type_id = model.non_asset_type_id
+                WHERE model.model_id = {model_id} AND model.is_active = 1
+                """,
+                None,
+            )
+            if not model_row:
+                raise self.api_error("IT 物资型号不存在。")
+            warehouse_id = self.db.integer(payload.get("warehouseId"), 0)
+            if warehouse_id <= 0:
+                raise self.api_error("从 IT 物资分配时必须选择出库仓库。")
+            warehouse = self.db.json(
+                f"""
+                SELECT JSON_OBJECT('id', CAST(warehouse_id AS CHAR), 'name', warehouse_name)
+                FROM inventory_warehouse
+                WHERE warehouse_id = {warehouse_id} AND is_active = 1
+                """,
+                None,
+            )
+            if not warehouse:
+                raise self.api_error("出库仓库不存在或已停用。")
+            brand = self.db.text(model_row.get("brand"))
+            model = self.db.text(model_row.get("name"))
+            device_type = self.db.text(model_row.get("typeName"))
+            device_name = f"{brand} {model}".strip()
+            # 从仓库扣减库存并写流转日志；库存不足时整条语句不生效。
+            stock_guard = "@stock_moved = 1"
+            movement_sql = f"""
+            INSERT INTO inventory_movement_log (
+              movement_direction, type_name, brand_name, model_name, quantity,
+              source_label, source_warehouse_id, target_label, target_warehouse_id,
+              note, related_employee_no, related_employee_name, trigger_action
+            )
+            SELECT
+              'decrease',
+              {self.db.quote(device_type)},
+              {self.db.quote(brand)},
+              {self.db.quote(model)},
+              {quantity},
+              {self.db.quote(self.db.text(warehouse.get('name')))},
+              {warehouse_id},
+              {self.db.quote(site_name)},
+              NULL,
+              {self.db.quote(notes)},
+              '',
+              '',
+              'site_allocation'
+            FROM DUAL
+            WHERE @stock_moved = 1;
+            """
+        else:
+            device_name = self.db.text(payload.get("name"))[:128]
+            if not device_name:
+                raise self.api_error("自定义设备必须填写设备名称。")
+            device_type = self.db.text(payload.get("deviceType"))[:64]
+            brand = self.db.text(payload.get("brand"))[:64]
+            model = self.db.text(payload.get("model"))[:128]
+
+        statements = [
+            "START TRANSACTION",
+            "SET @stock_moved = 1",
+        ]
+        if source == "inventory":
+            statements.extend(
+                [
+                    f"""
+                    SELECT quantity INTO @model_available_quantity
+                    FROM it_inventory_model
+                    WHERE model_id = {model_id}
+                    FOR UPDATE
+                    """,
+                    f"""
+                    INSERT INTO inventory_warehouse_stock (warehouse_id, model_id, quantity)
+                    SELECT {warehouse_id}, {model_id}, 0
+                    FROM DUAL
+                    ON DUPLICATE KEY UPDATE warehouse_id = VALUES(warehouse_id)
+                    """,
+                    f"""
+                    SELECT COALESCE(quantity, 0) INTO @warehouse_available_quantity
+                    FROM inventory_warehouse_stock
+                    WHERE warehouse_id = {warehouse_id}
+                      AND model_id = {model_id}
+                    FOR UPDATE
+                    """,
+                    f"""
+                    SET @stock_moved = IF(
+                      @model_available_quantity >= {quantity}
+                      AND @warehouse_available_quantity >= {quantity},
+                      1,
+                      0
+                    )
+                    """,
+                    f"""
+                    UPDATE it_inventory_model
+                    SET quantity = quantity - {quantity}
+                    WHERE model_id = {model_id}
+                      AND @stock_moved = 1
+                    """,
+                    f"""
+                    UPDATE inventory_warehouse_stock
+                    SET quantity = quantity - {quantity}
+                    WHERE warehouse_id = {warehouse_id}
+                      AND model_id = {model_id}
+                      AND @stock_moved = 1
+                    """,
+                ]
+            )
+        statements.append(
+            f"""
+            INSERT INTO site_device (
+              site_id, source, device_name, device_type, brand, model,
+              inventory_model_id, warehouse_id, quantity, status, notes, created_by, updated_by
+            )
+            SELECT
+              {site_id_int},
+              {self.db.quote(source)},
+              {self.db.quote(device_name)},
+              {self.db.quote(device_type)},
+              {self.db.quote(brand)},
+              {self.db.quote(model)},
+              {model_id if model_id > 0 else 'NULL'},
+              {warehouse_id if warehouse_id > 0 else 'NULL'},
+              {quantity},
+              'in_use',
+              {self.db.quote(notes)},
+              {actor_id if actor_id > 0 else 'NULL'},
+              {actor_id if actor_id > 0 else 'NULL'}
+            FROM DUAL
+            WHERE {stock_guard}
+            """
+        )
+        statements.extend(
+            [
+                "SET @new_site_device_id = IF(@stock_moved = 1, LAST_INSERT_ID(), 0)",
+                f"""
+                {movement_sql}
+                """ if movement_sql else "SELECT 1",
+                self._conditional_audit_sql(
+                    "site_device_added",
+                    "site_device",
+                    "@new_site_device_id",
+                    device_name,
+                    f"登记会议室内设备：{site_name} / {device_name} ×{quantity}",
+                    context,
+                    "@new_site_device_id > 0",
+                    None,
+                    {
+                        "source": source,
+                        "quantity": quantity,
+                        "modelId": str(model_id) if model_id > 0 else "",
+                        "warehouseId": str(warehouse_id) if warehouse_id > 0 else "",
+                    },
+                ),
+                "SELECT @new_site_device_id, @stock_moved",
+                "COMMIT",
+            ]
+        )
+        output = self.db.execute(";\n".join(statement.strip() for statement in statements) + ";")
+        lines = [line.strip() for line in output.splitlines() if line.strip()]
+        result = (lines[-1] if lines else "").split("\t")
+        device_id = self.db.integer(result[0] if result else 0, 0)
+        stock_moved = self.db.integer(result[1] if len(result) > 1 else 1, 1)
+        if device_id <= 0:
+            if source == "inventory" and not stock_moved:
+                raise self.conflict_error("所选仓库的库存不足，无法分配。")
+            raise self.conflict_error("设备登记失败，请重试。")
+        return {
+            "id": str(device_id),
+            "siteId": str(site_id_int),
+            "name": device_name,
+            "quantity": quantity,
+            "source": source,
+        }
+
+    def remove_site_device(self, device_id: object, payload: dict, context: dict) -> dict:
+        """移除会议室内设备；来自 IT 物资的记录会把数量退回原仓库。"""
+        device = self.db.json(
+            f"""
+            SELECT JSON_OBJECT(
+              'id', CAST(device.device_id AS CHAR),
+              'siteId', CAST(device.site_id AS CHAR),
+              'siteName', site.site_name,
+              'source', device.source,
+              'name', device.device_name,
+              'typeName', device.device_type,
+              'brand', device.brand,
+              'model', device.model,
+              'modelId', COALESCE(CAST(device.inventory_model_id AS CHAR), ''),
+              'warehouseId', COALESCE(CAST(device.warehouse_id AS CHAR), ''),
+              'quantity', device.quantity,
+              'isActive', device.is_active
+            )
+            FROM site_device device
+            JOIN asset_site site ON site.site_id = device.site_id
+            WHERE device.device_id = {self.db.integer(device_id, 0)}
+            """,
+            None,
+        )
+        if not device:
+            raise self.api_error("设备记录不存在。")
+        if not parse_bool(device.get("isActive"), True):
+            raise self.conflict_error("该设备记录已经移除。")
+        device_id_int = self.db.integer(device.get("id"), 0)
+        source = self.db.text(device.get("source"))
+        quantity = max(1, self.db.integer(device.get("quantity"), 1))
+        model_id = self.db.integer(device.get("modelId"), 0)
+        warehouse_id = self.db.integer(payload.get("warehouseId"), 0) or self.db.integer(
+            device.get("warehouseId"), 0
+        )
+        reason = self.db.text(payload.get("reason"))[:200]
+        actor_id = self._actor_id(context)
+        return_stock = source == "inventory" and model_id > 0
+        warehouse_name = ""
+        if return_stock and warehouse_id > 0:
+            warehouse = self.db.json(
+                f"""
+                SELECT JSON_OBJECT('name', warehouse_name)
+                FROM inventory_warehouse
+                WHERE warehouse_id = {warehouse_id}
+                """,
+                None,
+            )
+            warehouse_name = self.db.text((warehouse or {}).get("name"))
+
+        statements = ["START TRANSACTION"]
+        if return_stock:
+            statements.extend(
+                [
+                    f"""
+                    INSERT INTO inventory_warehouse_stock (warehouse_id, model_id, quantity)
+                    VALUES ({warehouse_id}, {model_id}, {quantity})
+                    ON DUPLICATE KEY UPDATE quantity = quantity + VALUES(quantity)
+                    """,
+                    f"""
+                    UPDATE it_inventory_model
+                    SET quantity = quantity + {quantity}
+                    WHERE model_id = {model_id}
+                    """,
+                    f"""
+                    INSERT INTO inventory_movement_log (
+                      movement_direction, type_name, brand_name, model_name, quantity,
+                      source_label, source_warehouse_id, target_label, target_warehouse_id,
+                      note, related_employee_no, related_employee_name, trigger_action
+                    )
+                    SELECT
+                      'increase',
+                      {self.db.quote(self.db.text(device.get('typeName')))},
+                      {self.db.quote(self.db.text(device.get('brand')))},
+                      {self.db.quote(self.db.text(device.get('model')))},
+                      {quantity},
+                      {self.db.quote(self.db.text(device.get('siteName')))},
+                      NULL,
+                      {self.db.quote(warehouse_name)},
+                      {warehouse_id},
+                      {self.db.quote(reason)},
+                      '',
+                      '',
+                      'site_return'
+                    FROM DUAL
+                    WHERE {1 if warehouse_id > 0 else 0} = 1
+                    """,
+                ]
+            )
+        statements.append(
+            f"""
+            UPDATE site_device
+            SET is_active = 0,
+                status = 'returned',
+                notes = CONCAT_WS(' ', notes, {self.db.quote(reason)}),
+                updated_by = {actor_id if actor_id > 0 else 'NULL'}
+            WHERE device_id = {device_id_int}
+            """
+        )
+        statements.append(
+            self._audit_sql(
+                "site_device_removed",
+                "site_device",
+                str(device_id_int),
+                self.db.text(device.get("name")),
+                f"移除会议室内设备：{self.db.text(device.get('siteName'))} / "
+                f"{self.db.text(device.get('name'))} ×{quantity}"
+                + (f"（原因：{reason}）" if reason else ""),
+                context,
+                {
+                    "source": source,
+                    "quantity": quantity,
+                    "warehouseId": str(warehouse_id) if warehouse_id > 0 else "",
+                },
+                None,
+            )
+        )
+        statements.append("COMMIT")
+        self.db.execute(";\n".join(statement.strip() for statement in statements) + ";")
+        return {
+            "id": str(device_id_int),
+            "returnedToStock": bool(return_stock),
+            "quantity": quantity,
+        }
 
     def list_templates(self, context: dict) -> list[dict]:
         return list(
@@ -860,6 +1292,50 @@ class InspectionService:
         self.db.execute(";\n".join(statements) + ";")
         return {"id": str(template_id_int), "code": code, "name": name, "itemCount": len(items)}
 
+    def delete_template(self, template_id: object, payload: dict, context: dict) -> dict:
+        """删除巡检模板；历史任务保留当时的模板名称与事项快照（template_id 置空）。"""
+        template = self.get_template(template_id, context)
+        template_id_int = self.db.integer(template.get("id"), 0)
+        if template_id_int <= 0:
+            raise self.api_error("巡检模板不存在。")
+        task_count = self.db.integer(
+            self.db.scalar(
+                f"SELECT COUNT(*) FROM inspection_task WHERE template_id = {template_id_int};"
+            ),
+            0,
+        )
+        reason = self.db.text(payload.get("reason"))[:200]
+        self.db.execute(
+            f"""
+            START TRANSACTION;
+            UPDATE inspection_task
+            SET template_id = NULL
+            WHERE template_id = {template_id_int};
+            DELETE FROM inspection_template WHERE template_id = {template_id_int};
+            {self._audit_sql(
+                "inspection_template_deleted",
+                "inspection_template",
+                str(template_id_int),
+                self.db.text(template.get("name")),
+                f"删除巡检模板：{self.db.text(template.get('name'))}"
+                f"（保留 {task_count} 张历史巡检表的快照）"
+                + (f"，原因：{reason}" if reason else ""),
+                context,
+                {
+                    "code": self.db.text(template.get("code")),
+                    "itemCount": len(template.get("items") or []),
+                },
+                None,
+            )};
+            COMMIT;
+            """
+        )
+        return {
+            "id": str(template_id_int),
+            "tasks": task_count,
+            "items": len(template.get("items") or []),
+        }
+
     # -------------------------------------------------------------------- tasks
 
     def _next_task_no(self) -> str:
@@ -886,9 +1362,11 @@ class InspectionService:
                 SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
                   'id', CAST(task.task_id AS CHAR),
                   'taskNo', task.task_no,
+                  'batchNo', task.batch_no,
                   'templateId', COALESCE(CAST(task.template_id AS CHAR), ''),
                   'templateName', task.template_name,
                   'scopeKind', task.scope_kind,
+                  'siteType', task.site_type,
                   'scopeName', TRIM(BOTH ' /' FROM CONCAT(
                     COALESCE(task.site_name, ''), ' / ', COALESCE(task.rack_name, '')
                   )),
@@ -945,72 +1423,19 @@ class InspectionService:
         if not items:
             raise self.conflict_error("该巡检模板没有巡检事项，请先补充后再开始巡检。")
 
-        scope_kind = self.db.text(payload.get("scopeKind")) or "site"
-        if scope_kind not in SCOPE_KINDS:
-            raise self.api_error("巡检对象类型无效。")
-        site_id = 0
-        rack_id = 0
-        site_name = ""
-        rack_name = ""
-        site_type = ""
-        if scope_kind == "site":
-            site_id = self.db.integer(payload.get("siteId"), 0)
-            if site_id <= 0:
-                raise self.api_error("请选择要巡检的机房或弱电间。")
-            site = self.db.json(
-                f"""
-                SELECT JSON_OBJECT(
-                  'id', CAST(site_id AS CHAR),
-                  'name', site_name,
-                  'siteType', site_type,
-                  'isActive', is_active
-                )
-                FROM asset_site
-                WHERE site_id = {site_id}
-                """,
-                None,
-            )
-            if not site:
-                raise self.api_error("机房/弱电间不存在。")
-            if not parse_bool(site.get("isActive"), True):
-                raise self.conflict_error("该机房/弱电间已停用。")
-            site_name = self.db.text(site.get("name"))
-            site_type = self.db.text(site.get("siteType"))
-        else:
-            rack_id = self.db.integer(payload.get("rackId"), 0)
-            if rack_id <= 0:
-                raise self.api_error("请选择要巡检的机柜。")
-            rack = self.db.json(
-                f"""
-                SELECT JSON_OBJECT(
-                  'id', CAST(rack.rack_id AS CHAR),
-                  'name', rack.rack_name,
-                  'siteId', CAST(rack.site_id AS CHAR),
-                  'siteName', site.site_name,
-                  'siteType', site.site_type,
-                  'isActive', rack.is_active
-                )
-                FROM asset_rack rack
-                JOIN asset_site site ON site.site_id = rack.site_id
-                WHERE rack.rack_id = {rack_id}
-                """,
-                None,
-            )
-            if not rack:
-                raise self.api_error("机柜不存在。")
-            if not parse_bool(rack.get("isActive"), True):
-                raise self.conflict_error("该机柜已停用。")
-            site_id = self.db.integer(rack.get("siteId"), 0)
-            site_name = self.db.text(rack.get("siteName"))
-            site_type = self.db.text(rack.get("siteType"))
-            rack_name = self.db.text(rack.get("name"))
-
+        # 巡检目标可以一次选多个（机房 / 弱电间 / 会议室 / 机柜），一个目标生成一张任务，
+        # 同一个批次号把它们串起来，导出时横向排列本次巡检的目标。
+        targets = self._resolve_start_targets(payload, context)
         template_site_type = self.db.text(template.get("siteType")) or "both"
-        if template_site_type != "both" and site_type and template_site_type != site_type:
-            raise self.api_error(
-                f"模板「{template.get('name')}」适用于{SITE_TYPE_LABELS.get(template_site_type, '指定对象')}，"
-                f"与当前巡检对象（{SITE_TYPE_LABELS.get(site_type, site_type)}）不匹配。"
-            )
+        if template_site_type != "both":
+            for target in targets:
+                target_type = self.db.text(target.get("siteType"))
+                if target_type and template_site_type != target_type:
+                    raise self.api_error(
+                        f"模板「{template.get('name')}」适用于"
+                        f"{SITE_TYPE_LABELS.get(template_site_type, '指定对象')}，"
+                        f"与所选巡检对象（{target.get('scopeLabel')}）不匹配。"
+                    )
 
         inspector_id = self.db.integer(payload.get("inspectorUserId"), 0)
         if inspector_id <= 0:
@@ -1026,6 +1451,168 @@ class InspectionService:
             inspector_name = self._actor_name(context)
 
         remarks = self.db.text(payload.get("remarks"))[:500]
+        batch_no = self._next_batch_no()
+        created: list[dict] = []
+        for target in targets:
+            created.append(
+                self._create_inspection_task(
+                    template=template,
+                    items=items,
+                    target=target,
+                    batch_no=batch_no,
+                    inspector_id=inspector_id,
+                    inspector_name=inspector_name,
+                    remarks=remarks,
+                    context=context,
+                )
+            )
+        if not created:
+            raise self.conflict_error("巡检任务创建失败，请重试。")
+        response = {
+            "batchNo": batch_no,
+            "tasks": created,
+            "taskCount": len(created),
+            # 兼容既有前端与接口调用：单目标时直接给出这张任务的编号。
+            "id": created[0]["id"],
+            "taskNo": created[0]["taskNo"],
+            "itemTotal": created[0]["itemTotal"],
+        }
+        self._store_idempotency_result("inspection.task.start", idempotency_key, payload, response)
+        return response
+
+    def _next_batch_no(self) -> str:
+        """一次多选开检的批次号：同批次的任务可以用横向巡检表一起导出。"""
+        return f"B{datetime.now().strftime('%Y%m%d')}-{secrets.token_hex(3).upper()}"
+
+    def _resolve_start_targets(self, payload: dict, context: dict) -> list[dict]:
+        """解析本次开检的目标：支持新的 targets 数组，也兼容原来的单个 siteId / rackId。"""
+        raw_targets = payload.get("targets")
+        entries: list[dict] = []
+        if isinstance(raw_targets, list) and raw_targets:
+            for item in raw_targets:
+                if not isinstance(item, dict):
+                    raise self.api_error("巡检目标格式无效。")
+                entries.append(
+                    {
+                        "scopeKind": self.db.text(item.get("kind") or item.get("scopeKind"))
+                        or "site",
+                        "targetId": self.db.integer(
+                            item.get("id") or item.get("siteId") or item.get("rackId"), 0
+                        ),
+                    }
+                )
+        else:
+            scope_kind = self.db.text(payload.get("scopeKind")) or "site"
+            entries.append(
+                {
+                    "scopeKind": scope_kind,
+                    "targetId": self.db.integer(
+                        payload.get("rackId") if scope_kind == "rack" else payload.get("siteId"),
+                        0,
+                    ),
+                }
+            )
+        if len(entries) > MAX_TASK_TARGETS:
+            raise self.api_error(f"一次最多选择 {MAX_TASK_TARGETS} 个巡检对象。")
+        targets: list[dict] = []
+        seen: set[str] = set()
+        for entry in entries:
+            scope_kind = entry["scopeKind"]
+            target_id = entry["targetId"]
+            if scope_kind not in SCOPE_KINDS:
+                raise self.api_error("巡检对象类型无效。")
+            if target_id <= 0:
+                raise self.api_error("请选择要巡检的对象。")
+            key = f"{scope_kind}:{target_id}"
+            if key in seen:
+                continue
+            seen.add(key)
+            targets.append(self._resolve_start_target(scope_kind, target_id, context))
+        if not targets:
+            raise self.api_error("请选择要巡检的对象。")
+        return targets
+
+    def _resolve_start_target(self, scope_kind: str, target_id: int, context: dict) -> dict:
+        if scope_kind == "site":
+            site = self.db.json(
+                f"""
+                SELECT JSON_OBJECT(
+                  'id', CAST(site_id AS CHAR),
+                  'name', site_name,
+                  'siteType', site_type,
+                  'isActive', is_active
+                )
+                FROM asset_site
+                WHERE site_id = {target_id}
+                """,
+                None,
+            )
+            if not site:
+                raise self.api_error("巡检对象不存在。")
+            if not parse_bool(site.get("isActive"), True):
+                raise self.conflict_error("该巡检对象已停用。")
+            site_type = self.db.text(site.get("siteType"))
+            site_name = self.db.text(site.get("name"))
+            return {
+                "scopeKind": "site",
+                "siteId": self.db.integer(site.get("id"), 0),
+                "siteName": site_name,
+                "rackId": 0,
+                "rackName": "",
+                "siteType": site_type,
+                "scopeLabel": f"{SITE_TYPE_LABELS.get(site_type, '机房')}·{site_name}",
+            }
+        rack = self.db.json(
+            f"""
+            SELECT JSON_OBJECT(
+              'id', CAST(rack.rack_id AS CHAR),
+              'name', rack.rack_name,
+              'siteId', CAST(rack.site_id AS CHAR),
+              'siteName', site.site_name,
+              'siteType', site.site_type,
+              'isActive', rack.is_active
+            )
+            FROM asset_rack rack
+            JOIN asset_site site ON site.site_id = rack.site_id
+            WHERE rack.rack_id = {target_id}
+            """,
+            None,
+        )
+        if not rack:
+            raise self.api_error("机柜不存在。")
+        if not parse_bool(rack.get("isActive"), True):
+            raise self.conflict_error("该机柜已停用。")
+        site_name = self.db.text(rack.get("siteName"))
+        rack_name = self.db.text(rack.get("name"))
+        return {
+            "scopeKind": "rack",
+            "siteId": self.db.integer(rack.get("siteId"), 0),
+            "siteName": site_name,
+            "rackId": self.db.integer(rack.get("id"), 0),
+            "rackName": rack_name,
+            "siteType": self.db.text(rack.get("siteType")),
+            "scopeLabel": f"机柜·{site_name}/{rack_name}",
+        }
+
+    def _create_inspection_task(
+        self,
+        *,
+        template: dict,
+        items: list[dict],
+        target: dict,
+        batch_no: str,
+        inspector_id: int,
+        inspector_name: str,
+        remarks: str,
+        context: dict,
+    ) -> dict:
+        template_id = self.db.integer(template.get("id"), 0)
+        scope_kind = self.db.text(target.get("scopeKind")) or "site"
+        site_id = self.db.integer(target.get("siteId"), 0)
+        rack_id = self.db.integer(target.get("rackId"), 0)
+        site_name = self.db.text(target.get("siteName"))
+        rack_name = self.db.text(target.get("rackName"))
+        site_type = self.db.text(target.get("siteType"))
         task_no = self._next_task_no()
         item_values = []
         for item in items:
@@ -1050,16 +1637,19 @@ class InspectionService:
             f"""
             START TRANSACTION;
             INSERT INTO inspection_task (
-              task_no, template_id, template_name, scope_kind, site_id, site_name,
-              rack_id, rack_name, inspector_user_id, inspector_name, status, item_total, remarks
+              task_no, batch_no, template_id, template_name, scope_kind, site_id, site_name,
+              site_type, rack_id, rack_name, inspector_user_id, inspector_name, status,
+              item_total, remarks
             )
             VALUES (
               {self.db.quote(task_no)},
+              {self.db.quote(batch_no)},
               {template_id},
               {self.db.quote(self.db.text(template.get('name')))},
               {self.db.quote(scope_kind)},
               {site_id if site_id > 0 else 'NULL'},
               {self.db.quote(site_name)},
+              {self.db.quote(site_type)},
               {rack_id if rack_id > 0 else 'NULL'},
               {self.db.quote(rack_name)},
               {inspector_id if inspector_id > 0 else 'NULL'},
@@ -1078,11 +1668,12 @@ class InspectionService:
                 "inspection_task",
                 "'new'",
                 task_no,
-                f"开始巡检：{task_no} / {SITE_TYPE_LABELS.get(site_type, '')}{site_name}{rack_name}",
+                f"开始巡检：{task_no} / {target.get('scopeLabel')}",
                 context,
                 None,
                 {
                     "taskNo": task_no,
+                    "batchNo": batch_no,
                     "templateId": str(template_id),
                     "scopeKind": scope_kind,
                     "siteId": str(site_id) if site_id > 0 else "",
@@ -1100,9 +1691,16 @@ class InspectionService:
         task_id = self._last_int(output)
         if task_id <= 0:
             raise self.conflict_error("巡检任务创建失败，请重试。")
-        response = {"id": str(task_id), "taskNo": task_no, "itemTotal": len(items)}
-        self._store_idempotency_result("inspection.task.start", idempotency_key, payload, response)
-        return response
+        return {
+            "id": str(task_id),
+            "taskNo": task_no,
+            "itemTotal": len(items),
+            "scopeKind": scope_kind,
+            "scopeLabel": self.db.text(target.get("scopeLabel")),
+            "siteName": site_name,
+            "rackName": rack_name,
+            "siteType": site_type,
+        }
 
     # ------------------------------------------------------------------ 表格导入
 
@@ -1212,7 +1810,7 @@ class InspectionService:
                 errors.append({"row": excel_row, "message": "缺少机房名称"})
                 continue
             if site_name and row_site != site_name:
-                errors.append({"row": excel_row, "message": f"与首行的机房「{site_name}」不一致"})
+                errors.append({"row": excel_row, "message": f"与首行的巡检对象「{site_name}」不一致"})
                 continue
             if rack_name and row_rack and row_rack != rack_name:
                 errors.append({"row": excel_row, "message": f"与首行的机柜「{rack_name}」不一致"})
@@ -1255,7 +1853,9 @@ class InspectionService:
             None,
         )
         if not site:
-            raise self.api_error(f"机房/弱电间「{site_name}」不存在，请先在「机房与机柜」里创建。")
+            raise self.api_error(
+                f"巡检对象「{site_name}」不存在，请先在「巡检对象」或「会议室」里创建。"
+            )
         site_id = self.db.integer(site.get("id"), 0)
         site_type = self.db.text(site.get("siteType"))
         self.scope.assert_org_access(context, self.db.integer(site.get("orgId"), 0))
@@ -1428,6 +2028,7 @@ class InspectionService:
             SELECT JSON_OBJECT(
               'id', CAST(task.task_id AS CHAR),
               'taskNo', task.task_no,
+              'batchNo', task.batch_no,
               'templateId', COALESCE(CAST(task.template_id AS CHAR), ''),
               'templateName', task.template_name,
               'scopeKind', task.scope_kind,
@@ -1446,7 +2047,8 @@ class InspectionService:
               'itemNa', task.item_na,
               'abnormalSummary', task.abnormal_summary,
               'remarks', task.remarks,
-              'siteType', COALESCE(site.site_type, '')
+              -- 对象类型优先用开始巡检时的快照，对象被删掉后仍能显示
+              'siteType', COALESCE(NULLIF(task.site_type, ''), site.site_type, '')
             )
             FROM inspection_task task
             LEFT JOIN asset_site site ON site.site_id = task.site_id
@@ -1682,3 +2284,64 @@ class InspectionService:
         if self._last_int(output) <= 0:
             raise self.conflict_error("该巡检任务已提交或已作废。")
         return {"id": str(task_id_int), "taskNo": self.db.text(task.get("taskNo")), "status": "void"}
+
+    def delete_task(self, task_id: object, payload: dict, context: dict) -> dict:
+        """删除**已作废**的巡检任务及其明细；未作废的任务必须先作废再删除。
+
+        已提交的巡检表属于历史记录，既不能作废也不能删除。
+        """
+        task_id_int = self.db.integer(task_id, 0)
+        task = self.db.json(
+            f"""
+            SELECT JSON_OBJECT(
+              'id', CAST(task_id AS CHAR),
+              'taskNo', task_no,
+              'batchNo', batch_no,
+              'status', status
+            )
+            FROM inspection_task
+            WHERE task_id = {task_id_int}
+            """,
+            None,
+        )
+        if not task:
+            raise self.api_error("巡检任务不存在。")
+        status = self.db.text(task.get("status"))
+        if status != "void":
+            raise self.conflict_error("只有已作废的巡检任务才能删除，请先作废。")
+        task_no = self.db.text(task.get("taskNo"))
+        item_count = self.db.integer(
+            self.db.scalar(
+                f"SELECT COUNT(*) FROM inspection_task_item WHERE task_id = {task_id_int};"
+            ),
+            0,
+        )
+        reason = self.db.text(payload.get("reason"))[:200]
+        output = self.db.execute(
+            f"""
+            START TRANSACTION;
+            {self._audit_sql(
+                "inspection_task_deleted",
+                "inspection_task",
+                str(task_id_int),
+                task_no,
+                f"删除已作废的巡检任务：{task_no}（{item_count} 项）"
+                + (f"，原因：{reason}" if reason else ""),
+                context,
+                {
+                    "status": status,
+                    "itemCount": item_count,
+                    "batchNo": self.db.text(task.get("batchNo")),
+                },
+                None,
+            )};
+            DELETE FROM inspection_task
+            WHERE task_id = {task_id_int}
+              AND status = 'void';
+            SELECT ROW_COUNT();
+            COMMIT;
+            """
+        )
+        if self._last_int(output) <= 0:
+            raise self.conflict_error("该巡检任务状态已变化，请刷新后重试。")
+        return {"id": str(task_id_int), "taskNo": task_no, "deleted": True}
