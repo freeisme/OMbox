@@ -707,6 +707,20 @@ class DomainApiRouter:
                     status=201,
                 )
                 return True
+            if len(parts) == 7 and parts[5] == "ports" and parts[6] == "copy" and method == "POST":
+                context = self._write_context(handler, "rack_layout", "create")
+                send_json(
+                    self.device_topology.copy_ports(parts[4], self._payload(handler), context),
+                    status=201,
+                )
+                return True
+            if len(parts) == 7 and parts[5] == "ports" and parts[6] == "batch" and method == "POST":
+                context = self._write_context(handler, "rack_layout", "create")
+                send_json(
+                    self.device_topology.generate_ports(parts[4], self._payload(handler), context),
+                    status=201,
+                )
+                return True
             if len(parts) == 6 and parts[5] == "ports" and method == "POST":
                 context = self._write_context(handler, "rack_layout", "create")
                 send_json(
