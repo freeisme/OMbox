@@ -130,6 +130,10 @@ EMAIL_PLACEHOLDER_LOCAL_PARTS = (
 # 邮箱规则同时放行文档里用的保留域（example.* / *.invalid）。
 EMAIL_PLACEHOLDER_DOMAIN_HINTS = ("example", ".invalid")
 
+# 第三方组件清单里的邮箱属于上游版权声明（MIT 等许可要求随附），不是本组织的内部信息，
+# 因此该文件单独放行邮箱规则；其余规则仍然生效。
+EMAIL_RULE_EXEMPT_FILES = {"THIRD_PARTY_NOTICES.md"}
+
 PLACEHOLDER_HINTS = (
     "replace-with",
     "change-me",
@@ -239,6 +243,8 @@ def scan(revision: str) -> list[str]:
                 if rule_name == "hardcoded-credential" and is_placeholder(match.group(0)):
                     continue
                 if rule_name == "email-address":
+                    if path in EMAIL_RULE_EXEMPT_FILES:
+                        continue
                     local_part = match.group(0).split("@", 1)[0].lower()
                     if local_part in EMAIL_PLACEHOLDER_LOCAL_PARTS:
                         continue

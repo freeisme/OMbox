@@ -29,6 +29,9 @@ COPY web ./web
 COPY --from=frontend /web/app ./web/app
 COPY VERSION ./
 
+# 再分发合规：镜像内保留自有许可与第三方组件许可清单
+COPY LICENSE THIRD_PARTY_NOTICES.md ./
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     MYSQL_BIN=/usr/bin/mysql \

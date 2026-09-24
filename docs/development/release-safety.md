@@ -52,12 +52,28 @@ rm -f /tmp/om-wordlist.txt
 
 另外禁止提交 `.env`、数据库导出、压缩备份、业务表格、运行日志和内部交接文档。
 
+`THIRD_PARTY_NOTICES.md` 是唯一放行邮箱规则的文件（里面的邮箱是上游组件的版权声明，
+MIT 等许可要求随附），其他文件仍按上表逐条拦截。
+
 ## 编写规则
 
 - 文档、示例和测试数据统一使用保留地址或占位符，不写真实主机、账号、口令和路径；
 - 需要真实取值时，通过环境变量或服务器上的受保护配置文件提供，并在文档里写成 `<占位符>`；
 - 不要为了通过扫描而把敏感内容改写成分散拼接的字符串；应直接删除。
 - 扫描规则本身在 `tools/scan_release_safety.py`，新增生产环境标识时同步补充规则。
+
+## 第三方代码与许可
+
+- 服务端只使用 Python 标准库（`requirements.txt` 无第三方包，回归测试会扫描 `server.py`、
+  `office_asset/`、`tools/` 的 import 是否仍只用标准库），第三方依赖集中在前端工程；
+- 前端依赖的组件清单、版权声明与许可全文统一维护在仓库根目录 `THIRD_PARTY_NOTICES.md`，
+  标记块由 `python tools/generate_third_party_notices.py` 生成；改动 `frontend/package.json`
+  后必须重新生成并一起提交（回归测试会校验生产依赖是否都已登记）；
+- 只接受 MIT / ISC / BSD / Apache-2.0 等宽松许可；引入 GPL / AGPL / SSPL 等传染性许可前
+  必须先确认，因为本软件按专有内部许可发布；
+- 参考其他项目的数据模型或交互时只借鉴思路，不复制其代码、模板、图标、字体与示意图。
+  确实需要复用时先核对许可，并在 `THIRD_PARTY_NOTICES.md` 的「借鉴与灵感来源」一节登记来源与用法；
+- `Dockerfile` 会把 `LICENSE` 与 `THIRD_PARTY_NOTICES.md` 一起复制进镜像，再分发时不得删除。
 
 ## 文档与更新公告
 
