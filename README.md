@@ -139,3 +139,9 @@ python server.py          # 读取 DB_* / SERVER_* 环境变量，默认 http://
 ## 许可
 
 内部使用许可，详见 [LICENSE](LICENSE)。
+
+前端构建产物里打包的第三方组件（Vue、Element Plus 及其传递依赖）的清单、版权声明与许可全文
+统一维护在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，由
+`python tools/generate_third_party_notices.py` 生成，改动 `frontend/package.json` 后需要重新生成。
+本项目把 NetBox、Rackula 等外部项目只当作数据模型与交互的参考，**没有复制其代码或素材**；
+来源说明与再分发要求同样写在该文件里。

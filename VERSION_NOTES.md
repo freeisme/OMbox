@@ -12,6 +12,44 @@
 - v2.31.0 起旧前端已整体删除，早期条目里的「回滚到旧前端 / 从 `MIGRATED_VIEWS` 移除」
   操作已不再适用。
 
+## v3.0.14
+
+发布日期：2026-09-24
+
+### 变更
+
+补齐第三方开源许可的随附与核查，本版本**不改变任何业务逻辑与数据库结构**。
+
+- 新增 `THIRD_PARTY_NOTICES.md`：列出随前端构建产物分发的第三方组件（当前 55 个：54 个 MIT、
+  1 个 BSD-3-Clause）的版本、许可、版权声明与许可全文。标记块由
+  `tools/generate_third_party_notices.py` 从 `frontend/package.json` 的生产依赖生成，
+  手写部分保留「借鉴与灵感来源」与「再分发与后续维护要求」。
+- 该文件同时说明与外部项目的关系：**NetBox**、**Rackula** 仅作为数据模型与交互的参考，
+  仓库未复制其代码、模板、图标或素材；早期内置的 NetBox `devicetype-library` 型号抓取工具
+  已在 v2.14.0 删除，回归测试会阻止它回来。
+- `LICENSE` 与 `README.md` 增加指向该清单的说明：本软件按专有内部许可发布，第三方组件权利
+  不变；再分发（含打包镜像、复制到其他组织、交付源码）必须保留 `LICENSE` 与本清单。
+- `Dockerfile` 把 `LICENSE`、`THIRD_PARTY_NOTICES.md` 复制进运行镜像，避免镜像里打包了
+  MIT 许可的代码却没有随附声明。
+- `docs/development/release-safety.md` 增加「第三方代码与许可」规则：只接受宽松许可、
+  参考外部项目只借鉴思路不复制素材、改依赖后要重新生成清单。
+
+### 数据库影响
+
+无。
+
+### 验证
+
+- `python -m unittest tests.test_regressions` 166 项通过（新增 5 项：清单覆盖生产依赖、
+  不含 GPL/AGPL/LGPL/SSPL、服务端仍只用 Python 标准库、Dockerfile/README/LICENSE 引用存在）；
+- `python tools/scan_release_safety.py --rev v3.0.14` 通过；
+- 人工核对：仓库未提交任何第三方图片、字体或图标；`office_asset/` 与 `server.py` 的全部
+  import 都是标准库或本仓库模块。
+
+### 回滚
+
+`git revert` 本提交即可（纯文档与镜像内容变更，不影响运行逻辑、数据库与既有数据）。
+
 ## v3.0.13
 
 发布日期：2026-09-23
