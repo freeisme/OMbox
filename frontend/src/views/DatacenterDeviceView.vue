@@ -76,6 +76,7 @@ async function loadDevices(): Promise<void> {
       keyword: keyword.value.trim(),
     });
     devices.value = payload.devices;
+    selectedDevices.value = [];
   } catch (error) {
     ElMessage.error(`机房设备加载失败：${(error as Error).message}`);
   } finally {
@@ -226,6 +227,73 @@ async function removeDevice(device: DatacenterDeviceSummary): Promise<void> {
   }
 }
 
+const selectedDevices = ref<DatacenterDeviceSummary[]>([]);
+
+const EXPORT_HEADER = [
+  "设备编号",
+  "设备名称",
+  "品牌型号",
+  "设备类型",
+  "占用高度",
+  "SN/ST",
+  "固资编码",
+  "使用人",
+  "状态",
+  "所在机房",
+  "所在机柜",
+  "用途",
+  "远程访问地址",
+  "CPU",
+  "内存",
+  "硬盘",
+  "备注",
+];
+
+function onSelectionChange(rows: DatacenterDeviceSummary[]): void {
+  selectedDevices.value = rows;
+}
+
+/** 导出勾选的设备信息；不勾选时导出当前筛选条件下的整张表。 */
+function exportSelected(): void {
+  const list = selectedDevices.value.length ? selectedDevices.value : devices.value;
+  if (!list.length) {
+    ElMessage.warning("没有可以导出的设备。");
+    return;
+  }
+  const rows = list.map((item) =>
+    [
+      item.code,
+      item.name,
+      item.brandModel,
+      CATEGORY_LABELS[item.category] ?? item.category,
+      `${item.uHeight}U`,
+      item.serialNumber ?? "",
+      item.assetCode ?? "",
+      item.ownerLabel ?? "",
+      STATUS_LABELS[item.status] ?? item.status,
+      item.siteName ?? "",
+      item.rackName ?? "",
+      item.purpose ?? "",
+      item.remoteAccess ?? "",
+      item.cpu ?? "",
+      item.memory ?? "",
+      item.disk ?? "",
+      item.notes ?? "",
+    ]
+      .map((cell) => `"${String(cell ?? "").replace(/"/g, '""')}"`)
+      .join(","),
+  );
+  const csv = `\ufeff${EXPORT_HEADER.join(",")}\n${rows.join("\n")}`;
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  link.download = selectedDevices.value.length
+    ? `机房设备清单-选中${selectedDevices.value.length}台.csv`
+    : "机房设备清单.csv";
+  link.click();
+  URL.revokeObjectURL(link.href);
+  ElMessage.success(`已导出 ${list.length} 台设备信息。`);
+}
+
 function downloadTemplate(): void {
   const header = [
     "设备编号",
@@ -374,13 +442,17 @@ onMounted(async () => {
         <div class="spacer" />
         <el-button v-if="canCreate" size="small" @click="importDialog = true">导入 Excel</el-button>
         <el-button size="small" @click="downloadTemplate">下载模板</el-button>
+        <el-button size="small" :disabled="!devices.length" @click="exportSelected">
+          导出{{ selectedDevices.length ? `选中 ${selectedDevices.length} 台` : "全部" }}
+        </el-button>
         <el-button v-if="canCreate" type="primary" size="small" @click="openDialog(null)">
           ＋ 新增网络设备/服务器
         </el-button>
       </div>
     </template>
 
-    <el-table :data="devices" size="small" height="560">
+    <el-table :data="devices" size="small" height="560" @selection-change="onSelectionChange">
+      <el-table-column type="selection" width="42" />
       <el-table-column prop="code" label="设备编号" width="150" />
       <el-table-column prop="name" label="设备名称" min-width="180" />
       <el-table-column prop="brandModel" label="品牌型号" min-width="200" />

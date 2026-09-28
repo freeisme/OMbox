@@ -1835,7 +1835,8 @@ class RackLayoutRegressionTests(TestCase):
         self.assertIn("placeAt", view)
         self.assertIn("unlinkPlacement", view)
         self.assertIn("printRack", view)
-        self.assertIn("exportCsv", view)
+        self.assertIn("openExportDialog", view)
+        self.assertIn("exportMergedCsv", view)
         self.assertIn("/api/rack-layout/racks", api_client)
 
 
@@ -3719,6 +3720,77 @@ class RackPlacementRePlaceTests(TestCase):
         # 硬删会把已配置的面板与链路一起丢掉。
         self.assertIn("SET is_active = 0", remove_placement)
         self.assertNotIn("DELETE FROM rack_device_placement", service)
+
+
+class DatacenterDeviceSoftDeleteTests(TestCase):
+    """机房设备删除是软删除，编号唯一键不区分启用状态：
+    同编号再新增要按“恢复”处理，导入更新也要能把已删除的设备恢复出来。"""
+
+    def _service(self) -> str:
+        return (ROOT / "office_asset" / "datacenter_devices.py").read_text(encoding="utf-8")
+
+    def test_create_device_restores_the_soft_deleted_row(self):
+        create_device = self._service().split("    def create_device(", 1)[1].split(
+            "\n    def update_device(", 1
+        )[0]
+
+        self.assertIn("ON DUPLICATE KEY UPDATE", create_device)
+        self.assertIn("device_id = LAST_INSERT_ID(device_id)", create_device)
+        self.assertIn("is_active = 1", create_device)
+        # 在用的同编号要先拦下来（否则会把别人的设备覆盖掉），并给可读的中文提示。
+        self.assertIn("已存在，请换一个编号", create_device)
+        self.assertIn('parse_bool(conflict.get("isActive"), True)', create_device)
+
+    def test_update_device_restores_a_deleted_row(self):
+        service = self._service()
+        update_device = service.split("    def update_device(", 1)[1].split(
+            "\n    def remove_device(", 1
+        )[0]
+
+        self.assertIn("is_active = 1", update_device)
+        self.assertIn("restoring", update_device)
+        # 读当前值不能再按 is_active = 1 过滤，否则导入只会命中记录却改不动它。
+        self.assertIn("WHERE device_id = {device_id_int}\n", update_device)
+        self.assertNotIn("WHERE device_id = {device_id_int} AND is_active = 1", update_device)
+
+    def test_import_matches_codes_without_filtering_deleted_rows(self):
+        service = self._service()
+
+        # 导入按编号匹配（含已删除行）后调用 update_device，由它负责恢复。
+        self.assertIn("WHERE device_code IN ({codes})", service)
+        self.assertIn('self.update_device(current["id"], merged, context)', service)
+
+
+class RackExportDialogTests(TestCase):
+    """机柜视图的「导出清单」要能多选机柜，合并成一张图／一张表。"""
+
+    def test_export_dialog_merges_multiple_racks(self):
+        view = (ROOT / "frontend" / "src" / "views" / "RackLayoutView.vue").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('@click="openExportDialog"', view)
+        self.assertIn("v-model=\"exportRackIds\"", view)
+        self.assertIn("multiple", view)
+        self.assertIn("function exportMergedDiagram(", view)
+        self.assertIn("function exportMergedCsv(", view)
+        self.assertIn("function rackDiagramHtml(", view)
+        # 单机柜的旧导出已被合并导出取代。
+        self.assertNotIn("function exportCsv(", view)
+
+
+class DatacenterDeviceExportTests(TestCase):
+    """机房设备台账要能勾选设备后导出设备信息。"""
+
+    def test_ledger_exports_selected_devices(self):
+        view = (ROOT / "frontend" / "src" / "views" / "DatacenterDeviceView.vue").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('type="selection"', view)
+        self.assertIn('@selection-change="onSelectionChange"', view)
+        self.assertIn("function exportSelected(", view)
+        self.assertIn("远程访问地址", view)
 
 
 class OffboardingComputerRecoveryTests(TestCase):
