@@ -3693,6 +3693,34 @@ class RackPlacementCategoryFreeTests(TestCase):
         self.assertIn("filterable", view)
 
 
+class RackPlacementRePlaceTests(TestCase):
+    """下架后重新上架不能撞唯一键：复用被软删除的位置行并重新置为启用。"""
+
+    def _slice(self, service: str, start: str, end: str) -> str:
+        return service.split(start, 1)[1].split(end, 1)[0]
+
+    def test_place_device_reactivates_the_soft_deleted_row(self):
+        service = (ROOT / "office_asset" / "rack_layout.py").read_text(encoding="utf-8")
+        place_device = self._slice(service, "    def place_device(", "\n    def update_placement(")
+
+        # 唯一键 uq_rack_placement_datacenter(datacenter_device_id) 不区分是否启用，
+        # 而下架走的是软删除，所以重新上架必须走 ON DUPLICATE KEY UPDATE 复用同一行。
+        self.assertIn("ON DUPLICATE KEY UPDATE", place_device)
+        self.assertIn("placement_id = LAST_INSERT_ID(placement_id)", place_device)
+        self.assertIn("is_active = 1", place_device)
+        for column in ("rack_id", "position_u", "u_height", "face", "notes"):
+            self.assertIn(f"{column} = VALUES({column})", place_device)
+
+    def test_remove_placement_keeps_the_row_for_history_and_ports(self):
+        service = (ROOT / "office_asset" / "rack_layout.py").read_text(encoding="utf-8")
+        remove_placement = service.split("    def remove_placement(", 1)[1]
+
+        # 软删除不能改成物理删除：机柜端口（rack_device_port）靠 placement_id 级联，
+        # 硬删会把已配置的面板与链路一起丢掉。
+        self.assertIn("SET is_active = 0", remove_placement)
+        self.assertNotIn("DELETE FROM rack_device_placement", service)
+
+
 class OffboardingComputerRecoveryTests(TestCase):
     """办公终端离职回收直接回到办公终端台账的闲置设备，不选择回收仓库。"""
 

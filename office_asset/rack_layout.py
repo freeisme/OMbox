@@ -461,6 +461,10 @@ class RackLayoutService:
 
         设备只能来自 datacenter_device（办公终端与 IT 物资不参与机柜视图），
         上架时校验状态必须是"未上架"，并把状态改成"上架"、写入所在机房与机柜。
+
+        下架是软删除（保留位置历史与已配置端口），所以重新上架时按
+        datacenter_device_id 复用同一条位置记录并重新置为启用，
+        而不是插入新行（唯一键不允许同一台设备留下两条记录）。
         """
         cached = self._idempotency_result("rack.placement.create", idempotency_key, payload)
         if cached:
@@ -547,7 +551,23 @@ class RackLayoutService:
               {self.db.quote(notes)},
               {actor_id if actor_id > 0 else 'NULL'},
               {actor_id if actor_id > 0 else 'NULL'}
-            );
+            )
+            ON DUPLICATE KEY UPDATE
+              placement_id = LAST_INSERT_ID(placement_id),
+              rack_id = VALUES(rack_id),
+              display_name = VALUES(display_name),
+              brand_model = VALUES(brand_model),
+              category = VALUES(category),
+              position_u = VALUES(position_u),
+              u_height = VALUES(u_height),
+              face = VALUES(face),
+              status_snapshot = VALUES(status_snapshot),
+              asset_code = VALUES(asset_code),
+              serial_number = VALUES(serial_number),
+              owner_label = VALUES(owner_label),
+              notes = VALUES(notes),
+              is_active = 1,
+              updated_by = VALUES(updated_by);
             SET @new_placement_id = LAST_INSERT_ID();
             {self._audit_sql(
                 "rack_placement_created",
