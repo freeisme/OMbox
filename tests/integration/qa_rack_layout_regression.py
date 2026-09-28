@@ -476,6 +476,30 @@ def main() -> int:
     assert not restored.get("rackId"), restored
     print("removed device is offered again and back to stock")
 
+    # 下架是软删除（位置行保留，datacenter_device_id 的唯一键仍指向它），
+    # 因此重新上架必须复用同一条位置记录，不能再触发 "Duplicate entry"。
+    status, replaced = admin.request(
+        "POST",
+        f"/api/rack-layout/racks/{rack_id}/placements",
+        place_payload,
+        expected=201,
+    )
+    assert str(replaced["id"]) == str(computer_placement_id), (replaced, computer_placement_id)
+    status, payload = admin.request("GET", "/api/datacenter-devices?status=installed", expected=200)
+    reinstalled = next(
+        (item for item in payload["devices"] if str(item["id"]) == str(datacenter_device_id)),
+        None,
+    )
+    assert reinstalled and reinstalled["status"] == "installed", payload["devices"]
+    assert str(reinstalled["rackId"]) == str(rack_id), reinstalled
+    print("re-placed after removal ok:", replaced["id"])
+    admin.request(
+        "POST",
+        f"/api/rack-layout/placements/{computer_placement_id}/remove",
+        {"reason": f"{PREFIX} 测试二次下架"},
+        expected=200,
+    )
+
     audit_rows = sql_rows(
         "SELECT action_type FROM audit_log WHERE entity_type = 'rack_device_placement' "
         "ORDER BY audit_log_id DESC LIMIT 6;"

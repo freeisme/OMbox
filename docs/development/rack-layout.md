@@ -19,7 +19,7 @@
 | `position_u` / `u_height` | 起始 U 位（从下往上编号）与占用高度（整数 U，1-50） |
 | `face` | `front`、`rear` 或 `both`（整机深度） |
 | `status_snapshot` / `asset_code` / `serial_number` / `owner_label` | 上架时的台账快照；读取时优先显示台账实时值 |
-| `is_active` | 下架为软删除，保留审计痕迹 |
+| `is_active` | 下架为软删除，保留审计痕迹与已配置端口 |
 
 ### 位置规则
 
@@ -28,6 +28,15 @@
 3. 重复上架拒绝：同一台办公终端只能出现在一个机柜位置；
 4. 已报废归档的办公终端不能上架；
 5. 占用统计按**物理 U 行**去重计算，前后面板重叠不会重复计数。
+
+### 下架与重新上架
+
+下架是**软删除**：位置行保留（`is_active = 0`），挂在它下面的 `rack_device_port`
+与链路一起保留，方便原样归位。但 `uq_rack_placement_datacenter`、
+`uq_rack_placement_computer` 这两个唯一键**不看 `is_active`**，所以同一台设备下架后
+重新上架必须复用同一条位置记录——上架语句用 `ON DUPLICATE KEY UPDATE` 按设备号
+命中旧行，改写机柜、U 位、面板、快照与备注后重新置 `is_active = 1`（v3.0.21 起）。
+否则会插入新行并撞上唯一键，前端只会看到「数据唯一标识已存在」这类与真实原因无关的提示。
 
 服务的写操作都在事务内完成，并写入 `audit_log`：`rack_placement_created`、
 `rack_placement_updated`、`rack_placement_removed`。上架与下架都不会改变库存和资产状态。
