@@ -20,7 +20,7 @@ import re
 from dataclasses import dataclass
 
 from .scope import OrganizationScopeService
-from .sql import SqlGateway
+from .sql import SqlGateway, parse_bool
 from .xlsx import WorkbookError, read_sheet
 
 
@@ -337,6 +337,25 @@ class DatacenterDeviceService:
         actor_id = self._actor_id(context)
         catalog_sql = str(fields["catalogId"]) if fields["catalogId"] > 0 else "NULL"
         org_sql = str(fields["orgId"]) if fields["orgId"] > 0 else "NULL"
+        # 编号是唯一键，且不区分是否启用：删除走的是软删除（is_active = 0），
+        # 所以同编号再次新增会撞上那条已删除的记录。这里先分辨两种情况：
+        # 仍在用的设备提示换个编号；已删除的设备按"恢复"处理（复用原记录）。
+        conflict = self.db.json(
+            f"""
+            SELECT JSON_OBJECT(
+              'id', CAST(device.device_id AS CHAR),
+              'isActive', device.is_active
+            )
+            FROM datacenter_device device
+            WHERE device.device_code = {self.db.quote(fields['code'])}
+            LIMIT 1
+            """,
+            None,
+        )
+        if conflict and parse_bool(conflict.get("isActive"), True):
+            raise self.conflict_error(
+                f"设备编号「{fields['code']}」已存在，请换一个编号，或直接在列表里编辑这台设备。"
+            )
         device_id = self._last_int(
             self.db.execute(
                 f"""
@@ -366,7 +385,27 @@ class DatacenterDeviceService:
               {self.db.quote(fields['notes'])},
               {actor_id if actor_id > 0 else 'NULL'},
               {actor_id if actor_id > 0 else 'NULL'}
-            );
+            )
+            ON DUPLICATE KEY UPDATE
+              device_id = LAST_INSERT_ID(device_id),
+              device_name = VALUES(device_name),
+              catalog_id = VALUES(catalog_id),
+              brand_model = VALUES(brand_model),
+              category = VALUES(category),
+              u_height = VALUES(u_height),
+              serial_number = VALUES(serial_number),
+              asset_code = VALUES(asset_code),
+              owner_label = VALUES(owner_label),
+              purpose = VALUES(purpose),
+              remote_access = VALUES(remote_access),
+              cpu = VALUES(cpu),
+              memory = VALUES(memory),
+              disk = VALUES(disk),
+              status = VALUES(status),
+              org_unit_id = VALUES(org_unit_id),
+              notes = VALUES(notes),
+              is_active = 1,
+              updated_by = VALUES(updated_by);
             SELECT LAST_INSERT_ID();
             """
             )
@@ -379,7 +418,8 @@ class DatacenterDeviceService:
                 "datacenter_device",
                 str(device_id),
                 fields["name"],
-                f"新增机房设备：{fields['code']} {fields['name']}",
+                f"新增机房设备：{fields['code']} {fields['name']}"
+                + ("（恢复同编号的已删除设备）" if conflict else ""),
                 context,
                 None,
                 fields,
@@ -410,15 +450,19 @@ class DatacenterDeviceService:
               'disk', disk,
               'status', status,
               'orgId', COALESCE(CAST(org_unit_id AS CHAR), ''),
+              'isActive', is_active,
               'notes', notes
             )
             FROM datacenter_device
-            WHERE device_id = {device_id_int} AND is_active = 1
+            WHERE device_id = {device_id_int}
             """,
             None,
         )
         if not current:
-            raise self.api_error("机房设备不存在或已删除。")
+            raise self.api_error("机房设备不存在。")
+        # 软删除的设备可以被"更新/导入更新"恢复：编号唯一键不区分启用状态，
+        # 不恢复的话导入只会命中这条记录却改不动它（旧版会直接报"不存在或已删除"）。
+        restoring = not parse_bool(current.get("isActive"), True)
         placement = self._placement_of(device_id_int)
         fields = self._validate(payload, context, current)
         if self.db.text(current.get("status")) == "installed" and fields["status"] == "stock":
@@ -451,6 +495,7 @@ class DatacenterDeviceService:
                 status = {self.db.quote(fields['status'])},
                 org_unit_id = {org_sql},
                 notes = {self.db.quote(fields['notes'])},
+                is_active = 1,
                 updated_by = {actor_id if actor_id > 0 else 'NULL'}
             WHERE device_id = {device_id_int};
             """
@@ -462,7 +507,12 @@ class DatacenterDeviceService:
                 str(device_id_int),
                 fields["name"],
                 f"更新机房设备：{fields['code']} {fields['name']}"
-                + (f"（状态 {current.get('status')} → {fields['status']}）" if current.get("status") != fields["status"] else ""),
+                + (
+                    f"（状态 {current.get('status')} → {fields['status']}）"
+                    if current.get("status") != fields["status"]
+                    else ""
+                )
+                + ("（恢复已删除的设备）" if restoring else ""),
                 context,
                 current,
                 fields,
