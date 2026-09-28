@@ -433,7 +433,11 @@ const usageAllocationType = computed<"monitor" | "non_asset">(() =>
   usageIsMonitor.value ? "monitor" : "non_asset",
 );
 
-/** 当前类型下、所选仓库有库存的型号（自定义型号直接输入，不占下拉项）。 */
+/**
+ * 当前类型下的**全部**型号：有库存的照常选择，库存为 0 的也列出来（标注「库存 0」），
+ * 选中后在领用确认弹窗里提示「无对应库存，是否直接分配」。
+ * 下拉里没有的型号直接输入，视为自定义物资。
+ */
 const usageModelOptions = computed(() => {
   const models = inventoryData.value?.models ?? [];
   const stocks = inventoryData.value?.stocks ?? [];
@@ -441,16 +445,20 @@ const usageModelOptions = computed(() => {
   return models
     .filter((model) => String(model.typeId) === String(usageForm.typeId))
     .map((model: InventoryModelRow) => {
-      const available = warehouseId
+      const stockRow = warehouseId
         ? stocks.find(
             (stock) =>
               String(stock.modelId) === String(model.id) &&
               String(stock.warehouseId) === String(warehouseId),
-          )?.quantity ?? 0
-        : model.quantity;
+          )
+        : undefined;
+      // 选了仓库就按该仓库库存算；没选仓库时用型号总量兜底显示
+      const available = warehouseId ? stockRow?.quantity ?? 0 : model.quantity;
       return { model, available: Number(available) || 0 };
     })
-    .filter((entry) => entry.available > 0);
+    .sort((a, b) =>
+      inventoryModelLabel(a.model).localeCompare(inventoryModelLabel(b.model), "zh-Hans-CN"),
+    );
 });
 
 /** 型号填的是下拉里没有的值 → 视为自定义物资（无库存记录，回收时再建档入库）。 */
@@ -459,6 +467,18 @@ const usageIsCustom = computed(
     Boolean(String(usageForm.modelId ?? "").trim()) &&
     !usageModelOptions.value.some((option) => option.model.id === usageForm.modelId),
 );
+
+/** 领用确认弹窗：告诉用户这次能不能扣库存，让用户决定扣还是不扣。 */
+const usageConfirmVisible = ref(false);
+const usageConfirm = reactive({
+  custom: false,
+  quantity: 1,
+  available: 0,
+  remaining: 0,
+  insufficient: false,
+  warehouseName: "",
+  modelLabel: "",
+});
 
 /** 切换类型后，原先选中的型号不再适用，清空避免提交错型号。 */
 watch(
@@ -559,13 +579,39 @@ async function submitAllocate(): Promise<void> {
     ElMessage.warning("请选择库存型号与出库仓库。");
     return;
   }
+  // 先算出这次领用的库存情况，弹窗里给用户确认"扣不扣库存"。
+  const selected = usageModelOptions.value.find((option) => option.model.id === usageForm.modelId);
+  const warehouse = warehouseOptions.value.find((item) => item.id === usageForm.warehouseId);
+  const quantity = usageIsMonitor.value ? 1 : Number(usageForm.quantity) || 1;
+  const available = custom || !selected ? 0 : selected.available;
+  Object.assign(usageConfirm, {
+    custom,
+    quantity,
+    available,
+    warehouseName: warehouse?.name ?? "",
+    modelLabel: custom
+      ? `${usageForm.brand.trim()} ${String(usageForm.modelId).trim()}`.trim()
+      : selected
+        ? inventoryModelLabel(selected.model)
+        : String(usageForm.modelId).trim(),
+    remaining: Math.max(0, available - quantity),
+    insufficient: available > 0 && available < quantity,
+  });
+  usageConfirmVisible.value = true;
+}
+
+/** 弹窗按钮：withStock=false 表示"不扣库存，直接分配"（不写库存领用台账）。 */
+async function confirmAllocate(withStock: boolean): Promise<void> {
+  const employee = deviceEmployee.value;
+  if (!employee) return;
+  const custom = usageConfirm.custom;
   deviceSaving.value = true;
   try {
-    await allocateInventoryToEmployee({
+    const result = await allocateInventoryToEmployee({
       allocationType: usageAllocationType.value,
       employeeId: employee.id,
       // 显示屏按单台登记，后端也会拒绝 quantity !== 1。
-      quantity: usageIsMonitor.value ? 1 : Number(usageForm.quantity) || 1,
+      quantity: usageConfirm.quantity,
       notes: usageForm.notes.trim(),
       ...(custom
         ? {
@@ -576,11 +622,19 @@ async function submitAllocate(): Promise<void> {
             displayName: usageForm.brand.trim(),
             stockAdjusted: false,
           }
-        : { modelId: usageForm.modelId, warehouseId: usageForm.warehouseId }),
+        : {
+            modelId: usageForm.modelId,
+            warehouseId: withStock ? usageForm.warehouseId : "",
+            stockAdjusted: withStock,
+          }),
     });
     ElMessage.success(
-      custom ? "自定义物资已登记（未扣库存，回收时入库）。" : "领用已登记。",
+      withStock
+        ? `已领用并从「${usageConfirm.warehouseName}」扣减库存 ${usageConfirm.quantity} 件，` +
+            `剩余 ${result?.remaining ?? usageConfirm.remaining}。`
+        : "已登记到该人员名下（未扣库存，不产生库存领用记录）。",
     );
+    usageConfirmVisible.value = false;
     Object.assign(usageForm, {
       modelId: "",
       brand: "",
@@ -1229,6 +1283,84 @@ onMounted(async () => {
     <template #footer>
       <el-button @click="deviceVisible = false">关闭</el-button>
     </template>
+  </FormDialog>
+
+  <FormDialog v-model="usageConfirmVisible" title="领用确认" size="sm">
+    <template #footer>
+      <el-button @click="usageConfirmVisible = false">取消</el-button>
+      <el-button
+        v-if="usageConfirm.available > 0 && !usageConfirm.insufficient"
+        :loading="deviceSaving"
+        @click="confirmAllocate(false)"
+      >
+        不扣库存，直接分配
+      </el-button>
+      <el-button
+        v-if="usageConfirm.available > 0 && !usageConfirm.insufficient"
+        type="primary"
+        :loading="deviceSaving"
+        @click="confirmAllocate(true)"
+      >
+        扣除库存后分配
+      </el-button>
+      <el-button
+        v-else
+        type="primary"
+        :loading="deviceSaving"
+        @click="confirmAllocate(false)"
+      >
+        直接分配（不扣库存）
+      </el-button>
+    </template>
+    <el-descriptions :column="1" border size="small">
+      <el-descriptions-item label="物资">
+        {{ usageConfirm.modelLabel || "—" }}
+      </el-descriptions-item>
+      <el-descriptions-item label="出库仓库">
+        {{ usageConfirm.warehouseName || "未选择" }}
+      </el-descriptions-item>
+      <el-descriptions-item label="本次领用">{{ usageConfirm.quantity }}</el-descriptions-item>
+      <el-descriptions-item label="当前库存">
+        <span v-if="usageConfirm.available > 0">{{ usageConfirm.available }}</span>
+        <el-tag v-else type="warning" effect="plain" size="small">无对应库存</el-tag>
+      </el-descriptions-item>
+      <el-descriptions-item v-if="usageConfirm.available > 0" label="扣减后剩余">
+        {{ usageConfirm.remaining }}
+      </el-descriptions-item>
+    </el-descriptions>
+    <el-alert
+      v-if="usageConfirm.insufficient"
+      class="oa-mt-2"
+      type="warning"
+      :closable="false"
+      show-icon
+      :title="`库存不足：当前只有 ${usageConfirm.available}，本次要领 ${usageConfirm.quantity}。`"
+    >
+      <template #default>只能「直接分配（不扣库存）」，或取消后先调整数量 / 换仓库。</template>
+    </el-alert>
+    <el-alert
+      v-else-if="usageConfirm.available <= 0"
+      class="oa-mt-2"
+      type="info"
+      :closable="false"
+      show-icon
+      title="无对应库存，是否直接分配？"
+    >
+      <template #default>
+        {{
+          usageConfirm.custom
+            ? "目录里没有这个型号（自定义物资）；"
+            : usageConfirm.warehouseName
+              ? `仓库「${usageConfirm.warehouseName}」没有这个型号的库存；`
+              : "还没有选择出库仓库，无法判断库存；"
+        }}
+        直接分配只在人员名下登记这台设备，不扣库存、不产生库存领用记录；以后回收时按品牌型号自动补进目录并入库。
+      </template>
+    </el-alert>
+    <div v-else class="oa-hint">
+      「扣除库存后分配」会从所选仓库扣减库存并写出入库流水；
+      「不扣库存，直接分配」只在人员名下登记，不动库存。
+    </div>
   </FormDialog>
 
   <FormDialog

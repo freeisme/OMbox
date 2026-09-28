@@ -3350,6 +3350,52 @@ class InspectionEntryRegressionTests(TestCase):
         self.assertIn('"/api/inventory/allocations"', api)
 
 
+class AllocationConfirmRegressionTests(TestCase):
+    """领用前先确认"是否扣库存"：有库存显示剩余量，没有则提示无对应库存。"""
+
+    def test_frontend_asks_before_deducting_stock(self):
+        view = (ROOT / "frontend" / "src" / "views" / "EmployeesView.vue").read_text(
+            encoding="utf-8"
+        )
+        api = (ROOT / "frontend" / "src" / "api" / "employees.ts").read_text(encoding="utf-8")
+
+        # 型号下拉列出该类型全部型号（含库存 0），不再只列有库存的
+        self.assertIn("· 库存 ${option.available}", view)
+        self.assertNotIn(".filter((entry) => entry.available > 0)", view)
+        # 提交时先弹确认框，三个按钮：取消 / 不扣库存，直接分配 / 扣除库存后分配
+        self.assertIn("const usageConfirmVisible = ref(false);", view)
+        self.assertIn("async function confirmAllocate(", view)
+        self.assertIn("不扣库存，直接分配", view)
+        self.assertIn("扣除库存后分配", view)
+        # 无库存 / 库存不足的提示
+        self.assertIn("无对应库存，是否直接分配？", view)
+        self.assertIn("库存不足：当前只有", view)
+        self.assertIn("无对应库存", view)
+        # 不扣库存时不写库存领用台账
+        self.assertIn("未扣库存，不产生库存领用记录", view)
+        self.assertIn("stockAdjusted: withStock", view)
+        self.assertIn("stockAdjusted: false", view)
+        # 接口返回剩余量，成功提示里展示
+        self.assertIn("remaining?: number;", api)
+        self.assertIn("stockAdjusted?: boolean;", api)
+
+    def test_backend_skips_the_allocation_ledger_without_stock(self):
+        service = (ROOT / "office_asset" / "asset_service.py").read_text(encoding="utf-8")
+        allocate = service.split("    def allocate_inventory(", 1)[1].split(
+            "\n    def adjust_inventory(",
+            1,
+        )[0]
+
+        # 不扣库存时只写人员名下的使用记录，不写 inventory_allocation_history
+        self.assertIn("不扣库存的领用只在人员名下登记", allocate)
+        self.assertIn("AND {1 if stock_adjusted else 0} = 1;", allocate)
+        self.assertIn("(stock_adjusted and allocation_id <= 0)", allocate)
+        # 返回是否扣库存与扣减后剩余
+        self.assertIn('"stockAdjusted": bool(stock_adjusted)', allocate)
+        self.assertIn('"remaining": remaining', allocate)
+        self.assertIn("SELECT COALESCE(quantity, 0)", allocate)
+
+
 class MeetingRoomInspectionTests(TestCase):
     """会议室巡检：会议室对象、会议室内设备、模板编辑/删除、多选开检与横向导出。"""
 
