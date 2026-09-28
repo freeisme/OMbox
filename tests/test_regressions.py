@@ -3353,6 +3353,25 @@ class InspectionEntryRegressionTests(TestCase):
 class AllocationConfirmRegressionTests(TestCase):
     """领用前先确认"是否扣库存"：有库存显示剩余量，没有则提示无对应库存。"""
 
+    def test_custom_item_recovery_passes_the_employee_to_the_legacy_channel(self):
+        """自定义物资（不扣库存）回收走兼容通道时必须带 employeeId，否则会报
+        "Inventory usage return requires an employee and usage record."。"""
+        api = (ROOT / "frontend" / "src" / "api" / "employees.ts").read_text(encoding="utf-8")
+        service = (ROOT / "office_asset" / "asset_service.py").read_text(encoding="utf-8")
+        legacy = service.split("    def return_usage_inventory(", 1)[1].split(
+            "\n    def list_allocations(",
+            1,
+        )[0]
+
+        legacy_call = api.split("export async function returnEmployeeUsage(", 1)[1].split("\n}", 1)[0]
+        self.assertIn("/api/inventory/usage/", legacy_call)
+        self.assertIn("body: { employeeId, warehouseId, notes }", legacy_call)
+        # 后端在调用方没带人员时，用领用记录上的人员兜底；记录本身仍然是权威来源
+        self.assertIn("SELECT employee_id", legacy)
+        self.assertIn("WHERE {usage_pk} = {usage_id}", legacy)
+        self.assertIn("回收失败：缺少领用记录编号", legacy)
+        self.assertIn("Inventory usage return requires an employee and usage record.", legacy)
+
     def test_frontend_asks_before_deducting_stock(self):
         view = (ROOT / "frontend" / "src" / "views" / "EmployeesView.vue").read_text(
             encoding="utf-8"

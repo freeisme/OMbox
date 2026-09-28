@@ -2671,9 +2671,26 @@ class AssetService:
         normalized_type = self.db.text(allocation_type)
         if normalized_type not in {"monitor", "non_asset"}:
             raise self.api_error("Inventory usage type must be monitor or non_asset.")
+        usage_table = "employee_monitor_usage" if normalized_type == "monitor" else "employee_non_asset_usage"
+        usage_pk = "monitor_usage_id" if normalized_type == "monitor" else "non_asset_usage_id"
         usage_id = self.db.integer(usage_record_id, 0)
+        if usage_id <= 0:
+            raise self.api_error("回收失败：缺少领用记录编号，请刷新后重试。")
         employee_id = self.db.integer(payload.get("employeeId"), 0)
-        if usage_id <= 0 or employee_id <= 0:
+        if employee_id <= 0:
+            # 兼容：调用方没带人员时用领用记录上的人员（这条记录本身才是权威来源）
+            employee_id = self.db.integer(
+                self.db.scalar(
+                    f"""
+                    SELECT employee_id
+                    FROM {usage_table}
+                    WHERE {usage_pk} = {usage_id}
+                      AND is_active = 1;
+                    """
+                ),
+                0,
+            )
+        if employee_id <= 0:
             raise self.api_error("Inventory usage return requires an employee and usage record.")
 
         employee = self._employee(employee_id)
@@ -2686,8 +2703,6 @@ class AssetService:
                 "A legacy inventory usage can only be reconciled with own, organization, or all-data permission scope."
             )
 
-        usage_table = "employee_monitor_usage" if normalized_type == "monitor" else "employee_non_asset_usage"
-        usage_pk = "monitor_usage_id" if normalized_type == "monitor" else "non_asset_usage_id"
         brand_name_sql = (
             "COALESCE(brand.brand_name, usage_row.display_name, '')"
             if normalized_type == "monitor"

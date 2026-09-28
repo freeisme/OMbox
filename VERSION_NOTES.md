@@ -12,6 +12,43 @@
 - v2.31.0 起旧前端已整体删除，早期条目里的「回滚到旧前端 / 从 `MIGRATED_VIEWS` 移除」
   操作已不再适用。
 
+## v3.0.20
+
+发布日期：2026-09-28
+
+### 变更
+
+**修复 v3.0.19 引入的自定义物资回收报错**（现象：回收时提示
+`Inventory usage return requires an employee and usage record.`）。
+
+- 原因：v3.0.19 之后"不扣库存"的领用不再写库存领用台账（`inventory_allocation_history`），
+  自定义物资回收时因此走到**兼容通道** `POST /api/inventory/usage/{类型}/{领用记录}/return`，
+  而前端这条请求只发了 `{ warehouseId, notes }`，**漏了 `employeeId`**，
+  后端按 `payload.get("employeeId")` 取不到人员就报了那句英文错误。
+  （v3.0.19 之前自定义物资也有领用台账，走的是另一条分支，所以没暴露。）
+- 前端：`returnEmployeeUsage()` 的兼容通道请求体补上 `employeeId`
+  （`{ employeeId, warehouseId, notes }`）。
+- 后端：`return_usage_inventory()` 在调用方没带人员时，改为按**领用记录本身**反查人员
+  （记录里的 `employee_id` 才是权威来源），并给"缺少领用记录编号"单独中文提示，
+  减少同类调用错误再次出现；权限与数据范围校验保持不变。
+
+### 数据库影响
+
+无。
+
+### 验证
+
+- 接口：自定义物资（不扣库存）领用后，用**不带** `employeeId` 的兼容通道回收 → 200（后端反查到人员）；
+  用**带** `employeeId` 的请求回收 → 200，两条都正常入库并生成回收记录；
+- 浏览器：「使用人员 → 设备清单 → 自定义物资 → 回收 → 选仓库 → 确认回收」提示「已回收并入库。」
+  （修复前这里是那句英文报错）；
+- `python -m unittest tests.test_regressions` 187 项通过（新增 1 项覆盖该回归）；
+  `vue-tsc --noEmit`、`vite build` 通过。
+
+### 回滚
+
+`git revert` 本提交即可（回到"自定义物资回收报错"的状态，不推荐）。
+
 ## v3.0.19
 
 发布日期：2026-09-28
