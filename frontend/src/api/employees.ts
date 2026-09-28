@@ -264,7 +264,8 @@ export async function returnEmployeeUsage(
   }
   await api(
     `/api/inventory/usage/${encodeURIComponent(allocationType)}/${encodeURIComponent(usageRecordId)}/return`,
-    { method: "POST", body: { warehouseId, notes } },
+    // 兼容通道也要带 employeeId：后端按"领用记录 + 人员"定位这条使用记录。
+    { method: "POST", body: { employeeId, warehouseId, notes } },
   );
 }
 
