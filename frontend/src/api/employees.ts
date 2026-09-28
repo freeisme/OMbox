@@ -226,8 +226,16 @@ export async function allocateInventoryToEmployee(payload: {
   quantity: number;
   warehouseId?: string;
   notes?: string;
-}): Promise<void> {
-  await api("/api/inventory/allocations", { method: "POST", body: payload });
+}): Promise<{
+  allocationId?: string;
+  usageRecordId?: string;
+  warehouseId?: string;
+  /** 是否真的扣减了库存（false = 只在人员名下登记）。 */
+  stockAdjusted?: boolean;
+  /** 扣减后该仓库剩余库存（不扣库存时为 0）。 */
+  remaining?: number;
+}> {
+  return api("/api/inventory/allocations", { method: "POST", body: payload });
 }
 
 /** 归还人员名下的显示屏 / 非资产物资，回收到指定仓库。 */

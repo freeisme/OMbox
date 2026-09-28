@@ -2094,8 +2094,14 @@ class AssetService:
               {warehouse_id_sql}, @usage_ref, {quantity}, {1 if stock_adjusted else 0}, 'active',
               {self.db.quote(note)}, {self._actor_id(context)}
             FROM DUAL
-            WHERE @stock_updated = 1;
-            SET @allocation_id = IF(@stock_updated = 1, LAST_INSERT_ID(), 0);
+            WHERE @stock_updated = 1
+              AND {1 if stock_adjusted else 0} = 1;
+            -- 不扣库存的领用只在人员名下登记（usage 行），不写库存领用台账
+            SET @allocation_id = IF(
+              @stock_updated = 1 AND {1 if stock_adjusted else 0} = 1,
+              LAST_INSERT_ID(),
+              0
+            );
             INSERT INTO inventory_movement_log (
               movement_direction, type_name, brand_name, model_name, quantity,
               source_label, source_warehouse_id, target_label, target_warehouse_id,
@@ -2135,12 +2141,28 @@ class AssetService:
         stock_updated = self.db.integer(result[0] if result else 0, 0)
         allocation_id = self.db.integer(result[1] if len(result) > 1 else 0, 0)
         usage_ref = self.db.integer(result[2] if len(result) > 2 else 0, 0)
-        if stock_updated != 1 or allocation_id <= 0 or usage_ref <= 0:
+        # 不扣库存时不写领用台账，所以这里只要求"使用记录"写入成功。
+        if stock_updated != 1 or usage_ref <= 0 or (stock_adjusted and allocation_id <= 0):
             raise self.conflict_error("Insufficient inventory.")
+        remaining = 0
+        if stock_adjusted and model_id > 0 and warehouse_id > 0:
+            remaining = self.db.integer(
+                self.db.scalar(
+                    f"""
+                    SELECT COALESCE(quantity, 0)
+                    FROM inventory_warehouse_stock
+                    WHERE warehouse_id = {warehouse_id}
+                      AND model_id = {model_id};
+                    """
+                ),
+                0,
+            )
         response = {
-            "allocationId": str(allocation_id),
+            "allocationId": str(allocation_id) if allocation_id > 0 else "",
             "usageRecordId": str(usage_ref),
             "warehouseId": str(warehouse_id) if stock_adjusted else "",
+            "stockAdjusted": bool(stock_adjusted),
+            "remaining": remaining,
         }
         self._store_idempotency_result("inventory.allocate", idempotency_key, payload, response)
         return response
