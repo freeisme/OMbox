@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
-import { ElMessage } from "element-plus";
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
+import { ElMessage, ElMessageBox } from "element-plus";
 import FormDialog from "../components/ui/FormDialog.vue";
 import { confirmAction } from "../composables/useConfirm";
 import { RACK_CATEGORY_LABELS as CATEGORY_LABELS } from "../labels";
@@ -17,6 +17,9 @@ import {
   removeCable,
   removePort,
   saveTopologyPositions,
+  createTopologyAnnotation,
+  removeTopologyAnnotation,
+  updateTopologyAnnotation,
   updateCable,
   updatePort,
   type Cable,
@@ -25,6 +28,7 @@ import {
   type RackPortDevice,
   type RackSummary,
   type TopologyNode,
+  type TopologyAnnotation,
   type TopologyPosition,
 } from "../api/datacenter";
 import { hasPermission } from "../session";
@@ -36,12 +40,38 @@ interface PlacedNode {
   level: number;
 }
 
-const NODE_W = 168;
-const NODE_H = 46;
+/** 节点尺寸三档：除了画布缩放，用户还能按需放大/缩小节点本身。 */
+const NODE_SIZES = {
+  compact: { width: 132, height: 40 },
+  standard: { width: 168, height: 46 },
+  large: { width: 208, height: 58 },
+} as const;
+type NodeSizeKey = keyof typeof NODE_SIZES;
 const LEVEL_GAP = 230;
 const ROW_GAP = 84;
 const MARGIN = { left: 80, top: 56 };
 const GRID = 8;
+const MIN_SCALE = 0.25;
+const MAX_SCALE = 2;
+/** 缩得太小就把节点上的文字逐级收起来，避免糊成一团。 */
+const SUB_LABEL_MIN_SCALE = 0.6;
+const NAME_MIN_SCALE = 0.4;
+const BOARD_PREF_KEY = "topology.board.prefs";
+/** 分类色条：一眼区分服务器 / 网络 / 存储 / 电源等。 */
+const CATEGORY_COLORS: Record<string, string> = {
+  server: "#409eff",
+  network: "#13c2c2",
+  storage: "#9254de",
+  "patch-panel": "#8c8c8c",
+  power: "#f56c6c",
+  kvm: "#fa8c16",
+  "av-media": "#eb2f96",
+  cooling: "#52c41a",
+  shelf: "#d4b106",
+  blank: "#bfbfbf",
+  "cable-management": "#a0a0a0",
+  other: "#909399",
+};
 
 const KIND_LABELS: Record<string, string> = {
   network: "电口",
@@ -93,6 +123,22 @@ const showLabels = ref(true);
 const focusSelected = ref(false);
 const routeMode = ref<"orthogonal" | "direct">("orthogonal");
 const snapGrid = ref(true);
+const nodeSize = ref<NodeSizeKey>("standard");
+const showRackGroups = ref(true);
+const paletteKeyword = ref("");
+/** 缩放与画布：默认 1:1（设备不会被整体缩小），超出部分靠滚动 / 拖动看。 */
+const scale = ref(1);
+const viewportEl = ref<HTMLElement | null>(null);
+/** 画布上待放置的设备（从左侧设备池点选后放到画布）。 */
+const armedNodeId = ref("");
+/** 文字批注工具：点「加文字」后在画布上点一下即可落字。 */
+const textArmed = ref(false);
+const annotations = ref<TopologyAnnotation[]>([]);
+const selectedAnnotationId = ref("");
+const annotationForm = reactive({ text: "", style: "note" as "note" | "title" | "warn" });
+/** 从画布上移走、下次保存布局时要一起提交删除的节点。 */
+const pendingRemovals = ref<string[]>([]);
+const hoverNodeId = ref("");
 const nodes = ref<TopologyNode[]>([]);
 const links = ref<Cable[]>([]);
 const savedPositions = ref<Record<string, TopologyPosition>>({});
@@ -180,6 +226,35 @@ const linkForm = reactive({ medium: "cat6", lengthM: 0, label: "", status: "conn
 const linkSaving = ref(false);
 
 const canUpdate = computed(() => hasPermission("rack_layout", "update"));
+const nodeW = computed(() => NODE_SIZES[nodeSize.value].width);
+const nodeH = computed(() => NODE_SIZES[nodeSize.value].height);
+/** 缩放很小时不再逐字显示，保证设备多的时候轮廓仍然清楚。 */
+const showNodeName = computed(() => scale.value >= NAME_MIN_SCALE);
+const showNodeSub = computed(() => scale.value >= SUB_LABEL_MIN_SCALE);
+const selectedAnnotation = computed(
+  () => annotations.value.find((item) => item.id === selectedAnnotationId.value) ?? null,
+);
+/** 按机柜分组框：把同一机柜的设备圈在一起，方便在大图里找边界。 */
+const rackGroups = computed(() => {
+  if (!showRackGroups.value) return [];
+  const groups = new Map<string, { name: string; x1: number; y1: number; x2: number; y2: number }>();
+  placed.value.forEach((item) => {
+    const key = item.node.rackId || "unknown";
+    const box = groups.get(key) ?? {
+      name: `${item.node.siteName} / ${item.node.rackName}`,
+      x1: item.x,
+      y1: item.y,
+      x2: item.x + nodeW.value,
+      y2: item.y + nodeH.value,
+    };
+    box.x1 = Math.min(box.x1, item.x);
+    box.y1 = Math.min(box.y1, item.y);
+    box.x2 = Math.max(box.x2, item.x + nodeW.value);
+    box.y2 = Math.max(box.y2, item.y + nodeH.value);
+    groups.set(key, box);
+  });
+  return [...groups.values()];
+});
 const sites = computed(() => {
   const map = new Map<string, string>();
   racks.value.forEach((item) => map.set(item.siteId, item.siteName));
@@ -242,7 +317,8 @@ const levels = computed(() => {
   return result;
 });
 
-const placed = computed<PlacedNode[]>(() => {
+/** 自动分层排布时的坐标（只在"全部放入 / 重新布局"时使用）。 */
+const autoSlot = computed<Record<string, { x: number; y: number }>>(() => {
   const byLevel = new Map<number, TopologyNode[]>();
   visibleNodes.value.forEach((item) => {
     const level = levels.value.get(item.id) ?? 0;
@@ -250,28 +326,64 @@ const placed = computed<PlacedNode[]>(() => {
     list.push(item);
     byLevel.set(level, list);
   });
-  const result: PlacedNode[] = [];
+  const result: Record<string, { x: number; y: number }> = {};
   [...byLevel.keys()]
     .sort((a, b) => a - b)
     .forEach((level) => {
       (byLevel.get(level) ?? [])
         .sort((a, b) => `${a.rackName}-${a.name}`.localeCompare(`${b.rackName}-${b.name}`))
         .forEach((node, index) => {
-          const override = localPositions.value[node.id] ?? savedPositions.value[node.id];
-          result.push({
-            node,
-            level,
-            x: override?.x ?? MARGIN.left + level * LEVEL_GAP,
-            y: override?.y ?? MARGIN.top + index * ROW_GAP,
-          });
+          result[node.id] = {
+            x: MARGIN.left + level * LEVEL_GAP,
+            y: MARGIN.top + index * ROW_GAP,
+          };
         });
     });
   return result;
 });
 
+/** 画布坐标 = 已保存坐标 + 本次未保存的拖动。只有在这里出现过的设备才画在画布上。 */
+const boardPositions = computed<Record<string, { x: number; y: number }>>(() => ({
+  ...Object.fromEntries(
+    Object.entries(savedPositions.value).map(([key, value]) => [key, { x: value.x, y: value.y }]),
+  ),
+  ...localPositions.value,
+}));
+
+const placed = computed<PlacedNode[]>(() =>
+  visibleNodes.value
+    .filter((node) => boardPositions.value[node.id])
+    .map((node) => ({
+      node,
+      level: levels.value.get(node.id) ?? 0,
+      x: boardPositions.value[node.id].x,
+      y: boardPositions.value[node.id].y,
+    })),
+);
+
+/** 还没放到画布上的设备（左侧设备池）。 */
+const paletteNodes = computed(() => {
+  const keyword = paletteKeyword.value.trim().toLowerCase();
+  const list = visibleNodes.value.filter((item) => !boardPositions.value[item.id]);
+  if (!keyword) return list;
+  return list.filter((item) =>
+    `${item.name} ${item.brandModel} ${item.rackName} ${item.siteName}`
+      .toLowerCase()
+      .includes(keyword),
+  );
+});
+
 const canvas = computed(() => {
-  const maxX = Math.max(NODE_W + MARGIN.left, ...placed.value.map((item) => item.x + NODE_W));
-  const maxY = Math.max(NODE_H + MARGIN.top, ...placed.value.map((item) => item.y + NODE_H));
+  const maxX = Math.max(
+    nodeW.value + MARGIN.left,
+    ...placed.value.map((item) => item.x + nodeW.value),
+    ...annotations.value.map((item) => item.x + 320),
+  );
+  const maxY = Math.max(
+    nodeH.value + MARGIN.top,
+    ...placed.value.map((item) => item.y + nodeH.value),
+    ...annotations.value.map((item) => item.y + 60),
+  );
   return { width: maxX + 40, height: maxY + 40 };
 });
 
@@ -422,7 +534,19 @@ function onShortcut(event: KeyboardEvent): void {
   const typing =
     target &&
     (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
-  if (typing || !canUpdate.value) return;
+  if (typing) return;
+  if (event.code === "Space") {
+    // 按住空格 = 拖动画布（松开或离开页面时复位）
+    spacePressed.value = event.type === "keydown";
+    if (event.type === "keydown") event.preventDefault();
+    return;
+  }
+  if (event.key === "Escape") {
+    armedNodeId.value = "";
+    textArmed.value = false;
+    return;
+  }
+  if (!canUpdate.value) return;
   if (!(event.ctrlKey || event.metaKey)) return;
   const key = event.key.toLowerCase();
   if (key === "z" && !event.shiftKey) {
@@ -446,10 +570,10 @@ function linkPath(link: Cable): string {
   const from = positionOf(link.aPlacementId);
   const to = positionOf(link.bPlacementId);
   if (!from || !to) return "";
-  const x1 = from.x + NODE_W;
-  const y1 = from.y + NODE_H / 2;
+  const x1 = from.x + nodeW.value;
+  const y1 = from.y + nodeH.value / 2;
   const x2 = to.x;
-  const y2 = to.y + NODE_H / 2;
+  const y2 = to.y + nodeH.value / 2;
   const offset = linkOffsets.value[link.id] ?? 0;
   if (routeMode.value === "direct") {
     const length = Math.hypot(x2 - x1, y2 - y1) || 1;
@@ -465,10 +589,10 @@ function linkLabelPoint(link: Cable): { x: number; y: number } {
   const from = positionOf(link.aPlacementId);
   const to = positionOf(link.bPlacementId);
   const offset = linkOffsets.value[link.id] ?? 0;
-  const x1 = from.x + NODE_W;
-  const y1 = from.y + NODE_H / 2;
+  const x1 = from.x + nodeW.value;
+  const y1 = from.y + nodeH.value / 2;
   const x2 = to.x;
-  const y2 = to.y + NODE_H / 2;
+  const y2 = to.y + nodeH.value / 2;
   if (routeMode.value === "direct") {
     const length = Math.hypot(x2 - x1, y2 - y1) || 1;
     return {
@@ -498,16 +622,25 @@ async function loadData(): Promise<void> {
     });
     nodes.value = payload.nodes;
     links.value = payload.links;
+    annotations.value = payload.annotations ?? [];
     savedPositions.value = Object.fromEntries(
       payload.positions.map((item) => [item.nodeId, item]),
     );
     localPositions.value = {};
+    pendingRemovals.value = [];
     dirty.value = false;
     undoStack.value = [];
     redoStack.value = [];
     groupIds.value = [];
     marquee.value = null;
     connectDrag.value = null;
+    hoverNodeId.value = "";
+    if (
+      selectedAnnotationId.value &&
+      !annotations.value.some((item) => item.id === selectedAnnotationId.value)
+    ) {
+      selectedAnnotationId.value = "";
+    }
     if (selectedId.value && !nodes.value.some((item) => item.id === selectedId.value)) {
       selectedId.value = "";
     }
@@ -544,6 +677,7 @@ let dragGroup: { nodes: Array<{ id: string; offsetX: number; offsetY: number }>;
   null;
 
 function onNodePointerDown(event: PointerEvent, item: PlacedNode): void {
+  if (tryPlaceArmed(toCanvasPoint(event))) return;
   if (wizard.step === "aDevice" || wizard.step === "bDevice") {
     void pickWizardDevice(item.node);
     return;
@@ -574,12 +708,16 @@ function onNodePointerDown(event: PointerEvent, item: PlacedNode): void {
 
 /** 空白处按下：清空选择并开始框选。 */
 function onCanvasPointerDown(event: PointerEvent): void {
+  if (event.button !== 0) return;
+  const point = toCanvasPoint(event);
+  // 放置设备 / 落字要能吃下点在分组框、层级标签上的情况，放在最前面判断。
+  if (tryPlaceArmed(point)) return;
   if (event.target !== event.currentTarget) return;
   selectedId.value = "";
   selectedLinkId.value = "";
+  selectedAnnotationId.value = "";
   groupIds.value = [];
   if (!canUpdate.value) return;
-  const point = toCanvasPoint(event);
   marquee.value = { x1: point.x, y1: point.y, x2: point.x, y2: point.y };
   window.addEventListener("pointermove", onPointerMove);
   window.addEventListener("pointerup", onPointerUp, { once: true });
@@ -590,7 +728,12 @@ function onConnectHandleDown(event: PointerEvent, item: PlacedNode): void {
   if (!canUpdate.value) return;
   event.stopPropagation();
   const from = positionOf(item.node.id);
-  connectDrag.value = { fromId: item.node.id, x: from.x + NODE_W, y: from.y + NODE_H / 2, overId: "" };
+  connectDrag.value = {
+    fromId: item.node.id,
+    x: from.x + nodeW.value,
+    y: from.y + nodeH.value / 2,
+    overId: "",
+  };
   selectedId.value = item.node.id;
   groupIds.value = [item.node.id];
   window.addEventListener("pointermove", onPointerMove);
@@ -598,6 +741,16 @@ function onConnectHandleDown(event: PointerEvent, item: PlacedNode): void {
 }
 
 function onPointerMove(event: PointerEvent): void {
+  if (annotationDrag) {
+    const point = toCanvasPoint(event);
+    const drag = annotationDrag;
+    annotations.value = annotations.value.map((item) =>
+      item.id === drag.id
+        ? { ...item, x: snap(point.x + drag.offsetX), y: snap(point.y + drag.offsetY) }
+        : item,
+    );
+    return;
+  }
   if (marquee.value) {
     const point = toCanvasPoint(event);
     marquee.value = { ...marquee.value, x2: point.x, y2: point.y };
@@ -628,6 +781,11 @@ function onPointerMove(event: PointerEvent): void {
 
 function onPointerUp(): void {
   window.removeEventListener("pointermove", onPointerMove);
+  if (annotationDrag) {
+    const moved = annotations.value.find((item) => item.id === annotationDrag?.id);
+    annotationDrag = null;
+    if (moved) void persistAnnotationPosition(moved);
+  }
   if (marquee.value) {
     const { x1, y1, x2, y2 } = marquee.value;
     const left = Math.min(x1, x2);
@@ -638,9 +796,9 @@ function onPointerUp(): void {
     if (right - left > 6 || bottom - top > 6) {
       const picked = placed.value.filter(
         (entry) =>
-          entry.x + NODE_W >= left &&
+          entry.x + nodeW.value >= left &&
           entry.x <= right &&
-          entry.y + NODE_H >= top &&
+          entry.y + nodeH.value >= top &&
           entry.y <= bottom,
       );
       groupIds.value = picked.map((entry) => entry.node.id);
@@ -725,6 +883,10 @@ async function submitConnectDialog(): Promise<void> {
 }
 
 function selectLink(link: Cable): void {
+  if (armedNodeId.value || textArmed.value) {
+    const point = linkLabelPoint(link);
+    if (tryPlaceArmed(point)) return;
+  }
   selectedLinkId.value = link.id;
   selectedId.value = "";
   groupIds.value = [];
@@ -1031,16 +1193,386 @@ async function deleteLink(link: Cable): Promise<void> {
 
 // ------------------------------------------------------------------ 布局与导出
 
+// ------------------------------------------------- 画布视图：缩放 / 平移 / 放置设备
+
+function clampScale(value: number): number {
+  return Math.min(MAX_SCALE, Math.max(MIN_SCALE, Math.round(value * 1000) / 1000));
+}
+
+/** 以某个屏幕点为锚点缩放：光标下的内容保持不动。 */
+function applyScale(next: number, clientX?: number, clientY?: number): void {
+  const target = clampScale(next);
+  const viewport = viewportEl.value;
+  if (!viewport || target === scale.value) return;
+  const rect = viewport.getBoundingClientRect();
+  const pointerX = (clientX ?? rect.left + viewport.clientWidth / 2) - rect.left;
+  const pointerY = (clientY ?? rect.top + viewport.clientHeight / 2) - rect.top;
+  const contentX = (viewport.scrollLeft + pointerX) / scale.value;
+  const contentY = (viewport.scrollTop + pointerY) / scale.value;
+  scale.value = target;
+  requestAnimationFrame(() => {
+    viewport.scrollLeft = contentX * target - pointerX;
+    viewport.scrollTop = contentY * target - pointerY;
+  });
+}
+
+function zoomIn(): void {
+  applyScale(scale.value * 1.2);
+}
+
+function zoomOut(): void {
+  applyScale(scale.value / 1.2);
+}
+
+function resetZoom(): void {
+  applyScale(1);
+}
+
+/** 适应窗口：把整张画布缩到视口里（只缩不放）。 */
+function fitToWindow(): void {
+  const viewport = viewportEl.value;
+  if (!viewport) return;
+  const padding = 24;
+  const fit = Math.min(
+    1,
+    (viewport.clientWidth - padding) / canvas.value.width,
+    (viewport.clientHeight - padding) / canvas.value.height,
+  );
+  scale.value = clampScale(Math.max(MIN_SCALE, fit));
+  requestAnimationFrame(() => {
+    viewport.scrollLeft = 0;
+    viewport.scrollTop = 0;
+  });
+}
+
+function onCanvasWheel(event: WheelEvent): void {
+  applyScale(scale.value * (event.deltaY > 0 ? 0.9 : 1.1), event.clientX, event.clientY);
+}
+
+/** 空格 + 左键（或中键）拖动画布；左键直接拖空白仍然是框选。 */
+let panDrag: { startX: number; startY: number; scrollLeft: number; scrollTop: number } | null = null;
+const spacePressed = ref(false);
+
+function onViewportPointerDown(event: PointerEvent): void {
+  if (event.button !== 1 && !(event.button === 0 && spacePressed.value)) return;
+  const viewport = viewportEl.value;
+  if (!viewport) return;
+  event.preventDefault();
+  panDrag = {
+    startX: event.clientX,
+    startY: event.clientY,
+    scrollLeft: viewport.scrollLeft,
+    scrollTop: viewport.scrollTop,
+  };
+  window.addEventListener("pointermove", onPanMove);
+  window.addEventListener("pointerup", onPanUp, { once: true });
+}
+
+function onPanMove(event: PointerEvent): void {
+  const viewport = viewportEl.value;
+  if (!panDrag || !viewport) return;
+  viewport.scrollLeft = panDrag.scrollLeft - (event.clientX - panDrag.startX);
+  viewport.scrollTop = panDrag.scrollTop - (event.clientY - panDrag.startY);
+}
+
+function onPanUp(): void {
+  window.removeEventListener("pointermove", onPanMove);
+  panDrag = null;
+}
+
+function clearSpaceState(): void {
+  spacePressed.value = false;
+}
+
+function centerOnNode(nodeId: string): void {
+  const item = placed.value.find((entry) => entry.node.id === nodeId);
+  const viewport = viewportEl.value;
+  if (!item || !viewport) return;
+  viewport.scrollLeft = (item.x + nodeW.value / 2) * scale.value - viewport.clientWidth / 2;
+  viewport.scrollTop = (item.y + nodeH.value / 2) * scale.value - viewport.clientHeight / 2;
+}
+
+function armPaletteNode(node: TopologyNode): void {
+  armedNodeId.value = armedNodeId.value === node.id ? "" : node.id;
+  textArmed.value = false;
+  if (armedNodeId.value) {
+    ElMessage.info(`已选中「${node.name}」，点击画布空白处放置。`);
+  }
+}
+
+/** 有待放置的设备 / 待落字的文字工具时，点画布任意位置（含节点、链路）都先完成这次放置。 */
+function tryPlaceArmed(point: { x: number; y: number }): boolean {
+  if (armedNodeId.value) {
+    const node = nodes.value.find((item) => item.id === armedNodeId.value);
+    if (node) {
+      placeNodeOnBoard(node.id, point.x - nodeW.value / 2, point.y - nodeH.value / 2);
+      armedNodeId.value = "";
+      ElMessage.success(`「${node.name}」已放到画布上，记得点「保存布局」。`);
+    }
+    return true;
+  }
+  if (textArmed.value) {
+    void addAnnotationAt(point);
+    return true;
+  }
+  return false;
+}
+
+/** 把设备放到画布坐标 (x, y)（左上角对齐）。 */
+function placeNodeOnBoard(nodeId: string, x: number, y: number): void {
+  localPositions.value = {
+    ...localPositions.value,
+    [nodeId]: { x: snap(x), y: snap(y) },
+  };
+  pendingRemovals.value = pendingRemovals.value.filter((id) => id !== nodeId);
+  selectedId.value = nodeId;
+  groupIds.value = [nodeId];
+  dirty.value = true;
+}
+
+/** 把还没上画布的设备按端口连接分层一次性铺开。 */
+function placeEveryNode(): void {
+  // 注意：这里要放"所有还没上画布的设备"，不受设备池搜索框影响。
+  const pending = visibleNodes.value.filter((item) => !boardPositions.value[item.id]);
+  if (!pending.length) {
+    ElMessage.info("设备都已在画布上。");
+    return;
+  }
+  pushHistory(clonePositions());
+  const next = { ...localPositions.value };
+  pending.forEach((node) => {
+    next[node.id] = autoSlot.value[node.id] ?? { x: MARGIN.left, y: MARGIN.top };
+  });
+  localPositions.value = next;
+  pendingRemovals.value = pendingRemovals.value.filter((id) => !next[id]);
+  dirty.value = true;
+  ElMessage.info(`已把 ${pending.length} 台设备放入画布，记得点「保存布局」。`);
+}
+
+/** 从画布上移走设备：只丢坐标，设备本身与链路都不动。 */
+function removeNodeFromBoard(nodeId: string): void {
+  const wasSaved = Boolean(savedPositions.value[nodeId]);
+  const nextSaved = { ...savedPositions.value };
+  delete nextSaved[nodeId];
+  savedPositions.value = nextSaved;
+  const nextLocal = { ...localPositions.value };
+  delete nextLocal[nodeId];
+  localPositions.value = nextLocal;
+  if (wasSaved) pendingRemovals.value = [...new Set([...pendingRemovals.value, nodeId])];
+  if (selectedId.value === nodeId) selectedId.value = "";
+  groupIds.value = groupIds.value.filter((id) => id !== nodeId);
+  dirty.value = true;
+  const node = nodes.value.find((item) => item.id === nodeId);
+  ElMessage.success(`已将「${node?.name ?? "设备"}」移出画布，记得点「保存布局」。`);
+}
+
+function locateKeywordNode(): void {
+  const keyword = locateKeyword.value.trim().toLowerCase();
+  if (!keyword) return;
+  const target = visibleNodes.value.find((item) =>
+    `${item.name} ${item.brandModel} ${item.rackName} ${item.siteName}`.toLowerCase().includes(keyword),
+  );
+  if (!target) {
+    ElMessage.warning("没有匹配的设备。");
+    return;
+  }
+  if (!boardPositions.value[target.id]) {
+    const viewport = viewportEl.value;
+    const centerX = ((viewport?.scrollLeft ?? 0) + (viewport?.clientWidth ?? 800) / 2) / scale.value;
+    const centerY = ((viewport?.scrollTop ?? 0) + (viewport?.clientHeight ?? 600) / 2) / scale.value;
+    placeNodeOnBoard(target.id, centerX - nodeW.value / 2, centerY - nodeH.value / 2);
+    ElMessage.info(`「${target.name}」原本不在画布上，已放到当前视野中心。`);
+  }
+  selectedId.value = target.id;
+  selectedLinkId.value = "";
+  selectedAnnotationId.value = "";
+  groupIds.value = [target.id];
+  requestAnimationFrame(() => centerOnNode(target.id));
+}
+
+// ---------------------------------------------------------- 画布文字批注
+
+function annotationFontSize(item: TopologyAnnotation): number {
+  return item.style === "title" ? 18 : 13;
+}
+
+function annotationLineHeight(item: TopologyAnnotation): number {
+  return annotationFontSize(item) + 5;
+}
+
+/** 粗略估宽（中英文混排），只为给文字加一块浅底色。 */
+function annotationWidth(item: TopologyAnnotation): number {
+  const longest = Math.max(1, ...item.text.split("\n").map((line) => line.length));
+  return Math.round(longest * annotationFontSize(item) * 0.62) + 10;
+}
+
+function annotationHeight(item: TopologyAnnotation): number {
+  return annotationLineHeight(item) * item.text.split("\n").length + 8;
+}
+
+function selectAnnotation(item: TopologyAnnotation): void {
+  selectedAnnotationId.value = item.id;
+  selectedId.value = "";
+  selectedLinkId.value = "";
+  annotationForm.text = item.text;
+  annotationForm.style = item.style;
+}
+
+async function addAnnotationAt(point: { x: number; y: number }): Promise<void> {
+  textArmed.value = false;
+  try {
+    const { value } = await ElMessageBox.prompt("画布上要写的文字（可多行）", "添加文字", {
+      confirmButtonText: "添加",
+      cancelButtonText: "取消",
+      inputType: "textarea",
+      inputPlaceholder: "例如：A 列机柜 1-3 为本次改造范围",
+    });
+    const text = String(value ?? "").trim();
+    if (!text) return;
+    const style = "note" as const;
+    const x = snap(point.x);
+    const y = snap(point.y);
+    const created = await createTopologyAnnotation({ text, x, y, style });
+    annotations.value = [...annotations.value, { id: created.id, text, x, y, style }];
+    selectedAnnotationId.value = created.id;
+    annotationForm.text = text;
+    annotationForm.style = style;
+    ElMessage.success("已添加文字，可拖动改位置或在右侧改样式。");
+  } catch (error) {
+    if (error !== "cancel") ElMessage.error(`添加文字失败：${String(error)}`);
+  }
+}
+
+async function saveAnnotation(): Promise<void> {
+  const item = selectedAnnotation.value;
+  if (!item) return;
+  const text = annotationForm.text.trim();
+  if (!text) {
+    ElMessage.warning("文字内容不能为空。");
+    return;
+  }
+  try {
+    await updateTopologyAnnotation(item.id, { text, style: annotationForm.style });
+    annotations.value = annotations.value.map((entry) =>
+      entry.id === item.id ? { ...entry, text, style: annotationForm.style } : entry,
+    );
+    ElMessage.success("文字已保存。");
+  } catch (error) {
+    ElMessage.error(`保存文字失败：${(error as Error).message}`);
+  }
+}
+
+async function deleteAnnotation(): Promise<void> {
+  const item = selectedAnnotation.value;
+  if (!item) return;
+  try {
+    await removeTopologyAnnotation(item.id);
+    annotations.value = annotations.value.filter((entry) => entry.id !== item.id);
+    selectedAnnotationId.value = "";
+    ElMessage.success("文字已删除。");
+  } catch (error) {
+    ElMessage.error(`删除文字失败：${(error as Error).message}`);
+  }
+}
+
+async function persistAnnotationPosition(item: TopologyAnnotation): Promise<void> {
+  try {
+    await updateTopologyAnnotation(item.id, { x: item.x, y: item.y });
+  } catch (error) {
+    ElMessage.error(`文字位置保存失败：${(error as Error).message}`);
+  }
+}
+
+/** 文字拖动的临时状态（与节点拖动共用 pointermove / pointerup 监听）。 */
+let annotationDrag: { id: string; offsetX: number; offsetY: number } | null = null;
+
+function onAnnotationPointerDown(event: PointerEvent, item: TopologyAnnotation): void {
+  event.stopPropagation();
+  if (armedNodeId.value || textArmed.value) {
+    if (tryPlaceArmed(toCanvasPoint(event))) return;
+  }
+  selectAnnotation(item);
+  if (!canUpdate.value) return;
+  const point = toCanvasPoint(event);
+  annotationDrag = { id: item.id, offsetX: item.x - point.x, offsetY: item.y - point.y };
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp, { once: true });
+}
+
+// ---------------------------------------------------------- 视图偏好记忆
+
+function savePrefs(): void {
+  try {
+    localStorage.setItem(
+      BOARD_PREF_KEY,
+      JSON.stringify({
+        siteId: siteId.value,
+        rackId: rackId.value,
+        onlyLinked: onlyLinked.value,
+        showLabels: showLabels.value,
+        routeMode: routeMode.value,
+        nodeSize: nodeSize.value,
+        showRackGroups: showRackGroups.value,
+        scale: scale.value,
+      }),
+    );
+  } catch {
+    // 隐私模式下写入失败可以忽略，只是记不住偏好
+  }
+}
+
+function restorePrefs(): void {
+  try {
+    const raw = localStorage.getItem(BOARD_PREF_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw) as Record<string, unknown>;
+    if (typeof data.siteId === "string") siteId.value = data.siteId;
+    if (typeof data.rackId === "string") rackId.value = data.rackId;
+    if (typeof data.onlyLinked === "boolean") onlyLinked.value = data.onlyLinked;
+    if (typeof data.showLabels === "boolean") showLabels.value = data.showLabels;
+    if (data.routeMode === "orthogonal" || data.routeMode === "direct") {
+      routeMode.value = data.routeMode;
+    }
+    if (data.nodeSize === "compact" || data.nodeSize === "standard" || data.nodeSize === "large") {
+      nodeSize.value = data.nodeSize;
+    }
+    if (typeof data.showRackGroups === "boolean") showRackGroups.value = data.showRackGroups;
+    if (typeof data.scale === "number") scale.value = clampScale(data.scale);
+  } catch {
+    // 本地配置损坏时按默认值走
+  }
+}
+
+const locateKeyword = ref("");
+/** 悬停某台设备时，与它无关的节点/链路淡出，方便顺线。 */
+const hoverRelated = computed<Set<string> | null>(() => {
+  if (!hoverNodeId.value) return null;
+  const related = new Set<string>([hoverNodeId.value]);
+  links.value.forEach((link) => {
+    if (link.aPlacementId === hoverNodeId.value) related.add(link.bPlacementId);
+    if (link.bPlacementId === hoverNodeId.value) related.add(link.aPlacementId);
+  });
+  return related;
+});
+
+function linkTouches(nodeId: string, link: Cable): boolean {
+  return link.aPlacementId === nodeId || link.bPlacementId === nodeId;
+}
+
 async function savePositions(): Promise<void> {
   const payload: TopologyPosition[] = placed.value.map((item) => ({
     nodeId: item.node.id,
     x: item.x,
     y: item.y,
   }));
-  if (!payload.length) return;
+  const removals = [...pendingRemovals.value];
+  if (!payload.length && !removals.length) return;
   try {
-    const result = await saveTopologyPositions(payload);
-    ElMessage.success(`已保存 ${result.saved} 个节点坐标。`);
+    const result = await saveTopologyPositions(payload, removals);
+    ElMessage.success(
+      `已保存 ${result.saved} 个节点坐标${result.removed ? `，移出画布 ${result.removed} 个` : ""}。`,
+    );
+    pendingRemovals.value = [];
     dirty.value = false;
     await loadData();
   } catch (error) {
@@ -1049,24 +1581,63 @@ async function savePositions(): Promise<void> {
 }
 
 function resetLayout(): void {
-  if (Object.keys(localPositions.value).length) pushHistory(clonePositions());
-  localPositions.value = {};
-  dirty.value = false;
-  ElMessage.info("已按端口连接重新分层，未保存的拖动已清除。");
+  if (!placed.value.length) {
+    ElMessage.info("画布上还没有设备，先把左侧设备放进画布。");
+    return;
+  }
+  pushHistory(clonePositions());
+  const next: Record<string, { x: number; y: number }> = {};
+  placed.value.forEach((item) => {
+    next[item.node.id] = autoSlot.value[item.node.id] ?? { x: item.x, y: item.y };
+  });
+  localPositions.value = next;
+  dirty.value = true;
+  ElMessage.info("已按端口连接重新分层排列画布上的设备，记得点「保存布局」。");
 }
 
 function buildExportSvg(): string {
+  const groupMarkup = rackGroups.value
+    .map(
+      (box) => `<g>
+        <rect x="${box.x1 - 18}" y="${box.y1 - 30}" width="${box.x2 - box.x1 + 36}" height="${
+          box.y2 - box.y1 + 48
+        }" rx="6" fill="none" stroke="#c0c4cc" stroke-dasharray="6 4"></rect>
+        <text x="${box.x1 - 12}" y="${box.y1 - 12}" font-size="11" fill="#909399">${escapeXml(
+          box.name,
+        )}</text>
+      </g>`,
+    )
+    .join("");
   const nodesMarkup = placed.value
     .map(
       (item) => `<g transform="translate(${item.x},${item.y})">
-        <rect width="${NODE_W}" height="${NODE_H}" fill="#ffffff" stroke="${
+        <rect width="${nodeW.value}" height="${nodeH.value}" fill="#ffffff" stroke="${
           item.node.id === selectedId.value ? "#409eff" : "#8a8a8a"
         }"></rect>
-        <text x="10" y="20" font-size="12" fill="#111111">${escapeXml(item.node.name)}</text>
-        <text x="10" y="35" font-size="10" fill="#666666">${escapeXml(
+        <rect width="4" height="${nodeH.value}" fill="${
+          CATEGORY_COLORS[item.node.category] ?? CATEGORY_COLORS.other
+        }"></rect>
+        <text x="12" y="20" font-size="12" fill="#111111">${escapeXml(item.node.name)}</text>
+        <text x="12" y="35" font-size="10" fill="#666666">${escapeXml(
           `${item.node.brandModel} · ${CATEGORY_LABELS[item.node.category] ?? item.node.category}`,
         )}</text>
       </g>`,
+    )
+    .join("");
+  const annotationMarkup = annotations.value
+    .map(
+      (item) =>
+        `<g transform="translate(${item.x},${item.y})">
+          <text font-size="${annotationFontSize(item)}" fill="${
+            item.style === "warn" ? "#f56c6c" : item.style === "title" ? "#111111" : "#606266"
+          }" font-weight="${item.style === "title" ? "700" : "400"}">${item.text
+            .split("\n")
+            .map(
+              (line, index) =>
+                `<tspan x="0" y="${annotationLineHeight(item) * (index + 1)}">${escapeXml(line)}</tspan>`,
+            )
+            .join("")}</text>
+        </g>`,
     )
     .join("");
   const linksMarkup = visibleLinks.value
@@ -1087,7 +1658,7 @@ function buildExportSvg(): string {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${canvas.value.width} ${
     canvas.value.height
   }" width="${canvas.value.width}" height="${canvas.value.height}">
-    <rect width="100%" height="100%" fill="#ffffff"></rect>${linksMarkup}${nodesMarkup}</svg>`;
+    <rect width="100%" height="100%" fill="#ffffff"></rect>${groupMarkup}${linksMarkup}${nodesMarkup}${annotationMarkup}</svg>`;
 }
 
 function escapeXml(value: string): string {
@@ -1209,6 +1780,9 @@ function printTopology(): void {
 
 onMounted(async () => {
   window.addEventListener("keydown", onShortcut);
+  window.addEventListener("keyup", onShortcut);
+  window.addEventListener("blur", clearSpaceState);
+  restorePrefs();
   try {
     const payload = await listRacks();
     racks.value = payload.racks;
@@ -1224,10 +1798,16 @@ onMounted(async () => {
     }
   }
   await loadData();
+  watch(
+    [siteId, rackId, onlyLinked, showLabels, routeMode, nodeSize, showRackGroups, scale],
+    savePrefs,
+  );
 });
 
 onUnmounted(() => {
   window.removeEventListener("keydown", onShortcut);
+  window.removeEventListener("keyup", onShortcut);
+  window.removeEventListener("blur", clearSpaceState);
   window.removeEventListener("pointermove", onPointerMove);
 });
 </script>
@@ -1255,7 +1835,32 @@ onUnmounted(() => {
           <el-option value="direct" label="直线走线" />
         </el-select>
         <el-switch v-model="snapGrid" active-text="网格吸附" />
+        <el-select v-model="nodeSize" style="width: 108px">
+          <el-option value="compact" label="紧凑节点" />
+          <el-option value="standard" label="标准节点" />
+          <el-option value="large" label="放大节点" />
+        </el-select>
+        <el-switch v-model="showRackGroups" active-text="机柜分组框" />
+        <el-input
+          v-model="locateKeyword"
+          placeholder="搜索设备并定位"
+          clearable
+          style="width: 190px"
+          @keyup.enter="locateKeywordNode"
+          @clear="locateKeyword = ''"
+        >
+          <template #append>
+            <el-button @click="locateKeywordNode">定位</el-button>
+          </template>
+        </el-input>
         <div class="spacer" />
+        <div class="zoom-bar">
+          <el-button size="small" title="缩小" @click="zoomOut">−</el-button>
+          <span class="zoom-value">{{ Math.round(scale * 100) }}%</span>
+          <el-button size="small" title="放大" @click="zoomIn">＋</el-button>
+          <el-button size="small" @click="fitToWindow">适应窗口</el-button>
+          <el-button size="small" @click="resetZoom">100%</el-button>
+        </div>
         <el-tag v-if="dirty" type="warning" effect="plain" size="small">有未保存的拖动</el-tag>
         <el-button
           v-if="canUpdate"
@@ -1265,6 +1870,24 @@ onUnmounted(() => {
           @click="startConnect()"
         >
           新建链路
+        </el-button>
+        <el-button
+          v-if="canUpdate"
+          size="small"
+          :disabled="!paletteNodes.length"
+          title="把还没上画布的设备按端口连接分层铺开"
+          @click="placeEveryNode"
+        >
+          全部放入画布
+        </el-button>
+        <el-button
+          v-if="canUpdate"
+          size="small"
+          :type="textArmed ? 'primary' : undefined"
+          title="点一下后在画布上点位置即可写字"
+          @click="textArmed = !textArmed"
+        >
+          加文字
         </el-button>
         <el-button size="small" @click="resetLayout">{{ dirty ? "丢弃未保存" : "重新布局" }}</el-button>
         <el-button
@@ -1306,12 +1929,27 @@ onUnmounted(() => {
           <span v-if="wizardSummary" class="wizard-summary">{{ wizardSummary }}</span>
           <el-button size="small" text @click="resetWizard">取消连线</el-button>
         </div>
+        <div v-if="armedNodeId || textArmed" class="tool-hint">
+          {{ armedNodeId ? "点击画布空白处放置设备（Esc 取消）" : "点击画布空白处添加文字（Esc 取消）" }}
+        </div>
+        <div
+          ref="viewportEl"
+          class="topo-viewport"
+          @wheel.prevent="onCanvasWheel"
+          @pointerdown="onViewportPointerDown"
+        >
+        <div
+          class="topo-stage"
+          :style="{ width: `${canvas.width * scale}px`, height: `${canvas.height * scale}px` }"
+        >
         <svg
           class="topology-canvas"
+          :width="canvas.width"
+          :height="canvas.height"
           :viewBox="`0 0 ${canvas.width} ${canvas.height}`"
-          :style="{ minHeight: `${Math.min(680, canvas.height)}px` }"
+          :style="{ transform: `scale(${scale})`, transformOrigin: '0 0' }"
           role="img"
-          aria-label="由端口连接自动生成的网络拓扑图"
+          aria-label="手动放置的网络拓扑图"
           @pointerdown="onCanvasPointerDown"
         >
           <rect
@@ -1322,6 +1960,21 @@ onUnmounted(() => {
             :width="Math.abs(marquee.x2 - marquee.x1)"
             :height="Math.abs(marquee.y2 - marquee.y1)"
           />
+          <text v-if="!placed.length && !annotations.length" class="empty-canvas" x="40" y="60">
+            画布还是空的：从右侧「设备池」点一台设备，再点画布空白处放上来；
+            也可以点工具栏的「全部放入画布」一次性铺开。
+          </text>
+          <g v-for="(box, index) in rackGroups" :key="`group-${index}`" class="rack-group">
+            <rect
+              :x="box.x1 - 18"
+              :y="box.y1 - 30"
+              :width="box.x2 - box.x1 + 36"
+              :height="box.y2 - box.y1 + 48"
+              rx="6"
+              :stroke-dasharray="'6 4'"
+            />
+            <text :x="box.x1 - 12" :y="box.y1 - 12">{{ box.name }}</text>
+          </g>
           <text
             v-for="item in levelLabels"
             :key="`tier-${item.level}`"
@@ -1331,7 +1984,15 @@ onUnmounted(() => {
           >
             {{ item.label }}
           </text>
-          <g v-for="link in visibleLinks" :key="`link-${link.id}`">
+          <g
+            v-for="link in visibleLinks"
+            :key="`link-${link.id}`"
+            class="link-group"
+            :class="{
+              faded: hoverNodeId && !linkTouches(hoverNodeId, link),
+              related: hoverNodeId && linkTouches(hoverNodeId, link),
+            }"
+          >
             <path
               :d="linkPath(link)"
               class="link"
@@ -1358,21 +2019,36 @@ onUnmounted(() => {
               picked: item.node.id === wizard.aDeviceId || item.node.id === wizard.bDeviceId,
               grouped: groupIds.length > 1 && groupIds.includes(item.node.id),
               dropTarget: connectDrag?.overId === item.node.id,
+              faded: hoverRelated && !hoverRelated.has(item.node.id),
+              related: hoverNodeId === item.node.id,
             }"
             :transform="`translate(${item.x},${item.y})`"
             @pointerdown="onNodePointerDown($event, item)"
+            @pointerenter="hoverNodeId = item.node.id"
+            @pointerleave="hoverNodeId = ''"
           >
-            <rect :width="NODE_W" :height="NODE_H" rx="3" />
-            <text x="10" y="20">{{ item.node.name }}</text>
-            <text x="10" y="35" class="sub">
+            <title>
+              {{ item.node.name }} · {{ item.node.brandModel || "未填型号" }} ·
+              {{ item.node.siteName }}/{{ item.node.rackName }} · 第 {{ item.node.positionU }}U ·
+              端口 {{ item.node.linkedPortCount }}/{{ item.node.portCount }}
+            </title>
+            <rect :width="nodeW" :height="nodeH" rx="3" />
+            <rect
+              class="category-bar"
+              width="4"
+              :height="nodeH"
+              :fill="CATEGORY_COLORS[item.node.category] ?? CATEGORY_COLORS.other"
+            />
+            <text v-if="showNodeName" x="12" y="20">{{ item.node.name }}</text>
+            <text v-if="showNodeSub" x="12" y="35" class="sub">
               {{ CATEGORY_LABELS[item.node.category] ?? item.node.category }} ·
               {{ item.node.linkedPortCount }}/{{ item.node.portCount }} 端口
             </text>
             <circle
               v-if="canUpdate"
               class="connect-handle"
-              :cx="NODE_W - 8"
-              :cy="NODE_H / 2"
+              :cx="nodeW - 8"
+              :cy="nodeH / 2"
               r="6"
               @pointerdown="onConnectHandleDown($event, item)"
             >
@@ -1382,15 +2058,104 @@ onUnmounted(() => {
           <line
             v-if="connectDrag"
             class="rubber-band"
-            :x1="positionOf(connectDrag.fromId).x + NODE_W"
-            :y1="positionOf(connectDrag.fromId).y + NODE_H / 2"
+            :x1="positionOf(connectDrag.fromId).x + nodeW"
+            :y1="positionOf(connectDrag.fromId).y + nodeH / 2"
             :x2="connectDrag.overId ? positionOf(connectDrag.overId).x : connectDrag.x"
-            :y2="connectDrag.overId ? positionOf(connectDrag.overId).y + NODE_H / 2 : connectDrag.y"
+            :y2="connectDrag.overId ? positionOf(connectDrag.overId).y + nodeH / 2 : connectDrag.y"
           />
+          <g
+            v-for="item in annotations"
+            :key="`annotation-${item.id}`"
+            class="annotation"
+            :class="[item.style, { selected: item.id === selectedAnnotationId }]"
+            :transform="`translate(${item.x},${item.y})`"
+            @pointerdown="onAnnotationPointerDown($event, item)"
+          >
+            <title>拖动可移动位置；在右侧面板可改文字与样式</title>
+            <rect
+              class="annotation-bg"
+              :width="annotationWidth(item)"
+              :height="annotationHeight(item)"
+              :rx="4"
+            />
+            <text>
+              <tspan
+                v-for="(line, index) in item.text.split('\n')"
+                :key="index"
+                x="0"
+                :y="annotationLineHeight(item) * (index + 1)"
+              >
+                {{ line }}
+              </tspan>
+            </text>
+          </g>
         </svg>
+        </div>
+        </div>
+        <div class="viewport-hint">
+          滚轮缩放、空格 + 左键（或中键）拖动平移；左键拖空白处框选，拖节点可调位置。
+        </div>
       </section>
 
       <aside>
+        <el-card shadow="never" class="pool-card">
+          <template #header>
+            <div class="pool-head">
+              <strong>设备池</strong>
+              <span class="pool-count">未上画布 {{ paletteNodes.length }} 台</span>
+            </div>
+          </template>
+          <el-input
+            v-model="paletteKeyword"
+            placeholder="搜索名称、型号或机柜"
+            clearable
+            size="small"
+          />
+          <div class="pool-list">
+            <button
+              v-for="item in paletteNodes"
+              :key="item.id"
+              type="button"
+              class="pool-item"
+              :class="{ armed: armedNodeId === item.id }"
+              @click="armPaletteNode(item)"
+            >
+              <strong>{{ item.name }}</strong>
+              <small>
+                {{ item.brandModel || "未填型号" }} ｜ {{ item.siteName }}/{{ item.rackName }} ｜
+                {{ item.linkedPortCount }}/{{ item.portCount }} 端口
+              </small>
+            </button>
+            <div v-if="!paletteNodes.length" class="empty-hint">设备都已在画布上。</div>
+          </div>
+          <p class="oa-hint">点设备再点画布空白处放置；也可以直接「全部放入画布」。</p>
+        </el-card>
+
+        <el-card v-if="selectedAnnotation" shadow="never">
+          <template #header><strong>文字批注</strong></template>
+          <el-form label-position="top" size="small">
+            <el-form-item label="文字">
+              <el-input
+                v-model="annotationForm.text"
+                type="textarea"
+                :rows="3"
+                :disabled="!canUpdate"
+              />
+            </el-form-item>
+            <el-form-item label="样式">
+              <el-select v-model="annotationForm.style" :disabled="!canUpdate" class="oa-full-width">
+                <el-option value="note" label="正文" />
+                <el-option value="title" label="标题" />
+                <el-option value="warn" label="警示（红字）" />
+              </el-select>
+            </el-form-item>
+          </el-form>
+          <div v-if="canUpdate" class="panel-actions">
+            <el-button size="small" type="primary" @click="saveAnnotation">保存文字</el-button>
+            <el-button size="small" type="danger" plain @click="deleteAnnotation">删除文字</el-button>
+          </div>
+        </el-card>
+
         <el-card v-if="selectedLink" shadow="never">
           <template #header><strong>链路属性</strong></template>
           <el-descriptions :column="1" size="small" border>
@@ -1475,6 +2240,9 @@ onUnmounted(() => {
             <el-button size="small" @click="openPortDialog(selected.id)">端口管理</el-button>
             <el-button size="small" type="primary" @click="startConnect(selected.id)">
               连接其他设备
+            </el-button>
+            <el-button size="small" plain @click="removeNodeFromBoard(selected.id)">
+              移出画布
             </el-button>
           </div>
 
@@ -1854,13 +2622,130 @@ onUnmounted(() => {
   color: var(--el-text-color-secondary);
   font-size: 12px;
 }
-.topology-canvas {
-  width: 100%;
-  height: auto;
-  background: var(--el-bg-color);
+.topo-viewport {
+  position: relative;
+  height: clamp(420px, calc(100vh - 340px), 900px);
+  overflow: auto;
   border: 1px solid var(--el-border-color);
   border-radius: 4px;
+  background: var(--el-fill-color-blank);
   touch-action: none;
+}
+.topo-stage {
+  position: relative;
+}
+.topology-canvas {
+  display: block;
+  background: var(--el-bg-color);
+  touch-action: none;
+}
+.zoom-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.zoom-value {
+  min-width: 46px;
+  text-align: center;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+.tool-hint {
+  margin-bottom: 8px;
+  padding: 4px 10px;
+  border: 1px dashed var(--el-color-primary);
+  border-radius: 4px;
+  color: var(--el-color-primary);
+  font-size: 12px;
+}
+.viewport-hint {
+  margin-top: 6px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+.rack-group rect {
+  fill: var(--el-fill-color-lighter);
+  fill-opacity: 0.5;
+  stroke: var(--el-border-color);
+}
+.rack-group text {
+  fill: var(--el-text-color-secondary);
+  font-size: 11px;
+}
+.empty-canvas {
+  fill: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+.link-group.faded,
+.node.faded {
+  opacity: 0.22;
+}
+.node.related rect {
+  stroke: var(--el-color-primary);
+}
+.category-bar {
+  pointer-events: none;
+}
+.annotation {
+  cursor: move;
+}
+.annotation .annotation-bg {
+  fill: var(--el-bg-color);
+  fill-opacity: 0.75;
+  stroke: transparent;
+}
+.annotation text {
+  fill: var(--el-text-color-regular);
+  font-size: 13px;
+}
+.annotation.title text {
+  fill: var(--el-text-color-primary);
+  font-size: 18px;
+  font-weight: 700;
+}
+.annotation.warn text {
+  fill: var(--el-color-danger);
+}
+.annotation.selected .annotation-bg {
+  stroke: var(--el-color-primary);
+  stroke-dasharray: 4 3;
+}
+.pool-card .pool-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+.pool-count {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+.pool-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  max-height: 260px;
+  overflow: auto;
+}
+.pool-item {
+  display: grid;
+  gap: 2px;
+  padding: 6px 8px;
+  text-align: left;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 4px;
+  background: var(--el-bg-color);
+  color: var(--el-text-color-primary);
+  cursor: pointer;
+}
+.pool-item:hover {
+  border-color: var(--el-color-primary);
+}
+.pool-item.armed {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+}
+.pool-item small {
+  color: var(--el-text-color-secondary);
 }
 .tier-label {
   fill: var(--el-text-color-secondary);

@@ -195,10 +195,20 @@ export interface TopologyPosition {
   y: number;
 }
 
+/** 拓扑画布上的文字批注：设备之外的自由说明文字。 */
+export interface TopologyAnnotation {
+  id: string;
+  text: string;
+  x: number;
+  y: number;
+  style: "note" | "title" | "warn";
+}
+
 export interface TopologyPayload {
   nodes: TopologyNode[];
   links: Cable[];
   positions: TopologyPosition[];
+  annotations?: TopologyAnnotation[];
 }
 
 export function listRacks(): Promise<{ racks: RackSummary[] }> {
@@ -436,6 +446,36 @@ export function loadTopology(params: {
 
 export function saveTopologyPositions(
   nodes: TopologyPosition[],
-): Promise<{ saved: number }> {
-  return api("/api/rack-layout/topology/positions", { method: "POST", body: { nodes } });
+  remove: string[] = [],
+): Promise<{ saved: number; removed: number }> {
+  return api("/api/rack-layout/topology/positions", {
+    method: "POST",
+    body: { nodes, remove },
+  });
+}
+
+export function createTopologyAnnotation(payload: {
+  text: string;
+  x: number;
+  y: number;
+  style: string;
+}): Promise<{ id: string }> {
+  return api("/api/rack-layout/topology/annotations", { method: "POST", body: payload });
+}
+
+export function updateTopologyAnnotation(
+  annotationId: string,
+  payload: { text?: string; x?: number; y?: number; style?: string },
+): Promise<unknown> {
+  return api(`/api/rack-layout/topology/annotations/${encodeURIComponent(annotationId)}`, {
+    method: "PUT",
+    body: payload,
+  });
+}
+
+export function removeTopologyAnnotation(annotationId: string): Promise<unknown> {
+  return api(`/api/rack-layout/topology/annotations/${encodeURIComponent(annotationId)}/remove`, {
+    method: "POST",
+    body: {},
+  });
 }

@@ -714,6 +714,25 @@ class DomainApiRouter:
             context = self._write_context(handler, "rack_layout", "update")
             send_json(self.device_topology.save_topology_positions(self._payload(handler), context))
             return True
+        # 拓扑画布的文字批注（画布上的说明文字）。
+        if path == "/api/rack-layout/topology/annotations" and method == "POST":
+            context = self._write_context(handler, "rack_layout", "create")
+            send_json(self.device_topology.create_annotation(self._payload(handler), context), status=201)
+            return True
+        if path.startswith("/api/rack-layout/topology/annotations/"):
+            parts = path.split("/")
+            if len(parts) == 7 and parts[6] == "remove" and method == "POST":
+                context = self._write_context(handler, "rack_layout", "delete")
+                send_json(
+                    self.device_topology.remove_annotation(parts[5], self._payload(handler), context)
+                )
+                return True
+            if len(parts) == 6 and method == "PUT":
+                context = self._write_context(handler, "rack_layout", "update")
+                send_json(
+                    self.device_topology.update_annotation(parts[5], self._payload(handler), context)
+                )
+                return True
         if path.startswith("/api/rack-layout/cables/"):
             parts = path.split("/")
             if len(parts) == 6 and parts[5] == "remove" and method == "POST":

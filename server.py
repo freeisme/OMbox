@@ -5316,12 +5316,13 @@ class AppHandler(SimpleHTTPRequestHandler):
                         "'inspection_task', 'inspection_task_item', 'rack_device_placement'"
                         ", 'device_type_catalog', 'device_type_port_template', 'rack_device_port', "
                         "'rack_cable_run', 'topology_node_position', 'datacenter_device', 'site_device'"
+                        ", 'topology_annotation'"
                         ");",
                         database=DB_NAME,
                     ).strip(),
                     0,
                 )
-                required_table_count = 71
+                required_table_count = 72
                 healthy = probe == 1 and table_count == required_table_count
                 self.send_json(
                     {

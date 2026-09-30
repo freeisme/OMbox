@@ -1251,7 +1251,7 @@ class ScrapManagementRegressionTests(TestCase):
         self.assertIn("AND ca.is_archived = 0", state_reader)
         self.assertIn("AND asset.is_archived = 0", service)
         self.assertIn("'scrap_reason', 'inventory_scrap_record', 'asset_scrap_record', ", state_reader)
-        self.assertIn("required_table_count = 71", state_reader)
+        self.assertIn("required_table_count = 72", state_reader)
 
     def test_frontend_exposes_scrap_actions_and_records_page(self):
         scrap_view = (ROOT / "frontend" / "src" / "views" / "ScrapRecordsView.vue").read_text(
@@ -1718,7 +1718,7 @@ class InspectionManagementRegressionTests(TestCase):
 
         self.assertIn("'asset_site', 'asset_rack', 'inspection_template', 'inspection_template_item', ", server)
         self.assertIn("'inspection_task'", server)
-        self.assertIn("required_table_count = 71", server)
+        self.assertIn("required_table_count = 72", server)
 
     def test_inspection_page_is_wired_into_navigation_and_exports(self):
         navigation = (ROOT / "frontend" / "src" / "navigation.ts").read_text(encoding="utf-8")
@@ -2296,10 +2296,60 @@ class DevicePanelTopologyRegressionTests(TestCase):
             "rack_device_port",
             "rack_cable_run",
             "topology_node_position",
+            "topology_annotation",
             "datacenter_device",
         ):
             self.assertIn(f"'{table}'", server_source)
-        self.assertIn("required_table_count = 71", server_source)
+        self.assertIn("required_table_count = 72", server_source)
+
+
+class TopologyBoardRegressionTests(TestCase):
+    """拓扑画布：设备改为手动放置，新增缩放视图与文字批注。"""
+
+    def test_migration_adds_topology_annotation_table(self):
+        migration = (
+            ROOT / "database" / "migrations" / "20260930_001_topology_annotations.sql"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("CREATE TABLE IF NOT EXISTS topology_annotation", migration)
+        self.assertIn("is_active TINYINT(1) NOT NULL DEFAULT 1", migration)
+        self.assertNotIn("DROP TABLE", migration.upper())
+        self.assertNotIn("DELETE FROM", migration.upper())
+
+    def test_service_exposes_annotations_and_board_removals(self):
+        service = (ROOT / "office_asset" / "device_topology.py").read_text(encoding="utf-8")
+
+        self.assertIn('"annotations": annotations', service)
+        self.assertIn("def create_annotation(", service)
+        self.assertIn("def update_annotation(", service)
+        self.assertIn("def remove_annotation(", service)
+        # 从画布上移走设备 = 删坐标行，设备与链路本身不动
+        self.assertIn("DELETE FROM topology_node_position", service)
+        self.assertNotIn("DELETE FROM rack_device_placement", service)
+
+    def test_router_serves_annotation_endpoints(self):
+        router = (ROOT / "office_asset" / "api_router.py").read_text(encoding="utf-8")
+
+        self.assertIn('"/api/rack-layout/topology/annotations"', router)
+        self.assertIn('parts[6] == "remove"', router)
+
+    def test_frontend_board_uses_manual_placement_and_zoom(self):
+        view = (ROOT / "frontend" / "src" / "views" / "TopologyView.vue").read_text(
+            encoding="utf-8"
+        )
+
+        # 视图控制：缩放按钮、滚轮缩放、适应窗口
+        for token in ("fitToWindow", "zoomIn", "zoomOut", "onCanvasWheel", "MIN_SCALE", "MAX_SCALE"):
+            self.assertIn(token, view)
+        # 设备默认不出现在画布上：有坐标才画，其余进设备池
+        self.assertIn("const paletteNodes = computed", view)
+        self.assertIn("filter((node) => boardPositions.value[node.id])", view)
+        # 手动放置、移出画布、文字批注
+        self.assertIn("armPaletteNode", view)
+        self.assertIn("placeEveryNode", view)
+        self.assertIn("removeNodeFromBoard", view)
+        self.assertIn("addAnnotationAt", view)
+        self.assertIn("saveTopologyPositions(payload, removals)", view)
 
 
 class DatacenterDeviceLedgerRegressionTests(TestCase):

@@ -125,9 +125,30 @@ v2.10.0 起前端是 Vue 3 + TypeScript + Vite + Element Plus，新增页面都�
 机柜视图顶栏的「单柜 / 并排」切换：并排模式把同一机房的机柜横向排开共用 U 行高，
 只读展示，点任意设备回到单柜视图编辑它。机柜数量多时横向滚动。
 
-拓扑分层在前端计算：以度数最高的节点（通常是核心交换机或防火墙）为根做 BFS，
-同层按机柜与名称排序；保存过坐标的节点优先使用保存值。整张图是纯 SVG，导出 PNG 走
-`SVG → Image → Canvas → toBlob`，不需要服务端渲染。
+### 拓扑画布（v3.0.24）
+
+拓扑页从"自动画出全部设备"改成**手动摆放的自由画布**：
+
+* `placed` 只包含**有坐标**的设备（`savedPositions` + 未保存的 `localPositions`），
+  其余设备进右侧「设备池」；`autoSlot` 仍然按"以度数最高节点为根做 BFS 分层"算默认坐标，
+  供「全部放入画布」和「重新布局」使用；
+* 点设备池里的设备 → `armedNodeId` → 点画布落点（`onCanvasPointerDown` /
+  `onNodePointerDown` 都会先走 `tryPlaceArmed`，所以点在分组框、节点上也能落）；
+* 「移出画布」= 从 `savedPositions`/`localPositions` 移除并记进 `pendingRemovals`，
+  保存布局时随 `POST /api/rack-layout/topology/positions` 的 `remove: [nodeId]` 一起提交，
+  服务端删 `topology_node_position` 行（设备、端口、链路都不动）；
+* 视图控制：`scale` + `.topo-viewport`（固定高度、内部滚动）。SVG 用**显式宽高**渲染，
+  再用 CSS `transform: scale()` 缩放，外层 stage 撑出滚动区，所以
+  `toCanvasPoint()` 里的 `canvas.width / rect.width` 依然成立；
+  滚轮以光标为中心缩放（`onCanvasWheel` → `applyScale`），空格 / 中键拖动平移；
+* 节点尺寸三档（`NODE_SIZES`），缩放低于阈值时用 `showNodeName` / `showNodeSub` 逐级收起文字，
+  `hoverRelated` 让无关节点与链路淡出；机柜分组框来自 `rackGroups`（按 `rackId` 求包围盒）；
+* 文字批注：`topology_annotation` 表 + 三个接口，前端拖动用同一个 pointer 监听
+  （`annotationDrag`），改文字/样式走右侧面板；
+* 视图偏好（筛选、走线、节点大小、分组框、缩放）存在 `localStorage["topology.board.prefs"]`。
+
+整张图是纯 SVG，导出 PNG 走 `SVG → Image → Canvas → toBlob`，不需要服务端渲染；
+导出 SVG 时会一并画出机柜分组框与文字批注。
 
 ## 验证
 
@@ -144,7 +165,7 @@ python .\tests\integration\qa_device_topology_regression.py
 机柜端口清单、建链路与幂等重复提交、端口占用冲突、同端口重复连接、拓扑节点与链路、
 坐标保存、删除链路与端口、审计留痕、只读账号被拒绝。
 
-健康检查 `/api/health` 的必需表数量为 71（v3.0.18 起加入 `site_device`）。
+健康检查 `/api/health` 的必需表数量为 72（v3.0.24 起加入 `topology_annotation`）。
 
 ## 本版不做的事
 
