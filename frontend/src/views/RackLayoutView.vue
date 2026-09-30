@@ -312,27 +312,10 @@ async function onPointerUp(): Promise<void> {
   await loadRack(rack.value.id);
 }
 
-/** 导出清单：多选机柜后合并成一张图（可打印 / 另存 PDF）或一张合并 CSV 表。 */
+/** 导出清单：多选机柜合并到同一张机柜图上（可打印 / 另存 PDF），只输出机柜图本身。 */
 const exportDialog = ref(false);
 const exportRackIds = ref<string[]>([]);
-const exportWithList = ref(true);
 const exportBusy = ref(false);
-
-const EXPORT_HEADER = [
-  "机房",
-  "机柜",
-  "起始U",
-  "占用",
-  "安装面",
-  "设备名称",
-  "品牌型号",
-  "类型",
-  "状态",
-  "固资编码",
-  "SN/ST",
-  "使用人",
-  "备注",
-];
 
 function openExportDialog(): void {
   if (!racks.value.length) {
@@ -366,50 +349,7 @@ function escapeHtml(value: unknown): string {
   );
 }
 
-function csvCell(value: unknown): string {
-  return `"${String(value ?? "").replace(/"/g, '""')}"`;
-}
-
-function exportRows(items: RackDetail[]): string[][] {
-  const rows: string[][] = [];
-  items.forEach((item) => {
-    [...item.placements]
-      .sort((a, b) => b.positionU - a.positionU)
-      .forEach((placement) => {
-        rows.push([
-          item.siteName,
-          item.name,
-          String(placement.positionU),
-          `${placement.uHeight}U`,
-          FACE_LABELS[placement.face] ?? placement.face,
-          placement.name,
-          placement.brandModel,
-          rackCategoryLabel(placement.category),
-          statusLabel(placement.status ?? ""),
-          placement.assetCode ?? "",
-          placement.serialNumber ?? "",
-          placement.ownerLabel ?? "",
-          placement.notes ?? "",
-        ]);
-      });
-  });
-  return rows;
-}
-
-function exportFileName(items: RackDetail[]): string {
-  return items.length === 1 ? items[0].name : `${items.length}个机柜`;
-}
-
-function mergeTableHtml(items: RackDetail[]): string {
-  const head = EXPORT_HEADER.map((label) => `<th>${escapeHtml(label)}</th>`).join("");
-  const body = exportRows(items)
-    .map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`)
-    .join("");
-  if (!body) return "";
-  return `<h2>合并设备清单</h2><table class="list"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
-}
-
-function rackDiagramHtml(items: RackDetail[], withList: boolean): string {
+function rackDiagramHtml(items: RackDetail[]): string {
   const columns = items
     .map((item) => {
       const rows = unitRowsOf(Number(item.heightU))
@@ -426,57 +366,39 @@ function rackDiagramHtml(items: RackDetail[], withList: boolean): string {
           return `<tr><td class="u">${unit}U</td><td class="dev">${text}</td></tr>`;
         })
         .join("");
+      const free = Math.max(0, Number(item.heightU) - Number(item.usedUnits));
       return `<div class="rack"><div class="cap"><strong>${escapeHtml(item.name)}</strong>
-        <span>${escapeHtml(item.siteName)} ｜ ${item.heightU}U ｜ 已用 ${item.usedUnits}U</span></div>
+        <span>${escapeHtml(item.siteName)} ｜ ${item.heightU}U ｜ 已用 ${item.usedUnits}U ｜ 空闲 ${free}U</span></div>
         <table>${rows}</table></div>`;
     })
     .join("");
   const total = items.reduce((sum, item) => sum + item.placements.length, 0);
-  return `<html><head><meta charset="utf-8" /><title>机柜合并图</title>
+  return `<html><head><meta charset="utf-8" /><title>机柜图</title>
     <style>
-      body{font-family:"Microsoft YaHei",Arial,sans-serif;font-size:12px;margin:18px;color:#222}
-      h1{font-size:17px;margin:0 0 4px}p.meta{color:#555;margin:0 0 14px}
-      .board{display:flex;flex-wrap:wrap;align-items:flex-start}
-      .rack{margin:0 16px 18px 0}
-      .cap{width:210px;margin-bottom:4px}.cap strong{display:block;font-size:13px}
+      @page{margin:12mm}
+      body{font-family:"Microsoft YaHei",Arial,sans-serif;font-size:11px;color:#222;margin:0;
+        -webkit-print-color-adjust:exact;print-color-adjust:exact}
+      h1{font-size:16px;margin:0 0 3px}
+      p.meta{color:#666;margin:0 0 12px;padding-bottom:8px;border-bottom:1px solid #ddd}
+      .board{display:flex;flex-wrap:wrap;gap:12px 14px;align-items:flex-start}
+      .rack{width:206px;break-inside:avoid;page-break-inside:avoid}
+      .cap{margin-bottom:4px}
+      .cap strong{display:block;font-size:12px}
       .cap span{color:#666}
-      table{border-collapse:collapse;width:210px}
-      td{border:1px solid #999;padding:2px 4px;height:16px}
-      td.u{width:34px;text-align:right;color:#666;background:#f2f2f2}
-      td.dev small{display:block;color:#666}
-      h2{font-size:14px;margin:6px 0 6px}
-      table.list{width:100%}table.list th{background:#f2f2f2}
-      table.list td{padding:3px 6px;height:auto}
-      @media print{.rack{page-break-inside:avoid}}
+      table{border-collapse:collapse;width:100%;table-layout:fixed}
+      td{border:1px solid #bbb;padding:1px 5px;height:15px;line-height:15px;overflow:hidden;
+        white-space:nowrap;text-overflow:ellipsis}
+      td.u{width:32px;text-align:right;color:#888;background:#f2f2f2}
+      td.dev small{display:block;color:#666;font-size:10px;overflow:hidden;text-overflow:ellipsis}
     </style></head>
-    <body><h1>机柜合并图</h1>
-    <p class="meta">共 ${items.length} 个机柜 ｜ 设备 ${total} 台 ｜ 导出时间 ${escapeHtml(
+    <body><h1>机柜图</h1>
+    <p class="meta">共 ${items.length} 个机柜 ｜ 已上架设备 ${total} 台 ｜ 导出时间 ${escapeHtml(
       new Date().toLocaleString("zh-CN"),
     )}</p>
-    <div class="board">${columns}</div>${withList ? mergeTableHtml(items) : ""}</body></html>`;
+    <div class="board">${columns}</div></body></html>`;
 }
 
-async function exportMergedCsv(): Promise<void> {
-  const items = await pickedRacks();
-  if (!items.length) return;
-  const rows = exportRows(items);
-  if (!rows.length) {
-    ElMessage.warning("所选机柜里还没有上架设备。");
-    return;
-  }
-  const csv = `\ufeff${EXPORT_HEADER.join(",")}\n${rows
-    .map((row) => row.map(csvCell).join(","))
-    .join("\n")}`;
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-  link.download = `机柜设备清单-${exportFileName(items)}.csv`;
-  link.click();
-  URL.revokeObjectURL(link.href);
-  exportDialog.value = false;
-  ElMessage.success(`已导出 ${items.length} 个机柜、${rows.length} 台设备。`);
-}
-
-async function exportMergedDiagram(): Promise<void> {
+async function exportRackDiagram(): Promise<void> {
   if (!exportRackIds.value.length) {
     ElMessage.warning("请先选择要导出的机柜。");
     return;
@@ -494,12 +416,12 @@ async function exportMergedDiagram(): Promise<void> {
     return;
   }
   win.document.open();
-  win.document.write(rackDiagramHtml(items, exportWithList.value));
+  win.document.write(rackDiagramHtml(items));
   win.document.close();
   win.focus();
   win.print();
   exportDialog.value = false;
-  ElMessage.success(`已生成 ${items.length} 个机柜的合并图，可在打印窗口另存为 PDF。`);
+  ElMessage.success(`已生成 ${items.length} 个机柜的机柜图，可在打印窗口另存为 PDF。`);
 }
 
 function printRack(): void {
@@ -760,7 +682,7 @@ onMounted(async () => {
       </aside>
     </div>
   </el-card>
-  <el-dialog v-model="exportDialog" title="导出机柜清单" width="560px">
+  <el-dialog v-model="exportDialog" title="导出机柜图" width="520px">
     <el-form label-width="88px">
       <el-form-item label="选择机柜">
         <el-select
@@ -769,7 +691,7 @@ onMounted(async () => {
           filterable
           collapse-tags
           collapse-tags-tooltip
-          placeholder="按机房或机柜名称搜索，可多选"
+          placeholder="按机房或机柜名称搜索，可多选；默认当前机柜"
           style="width: 100%"
         >
           <el-option
@@ -780,31 +702,20 @@ onMounted(async () => {
           />
         </el-select>
       </el-form-item>
-      <el-form-item label="合并清单">
-        <el-switch v-model="exportWithList" active-text="在合并图下方附设备清单表" />
-      </el-form-item>
     </el-form>
     <p class="oa-hint">
-      合并图把所选机柜横向排在一页里，可直接打印或另存为 PDF；CSV 会把所选机柜的设备合并成一张表，多一列「机柜」。
+      所选机柜横向排在同一张图上，逐 U 显示设备名与型号；点「导出机柜图」会打开打印窗口，可直接打印或另存为 PDF。
     </p>
     <template #footer>
       <el-button size="small" @click="exportDialog = false">取消</el-button>
-      <el-button
-        size="small"
-        :disabled="!exportRackIds.length"
-        :loading="exportBusy"
-        @click="exportMergedCsv"
-      >
-        导出 CSV
-      </el-button>
       <el-button
         type="primary"
         size="small"
         :disabled="!exportRackIds.length"
         :loading="exportBusy"
-        @click="exportMergedDiagram"
+        @click="exportRackDiagram"
       >
-        导出合并图
+        导出机柜图
       </el-button>
     </template>
   </el-dialog>
