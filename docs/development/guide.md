@@ -273,7 +273,7 @@ Element Plus 按需引入，首屏 JS 约 268 KB（gzip 约 114 KB）。
 | `MYSQLDUMP_BIN` | `mysqldump` 路径 | Docker 为 `/usr/bin/mysqldump` |
 | `BACKUP_DIR` | Web 备份目录 | Docker 为 `/app/backups` |
 | `SERVER_HOST` | Python 监听地址 | Docker 为 `0.0.0.0` |
-| `SERVER_PORT` | Python 监听端口 | `8000` |
+| `SERVER_PORT` | Python 监听端口 | 代码内置默认 `8011`；Compose 与 `.env.example` 里显式设为 `8000` |
 | `AUTH_SESSION_HOURS` | 登录会话有效小时数 | 默认 `8`，有效范围 `1-168` |
 | `AUTH_COOKIE_SECURE` | 是否给 Cookie 加 Secure | HTTPS 反代后设为 `true` |
 | `MAX_REQUEST_BODY_BYTES` | JSON 请求体最大字节数 | 默认 `8388608`，最大支持 `64 MB` |

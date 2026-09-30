@@ -80,9 +80,12 @@ docker compose up -d
 ```
 
 将命令中的数据库名替换为实际 `DB_NAME`。不要用删除 `mysql-data` 卷来绕过迁移问题。
-成功后删除 `.env` 中的 `MIGRATION_ADOPT_BASELINE`，并运行 `docker compose run --rm migrate
---entrypoint python migrate tools/migration_runner.py --database office_asset_mgmt --verify`
-确认没有待执行迁移。
+成功后删除 `.env` 中的 `MIGRATION_ADOPT_BASELINE`，再确认没有待执行迁移：
+
+```bash
+docker compose run --rm --entrypoint python migrate \
+  tools/migration_runner.py --database office_asset_mgmt --verify
+```
 
 ## 4. 备份与恢复
 
