@@ -1884,10 +1884,15 @@ onUnmounted(() => {
           v-if="canUpdate"
           size="small"
           :type="textArmed ? 'primary' : undefined"
-          title="点一下后在画布上点位置即可写字"
+          class="icon-btn"
+          title="加文字：点一下，再点画布位置即可写字"
+          aria-label="加文字"
           @click="textArmed = !textArmed"
         >
-          加文字
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <rect x="2.5" y="3.5" width="11" height="2.2" rx="0.6" fill="currentColor" />
+            <rect x="6.9" y="5.7" width="2.2" height="8" rx="0.6" fill="currentColor" />
+          </svg>
         </el-button>
         <el-button size="small" @click="resetLayout">{{ dirty ? "丢弃未保存" : "重新布局" }}</el-button>
         <el-button
@@ -2643,6 +2648,12 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 4px;
+}
+.icon-btn {
+  padding: 0 7px;
+}
+.icon-btn svg {
+  display: block;
 }
 .zoom-value {
   min-width: 46px;
