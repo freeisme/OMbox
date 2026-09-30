@@ -26,6 +26,7 @@ GitHub Wiki 提供适合团队日常查阅的模块化文档：
 - [首页](https://github.com/freeisme/OMbox/wiki/Home)
 - [设备台账](https://github.com/freeisme/OMbox/wiki/Device-Ledger)
 - [机房巡检](https://github.com/freeisme/OMbox/wiki/Inspection)
+- [会议室](https://github.com/freeisme/OMbox/wiki/Meeting-Rooms)
 - [机房设备管理](https://github.com/freeisme/OMbox/wiki/Datacenter-Management)
 - [机柜视图与设备面板](https://github.com/freeisme/OMbox/wiki/Rack-View-and-Panel)
 - [网络拓扑](https://github.com/freeisme/OMbox/wiki/Topology)
@@ -543,6 +544,21 @@ non_asset_type
 
 `database_backup` 保存备份文件名、路径、大小、SHA-256、类型、请求人和状态。
 备份文件存放在 `BACKUP_DIR`，不通过静态文件服务暴露。
+
+#### 其他业务模块（各自有独立文档）
+
+这些模块的表结构与接口较多，细节写在对应的开发文档里，这里只列入口：
+
+| 模块 | 数据表 | 文档 |
+| --- | --- | --- |
+| 机房设备台账 | `datacenter_device` | [机房管理](datacenter-management.md) |
+| 机柜视图 | `rack_device_placement` | [机柜视图](rack-layout.md) |
+| 设备面板与网络拓扑 | `device_type_catalog`、`rack_device_port`、`rack_cable_run`、`topology_node_position`、`topology_annotation` | [设备面板与网络拓扑](device-panel-and-topology.md) |
+| 机房/弱电间/会议室巡检 | `asset_site`、`asset_rack`、`inspection_template`、`inspection_task`、`site_device` | [巡检管理](inspection-management.md) |
+
+拓扑画布自 v3.0.23 起是"手动摆放"的自由画布：设备默认进设备池，拖放后把坐标写进
+`topology_node_position`，"移出画布"删掉这一行；画布文字存在 `topology_annotation`，
+删除是软删除。
 
 管理员可以在设置页：
 

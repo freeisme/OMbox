@@ -95,5 +95,6 @@
 
 ## 相关页面
 
+- [会议室](Meeting-Rooms)（会议室与会议室内设备）
 - [机房管理](Datacenter-Management)
 - [机柜视图与设备面板](Rack-View-and-Panel)
