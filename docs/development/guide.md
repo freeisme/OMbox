@@ -483,6 +483,24 @@ auditLogs
 - 显示屏仍按单台登记（数量固定 1，后端校验 quantity=1）；同一个人可以领多台同型号显示屏，
   每台一条记录、可各自独立回收。
 
+#### 名下物资的三个动作（v3.0.24）
+
+「使用人员 → 设备清单」里每条显示屏 / 非资产物资（含自定义物资）右侧是**「操作」下拉**：
+
+* **回收**：选入库仓库（可选备注）→ 回补库存、写流转记录（`inventory_return`，方向 increase）；
+* **报废**：填报废备注（可选补充说明）→ 调 `POST /api/inventory/usage/{类型}/{记录}/scrap`
+  （权限 `scrap_management:create`）：使用记录就地关闭、领用台账置 `scrapped`、
+  写 `inventory_scrap_record` **和**一条流转记录（`inventory_scrap`，方向 decrease、去向「报废」），
+  库存不回补；
+* **调拨**：选接收人（在职或公用人员）→ 调 `POST /api/inventory/usage/{类型}/{记录}/transfer`
+  （权限 `inventory_operations:update`）：原使用记录软关闭、为目标人员新开一条同型号记录、
+  把仍处于 `active` 的 `inventory_allocation_history` 改绑到新记录（接手人之后能正常回收 / 报废），
+  写流转记录（`inventory_usage_transfer`，方向 decrease、来源=原使用人、去向=新使用人），**完全不动库存**。
+
+三个动作都写审计（`inventory_scrapped` / `inventory_usage_transferred` / `inventory_returned`）；
+流转记录页的业务类型标签在 `frontend/src/api/flows.ts` 的 `FLOW_DEFINITIONS` 里维护，
+新增动作码要同步补进去，否则页面会显示原始英文码。
+
 当前普通人员编辑页只允许维护在职和停用状态，不提供离职日期、离职信息和备注输入。
 数据库中的 `left` 仅用于离职档案兼容和受控归档结果，不能通过普通人员编辑接口直接写入。
 离职档案页面只读展示归档信息和离职时设备快照。

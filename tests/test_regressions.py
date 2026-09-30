@@ -1222,7 +1222,10 @@ class ScrapManagementRegressionTests(TestCase):
         # 报废不得回补库存：不允许增加型号或仓库库存，也不允许删除使用记录。
         self.assertNotIn("quantity = quantity +", inventory_scrap)
         self.assertNotIn("DELETE FROM {usage_table}", inventory_scrap)
-        self.assertNotIn("inventory_movement_log", inventory_scrap)
+        # v3.0.24 起报废也要写一条物资流转记录（方向是减少、去向"报废"），但依然不动库存。
+        self.assertIn("INSERT INTO inventory_movement_log", inventory_scrap)
+        self.assertIn("'inventory_scrap'", inventory_scrap)
+        self.assertIn("'decrease'", inventory_scrap)
 
     def test_computer_scrap_retires_archives_and_snapshots_the_asset(self):
         service = (ROOT / "office_asset" / "asset_service.py").read_text(encoding="utf-8")
@@ -2303,6 +2306,63 @@ class DevicePanelTopologyRegressionTests(TestCase):
         self.assertIn("required_table_count = 72", server_source)
 
 
+class InventoryUsageActionTests(TestCase):
+    """使用人员里的 IT 物资「操作」下拉：回收 / 报废 / 调拨，三个动作都要落物资流转记录。"""
+
+    def test_service_transfers_usage_and_logs_the_movement(self):
+        service = (ROOT / "office_asset" / "asset_service.py").read_text(encoding="utf-8")
+        transfer = service.split("    def transfer_usage_inventory(", 1)[1].split(
+            "\n    def scrap_inventory_usage(", 1
+        )[0]
+
+        self.assertIn("inventory_usage_transfer", transfer)
+        self.assertIn("INSERT INTO inventory_movement_log", transfer)
+        self.assertIn("UPDATE inventory_allocation_history", transfer)
+        # 调拨只换使用人：原记录软关闭 + 给接收人新开一条
+        self.assertIn("SET is_active = 0", transfer)
+        self.assertNotIn("DELETE FROM", transfer)
+        # 不碰库存
+        self.assertNotIn("inventory_warehouse_stock", transfer)
+        self.assertNotIn("it_inventory_model SET quantity", transfer)
+
+    def test_scrap_usage_also_writes_a_movement_record(self):
+        service = (ROOT / "office_asset" / "asset_service.py").read_text(encoding="utf-8")
+        scrap = service.split("    def scrap_inventory_usage(", 1)[1].split(
+            "\n    def scrap_computer(", 1
+        )[0]
+
+        self.assertIn("INSERT INTO inventory_movement_log", scrap)
+        self.assertIn("inventory_scrap", scrap)
+        self.assertIn("inventory_scrap_record", scrap)
+
+    def test_router_serves_the_usage_transfer_endpoint(self):
+        router = (ROOT / "office_asset" / "api_router.py").read_text(encoding="utf-8")
+
+        self.assertIn('path.endswith("/transfer")', router)
+        self.assertIn("transfer_usage_inventory", router)
+        self.assertIn('path.endswith("/scrap")', router)
+
+    def test_frontend_uses_one_operation_dropdown(self):
+        view = (ROOT / "frontend" / "src" / "views" / "EmployeesView.vue").read_text(
+            encoding="utf-8"
+        )
+        api_ts = (ROOT / "frontend" / "src" / "api" / "employees.ts").read_text(encoding="utf-8")
+        flows = (ROOT / "frontend" / "src" / "api" / "flows.ts").read_text(encoding="utf-8")
+
+        # 两个表格（显示屏 / 非资产）都改成「操作」下拉，三个动作齐全
+        self.assertEqual(view.count("onUsageAction(command, 'monitor', row)"), 1)
+        self.assertEqual(view.count("onUsageAction(command, 'non_asset', row)"), 1)
+        for command in ("recover", "scrap", "transfer"):
+            self.assertIn(f'<el-dropdown-item command="{command}">', view)
+        self.assertIn("submitScrap", view)
+        self.assertIn("submitTransfer", view)
+        # 前端接口与流转记录标签
+        self.assertIn("/scrap", api_ts)
+        self.assertIn("/transfer", api_ts)
+        self.assertIn("inventory_usage_transfer", flows)
+        self.assertIn("inventory_scrap", flows)
+
+
 class TopologyBoardRegressionTests(TestCase):
     """拓扑画布：设备改为手动放置，新增缩放视图与文字批注。"""
 
@@ -3368,9 +3428,10 @@ class InspectionEntryRegressionTests(TestCase):
         self.assertIn('@click="submitAssignComputer"', view)
         self.assertIn("@click=\"releaseComputer(row)\"", view)
 
-        # 回收改为"点某条物资时才弹窗选仓库"，不再在设备信息栏里常驻回收设置
-        self.assertIn("openRecoverDialog('monitor'", view)
-        self.assertIn("openRecoverDialog('non_asset'", view)
+        # 每行物资的「操作」下拉：回收 / 报废 / 调拨（回收仍然只在弹窗里选仓库）
+        self.assertIn("onUsageAction(command, 'monitor', row)", view)
+        self.assertIn("onUsageAction(command, 'non_asset', row)", view)
+        self.assertIn("openRecoverDialog(allocationType, usageId, label)", view)
         self.assertIn("回收入库仓库", view)
         self.assertIn("@confirm=\"submitRecover\"", view)
         self.assertNotIn("回收设置（解除 / 回收时使用）", view)

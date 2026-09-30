@@ -16,11 +16,14 @@ import {
   assignComputerToEmployee,
   releaseComputerFromEmployee,
   returnEmployeeUsage,
+  scrapEmployeeUsage,
   saveEmployee,
+  transferEmployeeUsage,
   type EmployeeDetailRow,
   type EmployeeFormPayload,
   type OffboardItem,
   type OffboardPreview,
+  type UsageItem,
 } from "../api/employees";
 import type { ComputerRow } from "../api/state";
 import { loadInventoryData, type InventoryData, type InventoryModelRow } from "../api/inventory";
@@ -374,6 +377,17 @@ const recoverTarget = ref<{
 } | null>(null);
 const recoverForm = reactive({ warehouseId: "", notes: "" });
 
+/** 「操作」下拉里除回收外的两个动作：报废（核销）与调拨（换使用人）。 */
+const usageActionTarget = ref<{
+  allocationType: "monitor" | "non_asset";
+  usageId: string;
+  label: string;
+} | null>(null);
+const scrapVisible = ref(false);
+const scrapForm = reactive({ reason: "", notes: "" });
+const transferVisible = ref(false);
+const transferForm = reactive({ targetEmployeeId: "", notes: "" });
+
 /**
  * 当前人员名下的办公终端 / 可分配的办公终端。
  * 这两份数据只在设备弹窗里用得到，打开弹窗时按需向服务端要，不再随页面整包加载。
@@ -690,6 +704,96 @@ async function submitRecover(): Promise<void> {
     deviceSaving.value = false;
   }
 }
+
+/** 操作下拉：回收 / 报废 / 调拨 三个动作共用同一条物资记录。 */
+function onUsageAction(
+  command: string,
+  allocationType: "monitor" | "non_asset",
+  row: UsageItem,
+): void {
+  const usageId = String(row.id ?? "");
+  if (!usageId) {
+    ElMessage.warning("这条物资记录缺少编号，请刷新后重试。");
+    return;
+  }
+  const label = employeeUsageLabel(row);
+  if (command === "recover") {
+    openRecoverDialog(allocationType, usageId, label);
+    return;
+  }
+  usageActionTarget.value = { allocationType, usageId, label };
+  if (command === "scrap") {
+    scrapForm.reason = "";
+    scrapForm.notes = "";
+    scrapVisible.value = true;
+    return;
+  }
+  if (command === "transfer") {
+    transferForm.targetEmployeeId = "";
+    transferForm.notes = "";
+    transferVisible.value = true;
+  }
+}
+
+/** 报废：填备注后直接核销这条物资（不回收入库、不回补库存），并写流转与报废记录。 */
+async function submitScrap(): Promise<void> {
+  const employee = deviceEmployee.value;
+  const target = usageActionTarget.value;
+  if (!employee || !target) return;
+  const reason = scrapForm.reason.trim();
+  if (!reason) {
+    ElMessage.warning("请填写报废备注。");
+    return;
+  }
+  deviceSaving.value = true;
+  try {
+    await scrapEmployeeUsage(target.allocationType, target.usageId, reason, scrapForm.notes.trim());
+    ElMessage.success("已报废并从人员名下核销，可在「报废记录」与「物资流转记录」查看。");
+    scrapVisible.value = false;
+    usageActionTarget.value = null;
+    await reloadEmployees(employee.id);
+    inventoryData.value = await loadInventoryData(true);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "报废失败。");
+  } finally {
+    deviceSaving.value = false;
+  }
+}
+
+/** 调拨：把这条物资转给另一个使用人，库存不动。 */
+async function submitTransfer(): Promise<void> {
+  const employee = deviceEmployee.value;
+  const target = usageActionTarget.value;
+  if (!employee || !target) return;
+  if (!transferForm.targetEmployeeId) {
+    ElMessage.warning("请选择调拨的接收人。");
+    return;
+  }
+  deviceSaving.value = true;
+  try {
+    await transferEmployeeUsage(
+      target.allocationType,
+      target.usageId,
+      transferForm.targetEmployeeId,
+      transferForm.notes.trim(),
+    );
+    ElMessage.success("已调拨给接收人，可在「物资流转记录」查看。");
+    transferVisible.value = false;
+    usageActionTarget.value = null;
+    await reloadEmployees(employee.id);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "调拨失败。");
+  } finally {
+    deviceSaving.value = false;
+  }
+}
+
+/** 调拨接收人候选：在职与公用人员，排除当前这个人。 */
+const transferTargetOptions = computed(() =>
+  employees.value
+    .filter((row) => ["active", "shared"].includes(row.status) && row.id !== deviceEmployee.value?.id)
+    .map((row) => ({ value: row.id, label: `${row.name}（${row.employeeNo}）` })),
+);
 
 function exportSelected(): void {
   const rows = employees.value.filter((row) => selectedIds.value.includes(row.id));
@@ -1159,14 +1263,21 @@ onMounted(async () => {
       </el-table-column>
       <el-table-column label="操作" width="90">
         <template #default="{ row }">
-          <el-button
-            link
-            type="danger"
-            :loading="deviceSaving"
-            @click="openRecoverDialog('monitor', row.id ?? '', employeeUsageLabel(row))"
+          <el-dropdown
+            trigger="click"
+            @command="(command: string) => onUsageAction(command, 'monitor', row)"
           >
-            回收
-          </el-button>
+            <el-button link type="primary" size="small" :loading="deviceSaving">
+              操作<span class="caret">▾</span>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="recover">回收</el-dropdown-item>
+                <el-dropdown-item command="scrap">报废</el-dropdown-item>
+                <el-dropdown-item command="transfer">调拨</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </template>
       </el-table-column>
     </el-table>
@@ -1185,14 +1296,21 @@ onMounted(async () => {
       </el-table-column>
       <el-table-column label="操作" width="90">
         <template #default="{ row }">
-          <el-button
-            link
-            type="danger"
-            :loading="deviceSaving"
-            @click="openRecoverDialog('non_asset', row.id ?? '', employeeUsageLabel(row))"
+          <el-dropdown
+            trigger="click"
+            @command="(command: string) => onUsageAction(command, 'non_asset', row)"
           >
-            回收
-          </el-button>
+            <el-button link type="primary" size="small" :loading="deviceSaving">
+              操作<span class="caret">▾</span>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="recover">回收</el-dropdown-item>
+                <el-dropdown-item command="scrap">报废</el-dropdown-item>
+                <el-dropdown-item command="transfer">调拨</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </template>
       </el-table-column>
     </el-table>
@@ -1391,9 +1509,76 @@ onMounted(async () => {
       </div>
     </el-form>
   </FormDialog>
+
+  <FormDialog
+    v-model="scrapVisible"
+    :title="`报废物资 · ${usageActionTarget?.label ?? ''}`"
+    size="sm"
+    confirm-text="确认报废"
+    confirm-type="danger"
+    :loading="deviceSaving"
+    @confirm="submitScrap"
+  >
+    <el-form label-position="top">
+      <el-form-item label="报废备注" required>
+        <el-input
+          v-model="scrapForm.reason"
+          type="textarea"
+          :rows="3"
+          placeholder="例如 键盘进水损坏 / 屏幕碎裂无法维修"
+        />
+      </el-form-item>
+      <el-form-item label="补充说明">
+        <el-input v-model="scrapForm.notes" placeholder="可留空" />
+      </el-form-item>
+      <el-alert type="warning" :closable="false" show-icon>
+        <template #title>
+          报废会直接把这条物资从人员名下核销：不回收入库、不回补库存，并在「报废记录」与
+          「物资流转记录」各留一条记录。
+        </template>
+      </el-alert>
+    </el-form>
+  </FormDialog>
+
+  <FormDialog
+    v-model="transferVisible"
+    :title="`调拨物资 · ${usageActionTarget?.label ?? ''}`"
+    size="sm"
+    confirm-text="确认调拨"
+    :loading="deviceSaving"
+    @confirm="submitTransfer"
+  >
+    <el-form label-position="top">
+      <el-form-item label="调拨给" required>
+        <el-select
+          v-model="transferForm.targetEmployeeId"
+          filterable
+          class="oa-full-width"
+          placeholder="选择接收人（在职或公用人员）"
+        >
+          <el-option
+            v-for="option in transferTargetOptions"
+            :key="option.value"
+            :label="option.label"
+            :value="option.value"
+          />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="调拨备注">
+        <el-input v-model="transferForm.notes" placeholder="可留空，例如 岗位调整 / 换人使用" />
+      </el-form-item>
+      <div class="oa-hint">
+        调拨只更换使用人，不进出仓库、不改动库存；接手人之后可以正常回收或报废这台物资。
+      </div>
+    </el-form>
+  </FormDialog>
 </template>
 
 <style scoped>
+.caret {
+  margin-left: 2px;
+  font-size: 10px;
+}
 /* 人员清单的单元格里有两行文本，单独放宽左右内边距，行高仍由令牌统一控制。 */
 .employees-table :deep(.el-table__cell .cell) {
   padding: 0 14px;

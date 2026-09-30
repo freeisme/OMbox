@@ -269,6 +269,32 @@ export async function returnEmployeeUsage(
   );
 }
 
+/** 报废人员名下的一条物资：不回收入库、不回补库存，直接核销并写报废记录。 */
+export async function scrapEmployeeUsage(
+  allocationType: string,
+  usageRecordId: string,
+  reason: string,
+  notes = "",
+): Promise<void> {
+  await api(
+    `/api/inventory/usage/${encodeURIComponent(allocationType)}/${encodeURIComponent(usageRecordId)}/scrap`,
+    { method: "POST", body: { reason, notes } },
+  );
+}
+
+/** 把人员名下的一条物资调拨给另一个使用人（只换使用人，不动库存）。 */
+export async function transferEmployeeUsage(
+  allocationType: string,
+  usageRecordId: string,
+  targetEmployeeId: string,
+  notes = "",
+): Promise<void> {
+  await api(
+    `/api/inventory/usage/${encodeURIComponent(allocationType)}/${encodeURIComponent(usageRecordId)}/transfer`,
+    { method: "POST", body: { targetEmployeeId, notes } },
+  );
+}
+
 export function employeeUsageLabel(item: UsageItem): string {
   const name = item.typeName || item.displayName || "物资";
   const extras = [item.brand, item.model].filter(Boolean).join(" ");
