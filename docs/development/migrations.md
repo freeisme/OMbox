@@ -31,6 +31,19 @@
 | `20260907_000_usage_inventory_model_identity_compatibility.sql` | MySQL 8.4 兼容：为带级联外键的人员物资表先创建 `VIRTUAL` 库存型号键和新唯一索引。 |
 | `20260907_001_usage_inventory_model_identity.sql` | 按库存型号/购买批次区分人员物资记录，兼容自定义物资的唯一性。 |
 | `20260909_001_individual_inventory_usage_records.sql` | 取消人员同型号领用记录的唯一约束，让每次领用保留独立使用记录和审计链。 |
+| `20260827_001_flow_note_corrections_and_quality_resolution.sql` | 物资流转备注的**追加式更正**（原始记录与更正原因都保留）与数据质量问题的处置结果。 |
+| `20260915_001_scrap_management.sql` | 报废管理：报废原因字典、发放中的 IT 物资直接报废、办公终端报废后软归档（`is_archived`）并保留快照。 |
+| `20260916_001_shared_employee_status.sql` | 使用人员新增 `shared`（公用）状态：给非个人使用的设备一个可挂靠的虚拟使用人，禁止绑定登录账号。 |
+| `20260918_001_inspection_management.sql` | 巡检管理：机房/弱电间与机柜、巡检模板与事项、巡检任务与明细、`asset_site`/`asset_rack` 及巡检权限。 |
+| `20260918_002_rack_layout.sql` | 机柜视图：机柜位置表 `rack_device_placement`（U 位、安装面、软删除）与机柜权限。 |
+| `20260918_003_device_ports_and_cables.sql` | 设备面板与网络拓扑：型号库、端口模板、实例端口、线缆与拓扑坐标（`topology_node_position`）。 |
+| `20260918_004_datacenter_devices.sql` | 机房管理：网络设备/服务器台账 `datacenter_device`，机柜位置新增 `datacenter` 来源与唯一键。 |
+| `20260922_001_datacenter_device_details.sql` | 机房设备补充运维字段：用途、远程访问地址、CPU、内存、硬盘。 |
+| `20260923_001_datacenter_device_category_free.sql` | 机房设备类型放开为自定义（去掉枚举 CHECK、放宽列宽）。 |
+| `20260924_001_rack_placement_category_free.sql` | 机柜内设备类型放开为自定义，与设备台账保持一致。 |
+| `20260924_002_rack_port_optional_fields.sql` | 端口补充可选字段 `ip_address` 与 `vlan`。 |
+| `20260924_003_meeting_rooms_and_batch_inspection.sql` | 会议室作为第三类巡检对象、多目标批量开检（`inspection_task.batch_no`）与会议室设备台账 `site_device`。 |
+| `20260930_001_topology_annotations.sql` | 拓扑"自由画布"的文字批注表 `topology_annotation`（软删除 + 审计）。 |
 
 ## 新数据库
 
