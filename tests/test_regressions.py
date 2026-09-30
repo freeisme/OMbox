@@ -1836,7 +1836,7 @@ class RackLayoutRegressionTests(TestCase):
         self.assertIn("unlinkPlacement", view)
         self.assertIn("printRack", view)
         self.assertIn("openExportDialog", view)
-        self.assertIn("exportMergedCsv", view)
+        self.assertIn("exportRackDiagram", view)
         self.assertIn("/api/rack-layout/racks", api_client)
 
 
@@ -3762,7 +3762,7 @@ class DatacenterDeviceSoftDeleteTests(TestCase):
 
 
 class RackExportDialogTests(TestCase):
-    """机柜视图的「导出清单」要能多选机柜，合并成一张图／一张表。"""
+    """机柜视图的「导出清单」要能多选机柜合并到一张机柜图，只输出机柜图。"""
 
     def test_export_dialog_merges_multiple_racks(self):
         view = (ROOT / "frontend" / "src" / "views" / "RackLayoutView.vue").read_text(
@@ -3772,10 +3772,11 @@ class RackExportDialogTests(TestCase):
         self.assertIn('@click="openExportDialog"', view)
         self.assertIn("v-model=\"exportRackIds\"", view)
         self.assertIn("multiple", view)
-        self.assertIn("function exportMergedDiagram(", view)
-        self.assertIn("function exportMergedCsv(", view)
+        self.assertIn("function exportRackDiagram(", view)
         self.assertIn("function rackDiagramHtml(", view)
-        # 单机柜的旧导出已被合并导出取代。
+        # 导出内容只有机柜图：不再输出设备清单（CSV 与附图表格都已移除）。
+        self.assertNotIn("合并设备清单", view)
+        self.assertNotIn("function exportMergedCsv(", view)
         self.assertNotIn("function exportCsv(", view)
 
 
