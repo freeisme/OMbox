@@ -2988,6 +2988,224 @@ class AssetService:
         )
         return list(rows or [])
 
+    def transfer_usage_inventory(
+        self,
+        allocation_type: object,
+        usage_record_id: object,
+        payload: dict,
+        context: dict,
+        idempotency_key: str = "",
+    ) -> dict:
+        """把人员名下的一条 IT 物资调拨给另一个使用人。
+
+        只换使用人，不触碰库存：原使用记录就地关闭（保留历史），为目标使用人新开一条记录，
+        并把仍然有效的领用台账（``inventory_allocation_history``）改绑到新记录上，
+        这样接手人之后的回收 / 报废仍能按台账追溯。
+        """
+        cached = self._idempotency_result("inventory.usage_transfer", idempotency_key, payload)
+        if cached:
+            return cached
+
+        normalized_type = self.db.text(allocation_type)
+        if normalized_type not in {"monitor", "non_asset"}:
+            raise self.api_error("Inventory usage type must be monitor or non_asset.")
+        usage_id = self.db.integer(usage_record_id, 0)
+        if usage_id <= 0:
+            raise self.api_error("调拨需要指定人员名下的物资记录。")
+        target_id = self.db.integer(payload.get("targetEmployeeId"), 0)
+        if target_id <= 0:
+            raise self.api_error("请选择调拨的接收人。")
+        notes = self.db.text(payload.get("notes"))[:500]
+
+        usage_table = (
+            "employee_monitor_usage" if normalized_type == "monitor" else "employee_non_asset_usage"
+        )
+        usage_pk = "monitor_usage_id" if normalized_type == "monitor" else "non_asset_usage_id"
+        brand_name_sql = (
+            "COALESCE(brand.brand_name, usage_row.display_name, '')"
+            if normalized_type == "monitor"
+            else "COALESCE(brand.brand_name, usage_row.brand, '')"
+        )
+        usage = self.db.json(
+            f"""
+            SELECT JSON_OBJECT(
+              'id', usage_row.{usage_pk},
+              'employeeId', usage_row.employee_id,
+              'employeeNo', employee.employee_no,
+              'employeeName', employee.employee_name,
+              'orgId', COALESCE(employee.org_unit_id, 0),
+              'typeId', COALESCE(usage_row.non_asset_type_id, 0),
+              'brandId', COALESCE(usage_row.inventory_brand_id, 0),
+              'modelId', COALESCE(usage_row.inventory_model_id, 0),
+              'quantity', usage_row.quantity,
+              'stockAdjusted', usage_row.stock_adjusted,
+              'typeName', COALESCE(type_row.type_name, ''),
+              'brandName', {brand_name_sql},
+              'modelName', COALESCE(model.model_name, usage_row.model, '')
+            )
+            FROM {usage_table} usage_row
+            JOIN employee ON employee.employee_id = usage_row.employee_id
+            LEFT JOIN non_asset_type type_row
+              ON type_row.non_asset_type_id = usage_row.non_asset_type_id
+            LEFT JOIN it_inventory_model model
+              ON model.model_id = usage_row.inventory_model_id
+            LEFT JOIN it_inventory_brand brand
+              ON brand.brand_id = model.brand_id
+            WHERE usage_row.{usage_pk} = {usage_id}
+              AND usage_row.is_active = 1
+            """,
+            None,
+        )
+        if not usage:
+            raise self.api_error("这条物资记录不存在，或已经回收 / 报废 / 调拨。")
+        employee_id = self.db.integer(usage.get("employeeId"), 0)
+        if employee_id <= 0:
+            raise self.api_error("这条物资记录没有使用人，无法调拨。")
+        self.scope.assert_org_access(context, usage.get("orgId"))
+        if target_id == employee_id:
+            raise self.api_error("接收人不能是当前使用人。")
+
+        target = self.db.json(
+            f"""
+            SELECT JSON_OBJECT(
+              'id', CAST(employee.employee_id AS CHAR),
+              'no', employee.employee_no,
+              'name', employee.employee_name,
+              'status', employee.employment_status,
+              'orgId', COALESCE(employee.org_unit_id, 0)
+            )
+            FROM employee
+            WHERE employee.employee_id = {target_id}
+              AND employee.is_active = 1
+            """,
+            None,
+        )
+        if not target:
+            raise self.api_error("接收人不存在或已删除。")
+        if self.db.text(target.get("status")) not in {"active", "shared"}:
+            raise self.api_error("只能调拨给在职人员或公用人员。")
+        self.scope.assert_org_access(context, target.get("orgId"))
+
+        quantity = self.db.integer(usage.get("quantity"), 0)
+        if quantity <= 0:
+            raise self.conflict_error("该物资记录数量为 0，无法调拨。")
+        stock_adjusted = 1 if parse_bool(usage.get("stockAdjusted")) else 0
+        type_name = self.db.text(usage.get("typeName"))
+        brand_name = self.db.text(usage.get("brandName"))
+        model_name = self.db.text(usage.get("modelName"))
+        target_name = self.db.text(target.get("name"))
+        target_no = self.db.text(target.get("no"))
+        transfer_note = f"由 {self.db.text(usage.get('employeeName'))} 调拨给 {target_name}"
+        if notes:
+            transfer_note = f"{transfer_note}（{notes}）"
+        source_note = f"已调拨给 {target_name}"
+        if notes:
+            source_note = f"{source_note}（{notes}）"
+
+        brand_column = "display_name" if normalized_type == "monitor" else "brand"
+        type_id_sql = str(self.db.integer(usage.get("typeId"), 0)) or "NULL"
+        brand_id_sql = str(self.db.integer(usage.get("brandId"), 0)) or "NULL"
+        model_id_sql = str(self.db.integer(usage.get("modelId"), 0)) or "NULL"
+        actor_id = self._actor_id(context)
+        actor_sql = str(actor_id) if actor_id > 0 else "NULL"
+        output = self.db.execute(
+            f"""
+            START TRANSACTION;
+            SET @closed_usage = 0;
+            SET @target_usage_id = 0;
+            UPDATE {usage_table}
+            SET is_active = 0,
+                notes = CONCAT_WS(' ', COALESCE(notes, ''), {self.db.quote(source_note)})
+            WHERE {usage_pk} = {usage_id}
+              AND employee_id = {employee_id}
+              AND is_active = 1;
+            SET @closed_usage = ROW_COUNT();
+            INSERT INTO {usage_table} (
+              employee_id, non_asset_type_id, inventory_brand_id, inventory_model_id,
+              {brand_column}, model, quantity, stock_adjusted, notes
+            )
+            SELECT
+              {target_id}, {type_id_sql}, {brand_id_sql}, {model_id_sql},
+              {self.db.quote(brand_name)}, {self.db.quote(model_name)}, {quantity},
+              {stock_adjusted}, {self.db.quote(transfer_note)}
+            FROM DUAL
+            WHERE @closed_usage = 1;
+            SET @target_usage_id = IF(@closed_usage = 1, LAST_INSERT_ID(), 0);
+            UPDATE inventory_allocation_history
+            SET employee_id = {target_id},
+                usage_record_id = @target_usage_id,
+                notes = CONCAT_WS(' ', COALESCE(notes, ''), {self.db.quote(transfer_note)})
+            WHERE allocation_type = {self.db.quote(normalized_type)}
+              AND employee_id = {employee_id}
+              AND usage_record_id = {usage_id}
+              AND status = 'active'
+              AND @target_usage_id > 0;
+            INSERT INTO inventory_movement_log (
+              movement_direction, type_name, brand_name, model_name, quantity,
+              source_label, source_warehouse_id, target_label, target_warehouse_id,
+              note, related_employee_no, related_employee_name, trigger_action
+            )
+            SELECT
+              'decrease',
+              {self.db.quote(type_name)},
+              {self.db.quote(brand_name)},
+              {self.db.quote(model_name)},
+              {quantity},
+              {self.db.quote(self.db.text(usage.get('employeeName')))}, NULL,
+              {self.db.quote(target_name)}, NULL,
+              {self.db.quote(transfer_note)},
+              {self.db.quote(target_no)},
+              {self.db.quote(target_name)},
+              'inventory_usage_transfer'
+            FROM DUAL
+            WHERE @closed_usage = 1;
+            SET @transfer_movement_id = IF(@closed_usage = 1, LAST_INSERT_ID(), 0);
+            {self._conditional_audit_sql(
+                'inventory_usage_transferred',
+                'inventory_allocation',
+                str(usage_id),
+                model_name,
+                f"IT supply transferred to {target_name}",
+                context,
+                '@closed_usage = 1',
+                {
+                    'employeeId': employee_id,
+                    'employeeName': self.db.text(usage.get('employeeName')),
+                    'usageRecordId': usage_id,
+                    'quantity': quantity,
+                },
+                {
+                    'targetEmployeeId': target_id,
+                    'targetEmployeeName': target_name,
+                    'targetUsageId': '@target_usage_id',
+                    'note': transfer_note,
+                },
+            )};
+            SELECT @closed_usage, @target_usage_id, @transfer_movement_id;
+            COMMIT;
+            """
+        )
+        lines = [line.strip() for line in output.splitlines() if line.strip()]
+        result = (lines[-1] if lines else "").split("\t")
+        closed = self.db.integer(result[0] if result else 0, 0)
+        target_usage_id = self.db.integer(result[1] if len(result) > 1 else 0, 0)
+        movement_id = self.db.integer(result[2] if len(result) > 2 else 0, 0)
+        if closed != 1 or target_usage_id <= 0:
+            raise self.conflict_error("物资状态已变化，调拨未执行，请刷新后重试。")
+        response = {
+            "allocationType": normalized_type,
+            "usageRecordId": str(usage_id),
+            "targetEmployeeId": str(target_id),
+            "targetEmployeeName": target_name,
+            "targetUsageRecordId": str(target_usage_id),
+            "movementLogId": str(movement_id),
+            "quantity": quantity,
+            "stockAdjusted": stock_adjusted,
+            "stockChanged": False,
+        }
+        self._store_idempotency_result("inventory.usage_transfer", idempotency_key, payload, response)
+        return response
+
     def scrap_inventory_usage(
         self,
         allocation_type: object,
@@ -3173,6 +3391,25 @@ class AssetService:
             FROM DUAL
             WHERE @scrap_allowed = 1;
             SET @scrap_id = IF(@scrap_allowed = 1, LAST_INSERT_ID(), 0);
+            INSERT INTO inventory_movement_log (
+              movement_direction, type_name, brand_name, model_name, quantity,
+              source_label, source_warehouse_id, target_label, target_warehouse_id,
+              note, related_employee_no, related_employee_name, trigger_action
+            )
+            SELECT
+              'decrease',
+              {self.db.quote(self.db.text(usage.get('typeName')))},
+              {self.db.quote(self.db.text(usage.get('brandName')))},
+              {self.db.quote(self.db.text(usage.get('modelName')))},
+              @usage_quantity,
+              {self.db.quote(self.db.text(usage.get('employeeName')))}, NULL,
+              {self.db.quote('报废')}, NULL,
+              {self.db.quote(recorded_note)},
+              {self.db.quote(self.db.text(usage.get('employeeNo')))},
+              {self.db.quote(self.db.text(usage.get('employeeName')))},
+              'inventory_scrap'
+            FROM DUAL
+            WHERE @scrap_allowed = 1;
             {self._conditional_audit_sql(
                 'inventory_scrapped',
                 'inventory_allocation',

@@ -396,6 +396,23 @@ class DomainApiRouter:
                 status=201,
             )
             return True
+        # 把人员名下的一条 IT 物资调拨给另一个使用人（不动库存，只换使用人）。
+        if path.startswith("/api/inventory/usage/") and path.endswith("/transfer") and method == "POST":
+            parts = path.split("/")
+            if len(parts) != 7 or parts[3] != "usage" or parts[6] != "transfer":
+                raise self.deps.api_error("Invalid inventory usage transfer path.")
+            allocation_type, usage_record_id = parts[4], parts[5]
+            context = self._inventory_write_context(handler, "update")
+            send_json(
+                self.assets.transfer_usage_inventory(
+                    allocation_type,
+                    usage_record_id,
+                    self._payload(handler),
+                    context,
+                    self._idempotency_key(handler),
+                )
+            )
+            return True
         if path == "/api/inventory/receipts" and method == "POST":
             context = self._inventory_write_context(handler, "create")
             send_json(

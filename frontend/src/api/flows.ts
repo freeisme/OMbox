@@ -38,6 +38,9 @@ export const FLOW_DEFINITIONS: Record<string, FlowDefinition> = {
   // 新版库存领用/归还命令写入的动作码（旧前端映射表未覆盖，会显示原始英文码）
   inventory_allocation: { label: "库存领用", category: "领用发放", stockDelta: -1 },
   inventory_return: { label: "库存归还", category: "归还回收", stockDelta: 1 },
+  // 使用人员「操作」下拉里的另外两个动作（v3.0.24 起写入流转记录）
+  inventory_usage_transfer: { label: "物资调拨", category: "调拨转交", stockDelta: 0 },
+  inventory_scrap: { label: "物资报废", category: "报废核销", stockDelta: -1 },
   return: { label: "归还回收", category: "归还回收", stockDelta: 1 },
   return_adjustment: { label: "归还回收", category: "归还回收", stockDelta: 1 },
   employee_device_recovery: { label: "设备回收", category: "归还回收", stockDelta: 1 },
