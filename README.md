@@ -55,7 +55,8 @@ Compose 会在数据库健康后运行一次迁移器，迁移成功后应用才
 ```bash
 cd frontend && pnpm install --frozen-lockfile && pnpm build   # 生成 web/app
 cd ..
-python server.py          # 读取 DB_* / SERVER_* 环境变量，默认 http://127.0.0.1:8000
+# 先导出 DB_HOST / DB_PORT / DB_NAME / DB_USER / DB_PASSWORD 等环境变量（server.py 不读 .env）
+python server.py          # 未设置 SERVER_PORT 时默认监听 http://127.0.0.1:8011
 ```
 
 ### Windows
