@@ -1549,11 +1549,37 @@ class DeviceTopologyService:
             )
             or []
         )
-        return {"nodes": nodes, "links": links, "positions": positions}
+        annotations = list(
+            self.db.json(
+                """
+                SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
+                  'id', CAST(annotation_id AS CHAR),
+                  'text', text,
+                  'x', x,
+                  'y', y,
+                  'style', style
+                )), JSON_ARRAY())
+                FROM topology_annotation
+                WHERE is_active = 1
+                ORDER BY annotation_id
+                """,
+                [],
+            )
+            or []
+        )
+        return {
+            "nodes": nodes,
+            "links": links,
+            "positions": positions,
+            "annotations": annotations,
+        }
 
     def save_topology_positions(self, payload: dict, context: dict) -> dict:
         nodes = payload.get("nodes")
-        if not isinstance(nodes, list) or not nodes:
+        removals = payload.get("remove")
+        nodes = nodes if isinstance(nodes, list) else []
+        removals = removals if isinstance(removals, list) else []
+        if not nodes and not removals:
             raise self.api_error("请提供节点坐标。")
         if len(nodes) > 2000:
             raise self.api_error("一次最多保存 2000 个节点坐标。")
@@ -1570,24 +1596,176 @@ class DeviceTopologyService:
                 f"{max(0, min(100000, self.db.integer(item.get('y'), 0)))}, "
                 f"{actor_id if actor_id > 0 else 'NULL'})"
             )
-        if not values:
+        if not values and not removals:
             raise self.api_error("没有可保存的节点坐标。")
-        self.db.execute(
-            "INSERT INTO topology_node_position (node_id, x, y, updated_by) VALUES "
-            + ", ".join(values)
-            + " ON DUPLICATE KEY UPDATE x = VALUES(x), y = VALUES(y), updated_by = VALUES(updated_by);"
-        )
+        removal_ids = [
+            str(self.db.integer(item, 0))
+            for item in removals
+            if self.db.integer(item, 0) > 0
+        ]
+        if values:
+            self.db.execute(
+                "INSERT INTO topology_node_position (node_id, x, y, updated_by) VALUES "
+                + ", ".join(values)
+                + " ON DUPLICATE KEY UPDATE x = VALUES(x), y = VALUES(y), updated_by = VALUES(updated_by);"
+            )
+        if removal_ids:
+            # 从画布上拿走设备：删掉坐标即可，设备本身与链路都不受影响。
+            self.db.execute(
+                "DELETE FROM topology_node_position WHERE node_kind = 'placement' "
+                f"AND node_id IN ({', '.join(removal_ids)});"
+            )
         self.db.execute(
             self._audit_sql(
                 "topology_positions_saved",
                 "topology_node_position",
                 "'batch'",
                 "拓扑布局",
-                f"保存拓扑节点坐标：{len(values)} 个节点",
+                f"保存拓扑节点坐标：{len(values)} 个节点"
+                + (f"，移出画布 {len(removal_ids)} 个" if removal_ids else ""),
                 context,
                 None,
-                {"count": len(values)},
+                {"count": len(values), "removed": len(removal_ids)},
             )
             + ";"
         )
-        return {"saved": len(values)}
+        return {"saved": len(values), "removed": len(removal_ids)}
+
+    # ------------------------------------------------------ 拓扑画布文字批注
+
+    ANNOTATION_STYLES = {"note", "title", "warn"}
+
+    def _validate_annotation(self, payload: dict, current: dict | None = None) -> dict:
+        current = current or {}
+        text = self.db.text(payload.get("text", current.get("text")))[:500]
+        if not text:
+            raise self.api_error("文字内容不能为空。")
+        style = self.db.text(payload.get("style", current.get("style"))) or "note"
+        if style not in self.ANNOTATION_STYLES:
+            raise self.api_error("文字样式无效。")
+        x = max(0, min(100000, self.db.integer(payload.get("x", current.get("x")), 0)))
+        y = max(0, min(100000, self.db.integer(payload.get("y", current.get("y")), 0)))
+        return {"text": text, "style": style, "x": x, "y": y}
+
+    def create_annotation(self, payload: dict, context: dict) -> dict:
+        fields = self._validate_annotation(payload)
+        actor_id = self._actor_id(context)
+        annotation_id = self._last_int(
+            self.db.execute(
+                f"""
+                INSERT INTO topology_annotation (text, x, y, style, created_by, updated_by)
+                VALUES (
+                  {self.db.quote(fields['text'])},
+                  {fields['x']},
+                  {fields['y']},
+                  {self.db.quote(fields['style'])},
+                  {actor_id if actor_id > 0 else 'NULL'},
+                  {actor_id if actor_id > 0 else 'NULL'}
+                );
+                SELECT LAST_INSERT_ID();
+                """
+            )
+        )
+        if annotation_id <= 0:
+            raise self.conflict_error("文字添加失败，请重试。")
+        self.db.execute(
+            self._audit_sql(
+                "topology_annotation_created",
+                "topology_annotation",
+                str(annotation_id),
+                fields["text"][:64],
+                f"拓扑画布新增文字：{fields['text'][:64]}",
+                context,
+                None,
+                fields,
+            )
+            + ";"
+        )
+        return {"id": str(annotation_id), **fields}
+
+    def update_annotation(self, annotation_id: object, payload: dict, context: dict) -> dict:
+        annotation_id_int = self.db.integer(annotation_id, 0)
+        current = self.db.json(
+            f"""
+            SELECT JSON_OBJECT(
+              'id', CAST(annotation_id AS CHAR),
+              'text', text,
+              'x', x,
+              'y', y,
+              'style', style
+            )
+            FROM topology_annotation
+            WHERE annotation_id = {annotation_id_int} AND is_active = 1
+            """,
+            None,
+        )
+        if not current:
+            raise self.api_error("文字不存在或已删除。")
+        fields = self._validate_annotation(payload, current)
+        actor_id = self._actor_id(context)
+        self.db.execute(
+            f"""
+            UPDATE topology_annotation
+            SET text = {self.db.quote(fields['text'])},
+                x = {fields['x']},
+                y = {fields['y']},
+                style = {self.db.quote(fields['style'])},
+                updated_by = {actor_id if actor_id > 0 else 'NULL'}
+            WHERE annotation_id = {annotation_id_int};
+            """
+        )
+        self.db.execute(
+            self._audit_sql(
+                "topology_annotation_updated",
+                "topology_annotation",
+                str(annotation_id_int),
+                fields["text"][:64],
+                f"拓扑画布修改文字：{fields['text'][:64]}",
+                context,
+                current,
+                fields,
+            )
+            + ";"
+        )
+        return {"id": str(annotation_id_int), **fields}
+
+    def remove_annotation(self, annotation_id: object, payload: dict, context: dict) -> dict:
+        annotation_id_int = self.db.integer(annotation_id, 0)
+        current = self.db.json(
+            f"""
+            SELECT JSON_OBJECT(
+              'id', CAST(annotation_id AS CHAR),
+              'text', text
+            )
+            FROM topology_annotation
+            WHERE annotation_id = {annotation_id_int} AND is_active = 1
+            """,
+            None,
+        )
+        if not current:
+            raise self.api_error("文字不存在或已删除。")
+        actor_id = self._actor_id(context)
+        reason = self.db.text(payload.get("reason"))[:255]
+        self.db.execute(
+            f"""
+            UPDATE topology_annotation
+            SET is_active = 0,
+                updated_by = {actor_id if actor_id > 0 else 'NULL'}
+            WHERE annotation_id = {annotation_id_int};
+            """
+        )
+        self.db.execute(
+            self._audit_sql(
+                "topology_annotation_removed",
+                "topology_annotation",
+                str(annotation_id_int),
+                self.db.text(current.get("text"))[:64],
+                f"拓扑画布删除文字：{self.db.text(current.get('text'))[:64]}"
+                + (f"，原因：{reason}" if reason else ""),
+                context,
+                {"isActive": True},
+                {"isActive": False, "reason": reason},
+            )
+            + ";"
+        )
+        return {"id": str(annotation_id_int), "removed": True}

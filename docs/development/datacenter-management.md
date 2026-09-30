@@ -146,4 +146,4 @@ python .\tests\integration\qa_rack_layout_regression.py
 端到端脚本覆盖：新建机房设备 → 未上架列表只出现机房设备（断言办公终端不出现）→
 上架后状态变 `installed` 且写入机柜 → 下架后回到 `stock` 并清空位置。
 
-健康检查 `/api/health` 的必需表数量为 71（v3.0.18 起加入 `site_device`）。
+健康检查 `/api/health` 的必需表数量为 72（v3.0.24 起加入 `topology_annotation`）。
