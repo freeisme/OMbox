@@ -2306,6 +2306,32 @@ class DevicePanelTopologyRegressionTests(TestCase):
         self.assertIn("required_table_count = 72", server_source)
 
 
+class ComputerMovementHistoryTests(TestCase):
+    """办公终端「流转」按钮：走既有 movement-history 接口，弹窗里看分配 / 归还 / 状态变更。"""
+
+    def test_router_and_service_expose_movement_history(self):
+        router = (ROOT / "office_asset" / "api_router.py").read_text(encoding="utf-8")
+        service = (ROOT / "office_asset" / "asset_service.py").read_text(encoding="utf-8")
+
+        self.assertIn('path.endswith("/movement-history")', router)
+        self.assertIn("computer_movement_history", router)
+        self.assertIn("def computer_movement_history(", service)
+        # 数据来自分配历史表，不是单独一张流转表
+        self.assertIn("FROM computer_assignment_history", service)
+
+    def test_frontend_wires_the_movement_button_and_dialog(self):
+        view = (ROOT / "frontend" / "src" / "views" / "ComputersView.vue").read_text(
+            encoding="utf-8"
+        )
+        api_ts = (ROOT / "frontend" / "src" / "api" / "computers.ts").read_text(encoding="utf-8")
+
+        self.assertIn("fetchComputerMovementHistory", view)
+        self.assertIn('@click="openMovement(row)"', view)
+        self.assertIn("el-timeline", view)
+        self.assertIn("流转记录 · ", view)
+        self.assertIn("/movement-history", api_ts)
+
+
 class InventoryUsageActionTests(TestCase):
     """使用人员里的 IT 物资「操作」下拉：回收 / 报废 / 调拨，三个动作都要落物资流转记录。"""
 

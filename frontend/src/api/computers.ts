@@ -175,6 +175,30 @@ export async function fetchScrapReasons(): Promise<ScrapReason[]> {
   return reasons.filter((item) => item.appliesTo !== "inventory");
 }
 
+/** 办公终端的一条流转事件：分配 / 归还 / 状态变更（服务端由历史数据拼出）。 */
+export interface ComputerMovementEvent {
+  id: string;
+  type: string;
+  occurredAt: string;
+  employeeId?: string;
+  employeeNo: string;
+  employeeName: string;
+  previousStatus: string;
+  nextStatus: string;
+  notes: string;
+  operatedBy: string;
+}
+
+/** 办公终端流转记录：`GET /api/computers/{id}/movement-history`（权限 it_assets 查看）。 */
+export async function fetchComputerMovementHistory(
+  computerId: string,
+): Promise<ComputerMovementEvent[]> {
+  const payload = await api<{ events?: ComputerMovementEvent[] }>(
+    `/api/computers/${encodeURIComponent(computerId)}/movement-history`,
+  );
+  return payload.events ?? [];
+}
+
 export const COMPUTER_STATUS_OPTIONS = ["in_use", "idle", "repair", "retired", "lost"];
 
 export function computersToCsv(
