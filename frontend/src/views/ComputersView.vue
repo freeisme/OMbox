@@ -5,12 +5,14 @@ import {
   COMPUTER_STATUS_OPTIONS,
   computersToCsv,
   emptyComputerForm,
+  fetchComputerMovementHistory,
   fetchScrapReasons,
   formFromComputer,
   invalidateComputersCache,
   loadComputersData,
   saveComputer,
   scrapComputer,
+  type ComputerMovementEvent,
   type ComputerFormPayload,
   type ScrapReason,
 } from "../api/computers";
@@ -34,6 +36,22 @@ const employees = ref<Array<{ id: string; name: string; employeeNo: string }>>([
 const warehouses = ref<Array<{ id: string; name: string; code: string; isActive: unknown }>>([]);
 const inventoryModels = ref<Array<{ id: string; name: string; quantity: unknown }>>([]);
 const scrapReasons = ref<ScrapReason[]>([]);
+
+/** 流转记录弹窗：只读展示这台终端的分配 / 归还 / 状态变更时间线。 */
+const movementVisible = ref(false);
+const movementLoading = ref(false);
+const movementTarget = ref<ComputerRow | null>(null);
+const movementEvents = ref<ComputerMovementEvent[]>([]);
+const MOVEMENT_LABELS: Record<string, string> = {
+  assigned: "分配",
+  returned: "归还",
+  status_changed: "状态变更",
+};
+const MOVEMENT_TAG_TYPES: Record<string, "primary" | "success" | "info" | "warning"> = {
+  assigned: "primary",
+  returned: "success",
+  status_changed: "info",
+};
 
 const filters = reactive({ keyword: "", status: "", orgId: "" });
 const selectedIds = ref<string[]>([]);
@@ -201,6 +219,34 @@ async function submitForm(): Promise<void> {
   } finally {
     saving.value = false;
   }
+}
+
+/** 打开流转记录：拿这台终端的分配 / 归还 / 状态变更时间线。 */
+async function openMovement(row: ComputerRow): Promise<void> {
+  movementTarget.value = row;
+  movementEvents.value = [];
+  movementVisible.value = true;
+  movementLoading.value = true;
+  try {
+    movementEvents.value = await fetchComputerMovementHistory(row.id);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "流转记录加载失败。");
+  } finally {
+    movementLoading.value = false;
+  }
+}
+
+function movementSummary(event: ComputerMovementEvent): string {
+  const parts: string[] = [];
+  if (event.employeeName) {
+    parts.push(`${event.employeeName}（${event.employeeNo || "无工号"}）`);
+  }
+  if (event.previousStatus || event.nextStatus) {
+    const from = event.previousStatus ? statusLabel(event.previousStatus) : "—";
+    const to = event.nextStatus ? statusLabel(event.nextStatus) : "—";
+    parts.push(`状态 ${from} → ${to}`);
+  }
+  return parts.join(" ｜ ");
 }
 
 async function openScrap(row: ComputerRow): Promise<void> {
@@ -395,8 +441,9 @@ onMounted(async () => {
           <el-tag size="small" :type="statusTagType(row.status)">{{ statusLabel(row.status) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="130" fixed="right">
+      <el-table-column label="操作" width="180" fixed="right">
         <template #default="{ row }">
+          <el-button link type="primary" @click="openMovement(row)">流转</el-button>
           <el-button v-if="hasPermission('it_assets', 'update')" link type="primary" @click="openEdit(row)">
             编辑
           </el-button>
@@ -573,4 +620,40 @@ onMounted(async () => {
       </el-form-item>
     </el-form>
   </FormDialog>
+
+  <FormDialog
+    v-model="movementVisible"
+    :title="`流转记录 · ${movementTarget?.deviceName ?? ''}`"
+    size="md"
+    :footer="false"
+  >
+    <div v-loading="movementLoading">
+      <el-timeline v-if="movementEvents.length">
+        <el-timeline-item
+          v-for="event in movementEvents"
+          :key="event.id"
+          :timestamp="event.occurredAt"
+          placement="top"
+        >
+          <div class="movement-row">
+            <el-tag size="small" effect="plain" :type="MOVEMENT_TAG_TYPES[event.type] ?? 'info'">
+              {{ MOVEMENT_LABELS[event.type] ?? event.type }}
+            </el-tag>
+            <span>{{ movementSummary(event) }}</span>
+          </div>
+          <div v-if="event.notes" class="oa-hint">{{ event.notes }}</div>
+          <div v-if="event.operatedBy" class="oa-hint">操作人：{{ event.operatedBy }}</div>
+        </el-timeline-item>
+      </el-timeline>
+      <div v-else-if="!movementLoading" class="oa-hint">这台终端还没有流转记录。</div>
+    </div>
+  </FormDialog>
 </template>
+
+<style scoped>
+.movement-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+</style>
