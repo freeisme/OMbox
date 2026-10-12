@@ -749,7 +749,11 @@ class MigrationBaselineTests(TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn('DEFAULT_UPDATE_RELEASE_CHANNEL = "beta"', settings_api)
+        # beta 通道已下线：面板固定用发行版通道，界面上不再出现「Beta 版」选项
+        self.assertIn('DEFAULT_UPDATE_RELEASE_CHANNEL = "release"', settings_api)
+        self.assertNotIn("UPDATE_RELEASE_CHANNELS", settings_api)
+        self.assertNotIn("Beta 版", settings_api)
+        self.assertNotIn("更新通道", settings_view)
         self.assertIn("releaseChannel", settings_api)
         self.assertIn("updateReleaseChannel", settings_view)
         # 换页动效只作用于页面容器，并尊重系统"减少动效"设置

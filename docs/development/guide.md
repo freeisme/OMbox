@@ -902,7 +902,7 @@ ssh://git@code.example.internal:2222/organization/office-asset-mgmt.git
 调用链如下：
 
 ```text
-设置页选择“发行版”或“Beta 版”，填写项目地址并点击“检查版本”
+设置页选择更新来源（GitHub 官方更新 / 自定义更新地址），填写项目地址并点击“检查版本”
   -> POST /api/updates/check
   -> 后端校验 admin + CSRF + repositoryUrl + releaseChannel
   -> app 容器请求 host.docker.internal:9000/control/status?repositoryUrl=...&releaseChannel=...
@@ -939,9 +939,9 @@ ssh://git@code.example.internal:2222/organization/office-asset-mgmt.git
   `repositoryUrl` 和 `releaseChannel` 后排队更新。
 
 检查响应中的 `availableVersions` 只包含所选项目地址中已合并到 `main` 的
-SemVer 注释标签，并且标签对应提交必须包含匹配的 `VERSION_NOTES.md` 标题。发行版通道
-仅显示稳定的 `vMAJOR.MINOR.PATCH` 标签；Beta 通道仅显示
-`vMAJOR.MINOR.PATCH-beta.N` 标签，默认使用 Beta 通道。每项包含 `version`、`tag`、
+SemVer 注释标签，并且标签对应提交必须包含匹配的 `VERSION_NOTES.md` 标题。通道固定为
+发行版，仅显示稳定的 `vMAJOR.MINOR.PATCH` 标签（Beta 通道已下线，设置页不再提供该
+选项；服务端接口仍接受 `beta` 参数以兼容脚本调用）。每项包含 `version`、`tag`、
 `sha`、提交说明、发布时间、`releaseNotes`、`isCurrent`、`isLatest` 和
 `isSelectable`。前端只允许选择 `isSelectable` 为真的版本。
 

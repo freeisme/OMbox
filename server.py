@@ -270,7 +270,7 @@ def normalize_update_repository_url(value: object | None) -> str:
 
 
 UPDATE_RELEASE_CHANNELS = {"release", "beta"}
-DEFAULT_UPDATE_RELEASE_CHANNEL = "beta"
+DEFAULT_UPDATE_RELEASE_CHANNEL = "release"
 
 
 def normalize_update_release_channel(value: object | None) -> str:

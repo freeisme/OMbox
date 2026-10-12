@@ -11,7 +11,7 @@ __pycache__/
 # 前端依赖与构建产物：由 pnpm build / Docker 多阶段构建生成
 frontend/node_modules/
 web/app/
-frontend/.playwright-cli/
+.playwright-cli/
 
 *.log
 tmp/

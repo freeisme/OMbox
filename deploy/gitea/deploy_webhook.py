@@ -35,7 +35,7 @@ WEBHOOK_PORT = int(os.environ.get("WEBHOOK_PORT", "9000"))
 MAX_BODY_BYTES = int(os.environ.get("WEBHOOK_MAX_BODY_BYTES", "1048576"))
 VERSION_LIST_LIMIT = max(5, min(50, int(os.environ.get("DEPLOY_VERSION_LIST_LIMIT", "30"))))
 RELEASE_CHANNELS = {"release", "beta"}
-DEFAULT_RELEASE_CHANNEL = "beta"
+DEFAULT_RELEASE_CHANNEL = "release"
 RELEASE_NOTES_MAX_CHARS = max(
     1000,
     min(20000, int(os.environ.get("DEPLOY_RELEASE_NOTES_MAX_CHARS", "10000"))),
