@@ -2,11 +2,12 @@
 import { computed, onMounted, reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
 import {
+  FLOW_EXPORT_HEADER,
   FLOW_DEFINITIONS,
   correctFlowNote,
   flowDefinition,
   flowNoteText,
-  flowRecordsToCsv,
+  flowRecordsToRows,
   flowStockImpact,
   loadFlowRecords,
   type FlowRecord,
@@ -14,6 +15,7 @@ import {
 import { formatDateTimeText } from "../labels";
 import { hasPermission } from "../session";
 import DataPanel from "../components/ui/DataPanel.vue";
+import ExportMenu from "../components/ui/ExportMenu.vue";
 import FilterBar from "../components/ui/FilterBar.vue";
 import PageHeader from "../components/ui/PageHeader.vue";
 
@@ -122,22 +124,11 @@ async function submitNote(): Promise<void> {
   }
 }
 
-function exportCsv(): void {
-  if (!filtered.value.length) {
-    ElMessage.warning("当前没有可导出的记录。");
-    return;
-  }
-  const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
-  const blob = new Blob([`\ufeff${flowRecordsToCsv(filtered.value)}`], {
-    type: "text/csv;charset=utf-8;",
-  });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `物资流转记录-${stamp}.csv`;
-  link.click();
-  URL.revokeObjectURL(url);
-}
+/** 导出当前筛选结果；格式（CSV / Excel）由 ExportMenu 决定。 */
+const flowExportRows = computed(() => flowRecordsToRows(filtered.value));
+const flowExportName = computed(
+  () => `物资流转记录-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")}`,
+);
 
 function clearFilters(): void {
   filters.keyword = "";
@@ -156,7 +147,14 @@ onMounted(load);
     description="按物品、关联人员、业务类型、来源去向和时间区间查看自动登记的物资流转信息"
   >
     <template #actions>
-      <el-button :disabled="!filtered.length" @click="exportCsv">导出当前结果</el-button>
+      <ExportMenu
+        :file-name="flowExportName"
+        sheet-name="物资流转记录"
+        :header="FLOW_EXPORT_HEADER"
+        :rows="flowExportRows"
+        label="导出当前结果"
+        :disabled="!filtered.length"
+      />
     </template>
     <template #filters>
       <FilterBar :summary="`显示 ${filtered.length} / ${records.length} 条`">

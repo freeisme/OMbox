@@ -1,4 +1,5 @@
 import { api } from "./client";
+import { asText } from "./exports";
 
 export interface ScrapRecord {
   kind: "inventory" | "asset" | string;
@@ -46,31 +47,33 @@ export async function fetchScrapRecords(kind = "", limit = 500): Promise<ScrapRe
   return Array.isArray(payload.records) ? payload.records : [];
 }
 
-export function scrapRecordsToCsv(records: ScrapRecord[]): string {
-  const header = [
-    "报废时间",
-    "类型",
-    "物品",
-    "数量",
-    "使用人",
-    "人员编号",
-    "报废原因",
-    "说明",
-    "操作人",
-    "库存影响",
-  ];
-  const body = records.map((record) => [
-    record.scrapAt,
-    scrapKindLabel(record.kind),
-    scrapRecordTitle(record),
-    Number(record.quantity || 0) || 1,
-    record.employeeName,
-    record.employeeNo,
-    record.reason,
-    record.notes,
-    record.operatedByName,
-    Number(record.stockAdjusted) === 1 ? "已扣库存 · 不返还" : "未扣库存 · 无变化",
-  ]);
-  const escape = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
-  return [header, ...body].map((line) => line.map(escape).join(",")).join("\r\n");
+export const SCRAP_EXPORT_HEADER = [
+  "报废时间",
+  "类型",
+  "物品",
+  "数量",
+  "使用人",
+  "人员编号",
+  "报废原因",
+  "说明",
+  "操作人",
+  "库存影响",
+];
+
+/** 导出用的二维表：CSV 与 Excel 共用同一份数据。 */
+export function scrapRecordsToRows(records: ScrapRecord[]): string[][] {
+  return records.map((record) =>
+    [
+      record.scrapAt,
+      scrapKindLabel(record.kind),
+      scrapRecordTitle(record),
+      Number(record.quantity || 0) || 1,
+      record.employeeName,
+      record.employeeNo,
+      record.reason,
+      record.notes,
+      record.operatedByName,
+      Number(record.stockAdjusted) === 1 ? "已扣库存 · 不返还" : "未扣库存 · 无变化",
+    ].map(asText),
+  );
 }

@@ -3,10 +3,11 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import {
   EMPLOYEE_STATUS_OPTIONS,
+  EMPLOYEE_EXPORT_HEADER,
   OFFBOARD_ACTIONS,
   emptyEmployeeForm,
   employeeUsageLabel,
-  employeesToCsv,
+  employeesToRows,
   fetchOffboardingPreview,
   formFromEmployee,
   importEmployees,
@@ -28,6 +29,7 @@ import {
 } from "../api/employees";
 import type { ComputerRow } from "../api/state";
 import ImportExcelDialog from "../components/ui/ImportExcelDialog.vue";
+import ExportMenu from "../components/ui/ExportMenu.vue";
 import { loadInventoryData, type InventoryData, type InventoryModelRow } from "../api/inventory";
 import {
   fetchComputerBriefs,
@@ -810,26 +812,17 @@ const transferTargetOptions = computed(() =>
     .map((row) => ({ value: row.id, label: `${row.name}（${row.employeeNo}）` })),
 );
 
-function exportSelected(): void {
-  const rows = employees.value.filter((row) => selectedIds.value.includes(row.id));
-  if (!rows.length) {
-    ElMessage.warning("请先选择要导出的人员。");
-    return;
-  }
-  const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
-  const csv = employeesToCsv(
-    rows,
+/** 导出勾选的人员；格式（CSV / Excel）由 ExportMenu 决定。 */
+const employeeExportRows = computed(() =>
+  employeesToRows(
+    employees.value.filter((row) => selectedIds.value.includes(row.id)),
     orgNameOf,
     (employeeId) => deviceBriefsOf(employeeId).map((item) => item.deviceName),
-  );
-  const blob = new Blob([`\ufeff${csv}`], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `使用人员-${stamp}.csv`;
-  link.click();
-  URL.revokeObjectURL(url);
-}
+  ),
+);
+const employeeExportName = computed(
+  () => `使用人员-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")}`,
+);
 
 function onSelectionChange(rows: EmployeeDetailRow[]): void {
   selectedIds.value = rows.map((row) => row.id);
@@ -869,9 +862,14 @@ onMounted(async () => {
     <template #actions>
         <el-button @click="selectAllFiltered">全选当前结果</el-button>
         <el-button @click="selectedIds = []">清空选择</el-button>
-        <el-button :disabled="!selectedIds.length" @click="exportSelected">
-          导出选中 {{ selectedIds.length }}
-        </el-button>
+        <ExportMenu
+          :file-name="employeeExportName"
+          sheet-name="使用人员"
+          :header="EMPLOYEE_EXPORT_HEADER"
+          :rows="employeeExportRows"
+          :label="`导出选中 ${selectedIds.length}`"
+          :disabled="!selectedIds.length"
+        />
         <el-button v-if="hasPermission('employees', 'create')" @click="importDialog = true">
           导入 Excel
         </el-button>

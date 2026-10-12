@@ -2306,6 +2306,77 @@ class DevicePanelTopologyRegressionTests(TestCase):
         self.assertIn("required_table_count = 72", server_source)
 
 
+class TableExportTests(TestCase):
+    """台账导出统一支持 CSV / Excel：xlsx 由后端 xlsx.py 渲染带样式的模板。"""
+
+    def test_xlsx_writer_round_trips_with_the_reader(self):
+        from office_asset.xlsx import export_xlsx
+
+        payload = {
+            "fileName": "办公终端-测试",
+            "sheetName": "办公终端",
+            "header": ["设备名", "数量", "备注"],
+            "rows": [
+                ["PC-01", "3", "含 & 特殊 < 字符 > 和 \"引号\""],
+                ["PC-02", "0", ""],
+            ],
+        }
+        data, name = export_xlsx(payload)
+
+        self.assertEqual(name, "办公终端-测试.xlsx")
+        self.assertTrue(data.startswith(b"PK"), "xlsx 应该是 zip 包")
+        # 用同一个模块的读取器做往返校验（表头 + 两行数据、特殊字符不破 XML）
+        self.assertEqual(
+            read_sheet(data),
+            [
+                ["设备名", "数量", "备注"],
+                ["PC-01", "3", '含 & 特殊 < 字符 > 和 "引号"'],
+                ["PC-02", "0", ""],
+            ],
+        )
+
+    def test_export_rejects_empty_or_oversized_payloads(self):
+        from office_asset.xlsx import MAX_EXPORT_ROWS, export_xlsx
+
+        with self.assertRaises(WorkbookError):
+            export_xlsx({"header": [], "rows": []})
+        with self.assertRaises(WorkbookError):
+            export_xlsx({"header": ["A"], "rows": [["x"]] * (MAX_EXPORT_ROWS + 1)})
+
+    def test_router_serves_the_export_endpoint(self):
+        router = (ROOT / "office_asset" / "api_router.py").read_text(encoding="utf-8")
+        server = (ROOT / "server.py").read_text(encoding="utf-8")
+
+        self.assertIn('path == "/api/exports/xlsx" and method == "POST"', router)
+        self.assertIn("handler.send_bytes(data, EXPORT_MIME, download_name)", router)
+        self.assertIn("def send_bytes(", server)
+        # 下载文件名走 RFC 5987，中文名不会被压成下划线
+        self.assertIn("filename*=UTF-8''", server)
+        self.assertIn('filename\\*=UTF-8\'\'([^;]+)', (ROOT / "frontend" / "src" / "api" / "client.ts").read_text(encoding="utf-8"))
+
+    def test_frontend_shares_one_export_menu(self):
+        menu = (ROOT / "frontend" / "src" / "components" / "ui" / "ExportMenu.vue").read_text(
+            encoding="utf-8"
+        )
+        exports_ts = (ROOT / "frontend" / "src" / "api" / "exports.ts").read_text(encoding="utf-8")
+
+        self.assertIn('<el-dropdown-item command="csv">导出 CSV</el-dropdown-item>', menu)
+        self.assertIn('command="xlsx"', menu)
+        self.assertIn('downloadFile("/api/exports/xlsx"', exports_ts)
+        # 设备 / 物资相关页面都换成共用控件，不再各自拼 CSV
+        for view in (
+            "ComputersView.vue",
+            "EmployeesView.vue",
+            "DatacenterDeviceView.vue",
+            "InventoryView.vue",
+            "FlowControlView.vue",
+            "ScrapRecordsView.vue",
+        ):
+            source = (ROOT / "frontend" / "src" / "views" / view).read_text(encoding="utf-8")
+            self.assertIn("ExportMenu", source, view)
+            self.assertNotIn("link.download = `", source, view)
+
+
 class ComputerInventoryModelFilterTests(TestCase):
     """「从库存登记」只能选电脑类型的型号：前端过滤规则必须与后端一致（原来会列出鼠标键盘等）。"""
 
@@ -4034,7 +4105,9 @@ class DatacenterDeviceExportTests(TestCase):
 
         self.assertIn('type="selection"', view)
         self.assertIn('@selection-change="onSelectionChange"', view)
-        self.assertIn("function exportSelected(", view)
+        # v3.0.29 起导出改走共用的 ExportMenu（CSV / Excel 二选一）
+        self.assertIn("datacenterExportRows", view)
+        self.assertIn("<ExportMenu", view)
         self.assertIn("远程访问地址", view)
 
 

@@ -226,3 +226,191 @@ def read_sheet(
         if len(rows) > max_rows:
             raise WorkbookError(f"表格行数过多（超过 {max_rows} 行），请拆分后再导入。")
     return rows
+
+
+# --------------------------------------------------------------------- 写出 xlsx
+
+MAX_EXPORT_ROWS = 20000
+MAX_EXPORT_CELLS = 400000
+EXPORT_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_CTRL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+_NUMBER = re.compile(r"^-?\d+(\.\d+)?$")
+
+
+def _xml_text(value: object) -> str:
+    text = _CTRL_CHARS.sub("", str(value if value is not None else ""))
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _column_letter(index: int) -> str:
+    """0 → A、25 → Z、26 → AA。"""
+    letters = ""
+    index += 1
+    while index > 0:
+        index, remainder = divmod(index - 1, 26)
+        letters = chr(65 + remainder) + letters
+    return letters
+
+
+def _sheet_name(value: object) -> str:
+    name = re.sub(r"[\[\]:*?/\\]", "-", str(value or "").strip())[:31]
+    return name or "数据"
+
+
+def _row_xml(row: list[object], row_index: int, header_row: bool) -> str:
+    style = "1" if header_row else "2"
+    cells = []
+    for index, value in enumerate(row):
+        text = "" if value is None else str(value)
+        reference = f"{_column_letter(index)}{row_index}"
+        if not header_row and _NUMBER.match(text):
+            cells.append(f'<c r="{reference}" s="{style}"><v>{text}</v></c>')
+            continue
+        cells.append(
+            f'<c r="{reference}" s="{style}" t="inlineStr"><is><t xml:space="preserve">'
+            f"{_xml_text(text)}</t></is></c>"
+        )
+    return f'<row r="{row_index}">{"".join(cells)}</row>'
+
+
+def _styles_xml() -> str:
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<fonts count="2">'
+        '<font><sz val="11"/><name val="微软雅黑"/></font>'
+        '<font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="微软雅黑"/></font>'
+        "</fonts>"
+        '<fills count="3">'
+        '<fill><patternFill patternType="none"/></fill>'
+        '<fill><patternFill patternType="gray125"/></fill>'
+        '<fill><patternFill patternType="solid"><fgColor rgb="FF4C78A8"/><bgColor indexed="64"/>'
+        "</patternFill></fill>"
+        "</fills>"
+        '<borders count="2">'
+        "<border><left/><right/><top/><bottom/><diagonal/></border>"
+        '<border><left style="thin"><color rgb="FFD0D7DE"/></left>'
+        '<right style="thin"><color rgb="FFD0D7DE"/></right>'
+        '<top style="thin"><color rgb="FFD0D7DE"/></top>'
+        '<bottom style="thin"><color rgb="FFD0D7DE"/></bottom><diagonal/></border>'
+        "</borders>"
+        '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+        '<cellXfs count="3">'
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+        '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" '
+        'applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" '
+        'wrapText="1"/></xf>'
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" '
+        'applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>'
+        "</cellXfs>"
+        '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
+        "</styleSheet>"
+    )
+
+
+def _sheet_xml(header: list[str], rows: list[list[str]]) -> str:
+    width_count = max([len(header), *(len(row) for row in rows)] or [0])
+    widths = []
+    for index in range(width_count):
+        longest = max(
+            [len(str(header[index])) if index < len(header) else 0]
+            + [len(str(row[index])) if index < len(row) else 0 for row in rows[:200]]
+            + [0]
+        )
+        widths.append(min(max(longest + 4, 10), 42))
+    cols = "".join(
+        f'<col min="{index + 1}" max="{index + 1}" width="{width}" customWidth="1"/>'
+        for index, width in enumerate(widths)
+    )
+    body = [_row_xml(header, 1, True)] + [
+        _row_xml(row, index + 2, False) for index, row in enumerate(rows)
+    ]
+    last = f"{_column_letter(max(width_count - 1, 0))}{len(rows) + 1}"
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f'<dimension ref="A1:{last}"/>'
+        '<sheetViews><sheetView workbookViewId="0" tabSelected="1">'
+        '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>'
+        '<selection pane="bottomLeft" activeCell="A2" sqref="A2"/>'
+        "</sheetView></sheetViews>"
+        '<sheetFormatPr defaultRowHeight="18"/>'
+        f"<cols>{cols}</cols>"
+        f"<sheetData>{''.join(body)}</sheetData>"
+        f'<autoFilter ref="A1:{last}"/>'
+        "</worksheet>"
+    )
+
+
+def write_sheet(
+    rows: list[list[object]],
+    *,
+    header: list[str] | None = None,
+    sheet_name: str = "数据",
+) -> bytes:
+    """把二维表写成 xlsx（基础样式：表头加粗填色、细边框、自适应列宽、冻结首行、自动筛选）。"""
+    table = [list(row) for row in rows]
+    head = [str(cell) for cell in (header or [])]
+    with io.BytesIO() as buffer:
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "[Content_Types].xml",
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                '<Default Extension="xml" ContentType="application/xml"/>'
+                '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+                '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+                '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+                "</Types>",
+            )
+            archive.writestr(
+                "_rels/.rels",
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+                "</Relationships>",
+            )
+            archive.writestr(
+                "xl/workbook.xml",
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                f'<sheets><sheet name="{_xml_text(_sheet_name(sheet_name))}" sheetId="1" r:id="rId1"/></sheets>'
+                "</workbook>",
+            )
+            archive.writestr(
+                "xl/_rels/workbook.xml.rels",
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+                '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+                "</Relationships>",
+            )
+            archive.writestr("xl/styles.xml", _styles_xml())
+            archive.writestr("xl/worksheets/sheet1.xml", _sheet_xml(head, table))
+        return buffer.getvalue()
+
+
+def export_xlsx(payload: dict) -> tuple[bytes, str]:
+    """把 `{fileName, sheetName, header, rows}` 渲染成 xlsx，返回 (内容, 下载文件名)。"""
+    header = [str(cell) for cell in (payload.get("header") or [])]
+    raw_rows = payload.get("rows") or []
+    if not header:
+        raise WorkbookError("导出内容缺少表头。")
+    if not isinstance(raw_rows, list):
+        raise WorkbookError("导出内容格式无效。")
+    if len(raw_rows) > MAX_EXPORT_ROWS:
+        raise WorkbookError(f"一次最多导出 {MAX_EXPORT_ROWS} 行，请先筛选后再导出。")
+    rows = [[("" if cell is None else str(cell)) for cell in (row or [])] for row in raw_rows]
+    if len(header) * max(len(rows), 1) > MAX_EXPORT_CELLS:
+        raise WorkbookError("导出内容过大，请先筛选后再导出。")
+    name = re.sub(r"[\\/:*?\"<>|]", "-", str(payload.get("fileName") or "导出").strip())[:80]
+    if not name.lower().endswith(".xlsx"):
+        name = f"{name or '导出'}.xlsx"
+    return write_sheet(rows, header=header, sheet_name=payload.get("sheetName") or "数据"), name

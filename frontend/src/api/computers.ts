@@ -232,35 +232,37 @@ export async function fetchComputerMovementHistory(
 
 export const COMPUTER_STATUS_OPTIONS = ["in_use", "idle", "repair", "retired", "lost"];
 
-export function computersToCsv(
+export const COMPUTER_EXPORT_HEADER = [
+  "设备名",
+  "所属组织",
+  "设备类型",
+  "品牌",
+  "型号",
+  "CPU",
+  "内存",
+  "存储",
+  "显卡",
+  "固资编码",
+  "SN/ST",
+  "Wifi MAC",
+  "网口 MAC",
+  "位置",
+  "部门",
+  "岗位",
+  "使用用户",
+  "状态",
+  "购置日期",
+  "注册日期",
+  "备注",
+];
+
+/** 导出用的二维表：CSV 与 Excel 共用同一份数据。 */
+export function computersToRows(
   rows: ComputerRow[],
   orgNameOf: (orgId: string) => string,
   userNameOf: (userId: string) => string,
-): string {
-  const header = [
-    "设备名",
-    "所属组织",
-    "设备类型",
-    "品牌",
-    "型号",
-    "CPU",
-    "内存",
-    "存储",
-    "显卡",
-    "固资编码",
-    "SN/ST",
-    "Wifi MAC",
-    "网口 MAC",
-    "位置",
-    "部门",
-    "岗位",
-    "使用用户",
-    "状态",
-    "购置日期",
-    "注册日期",
-    "备注",
-  ];
-  const body = rows.map((row) => [
+): string[][] {
+  return rows.map((row) => [
     row.deviceName,
     orgNameOf(row.orgId),
     row.deviceType,
@@ -283,6 +285,4 @@ export function computersToCsv(
     row.registeredDate,
     row.remarks,
   ]);
-  const escape = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
-  return [header, ...body].map((line) => line.map(escape).join(",")).join("\r\n");
 }

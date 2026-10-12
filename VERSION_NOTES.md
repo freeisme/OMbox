@@ -12,6 +12,46 @@
 - v2.31.0 起旧前端已整体删除，早期条目里的「回滚到旧前端 / 从 `MIGRATED_VIEWS` 移除」
   操作已不再适用。
 
+## v3.0.29
+
+发布日期：2026-10-12
+
+### 变更
+
+**导出表格可自选 CSV 或 Excel，xlsx 带一套基础样式模板。**
+
+- 办公终端、使用人员、机房设备、IT 物资、物资流转记录、报废记录的导出按钮变成**下拉**：
+  「导出 CSV」（浏览器本地生成，与原来一致）或「导出 Excel（.xlsx）」（后端渲染）；
+- xlsx 样式模板：表头深蓝底白字加粗、整表细边框、列宽按内容自适应、**冻结表头行**、
+  表头自动筛选，数字列写成数值而不是文本；下载文件名保留中文
+  （如 `办公终端-202610121530.xlsx`）；
+- 后端只做格式化、不读数据库：`POST /api/exports/xlsx`（登录 + CSRF），
+  入参 `{fileName, sheetName, header, rows}`，上限 2 万行 / 40 万单元格；
+  渲染实现在 `office_asset/xlsx.py` 的 `write_sheet()`，与已有的 xlsx 读取器同一模块、零第三方依赖；
+- 前端新增共用控件 `frontend/src/components/ui/ExportMenu.vue` 与 `api/exports.ts`
+  （`downloadTable()`），各页面只提供表头 + 二维数组，删掉了原先各自拼 CSV 字符串的代码；
+- 顺带修好下载文件名：`server.py` 的 `send_bytes()` 同时下发 ASCII 兜底与
+  `filename*=UTF-8''…`，`api/client.ts` 优先解析后者，中文文件名不再变成 `____-xxx.xlsx`。
+
+### 数据库影响
+
+无。
+
+### 验证
+
+- 接口：`POST /api/exports/xlsx` 返回 200、
+  `Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`、
+  文件名走 `filename*=UTF-8''…`；
+- 用项目自带的 xlsx 读取器做往返校验：表头与数据行逐格一致，含 `& < > "` 的文本不破 XML；
+- 浏览器：办公终端勾 3 台 →「导出 Excel」下载 `办公终端-202610120702.xlsx`（表头 21 列 + 3 行数据）、
+  「导出 CSV」仍按原格式下载；IT 物资 →「导出 Excel」下载 `IT物资-仓库1-202610120704.xlsx`；
+- `python -m unittest tests.test_regressions` 214 项通过（新增 4 项：xlsx 往返与上限、
+  导出接口接线、共用控件与六个页面接线）；`vue-tsc --noEmit`、`vite build` 通过。
+
+### 回滚
+
+`git revert` 本提交即可（只影响导出入口；已下载的文件不受影响）。
+
 ## v3.0.28
 
 发布日期：2026-10-12
