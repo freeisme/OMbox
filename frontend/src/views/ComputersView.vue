@@ -17,6 +17,8 @@ import {
   scrapComputer,
   type ComputerMovementEvent,
   type ComputerFormPayload,
+  type InventoryBrandRow,
+  type InventoryModelRow,
   type ScrapReason,
 } from "../api/computers";
 import { fetchComputerPage } from "../api/lists";
@@ -39,9 +41,13 @@ const total = ref(0);
 const orgs = ref<Array<{ id: string; code: string; name: string; parentId: string }>>([]);
 const employees = ref<Array<{ id: string; name: string; employeeNo: string }>>([]);
 const warehouses = ref<Array<{ id: string; name: string; code: string; isActive: unknown }>>([]);
-const inventoryModels = ref<Array<{ id: string; name: string; quantity: unknown }>>([]);
+const inventoryModels = ref<InventoryModelRow[]>([]);
+const inventoryBrands = ref<InventoryBrandRow[]>([]);
 const inventoryTypes = ref<Array<{ id: string; code: string; name: string }>>([]);
 const inventoryStocks = ref<Array<{ modelId: string; warehouseId: string; quantity: unknown }>>([]);
+// 新增/编辑表单：下面的型号过滤与预填 watcher 会在 setup 阶段立刻读取它，
+// 所以必须先于那些 watcher 声明，否则会命中暂时性死区（Cannot access before initialization）。
+const form = reactive<ComputerFormPayload>(emptyComputerForm());
 
 /**
  * 「从库存登记」的型号候选：① 只能选电脑类型（规则与后端一致）
@@ -59,7 +65,7 @@ const computerInventoryModels = computed(() => {
     return Number(row?.quantity ?? 0) || 0;
   };
   return inventoryModels.value
-    .filter((model) => isComputerInventoryType(types.get(String((model as { typeId?: string }).typeId))))
+    .filter((model) => isComputerInventoryType(types.get(String(model.typeId))))
     .map((model) => ({ ...model, available: stockOf(String(model.id)) }))
     .filter((model) => model.available > 0 && (Number(model.quantity) || 0) > 0)
     .sort((a, b) => String(a.name).localeCompare(String(b.name), "zh-Hans-CN"));
@@ -73,6 +79,47 @@ watch(
     if (!computerInventoryModels.value.some((model) => model.id === form.inventoryModelId)) {
       form.inventoryModelId = "";
     }
+  },
+);
+
+/**
+ * 型号里没有「设备类型」这个字段，只能按名字猜一个默认值；猜不出就保留当前选择。
+ * 猜错也不影响保存，操作人随时可以改。
+ */
+function guessComputerDeviceType(text: string): string {
+  const value = text.toLowerCase();
+  if (["笔记本", "laptop", "thinkpad", "macbook", "yoga", "book"].some((key) => value.includes(key))) {
+    return "laptop";
+  }
+  if (["工作站", "workstation"].some((key) => value.includes(key))) return "workstation";
+  if (["迷你", "mini"].some((key) => value.includes(key))) return "mini_pc";
+  return "";
+}
+
+/** 选中库存型号后，把型号上存的设备信息预填进表单，操作人只需补充序列号等唯一信息。 */
+function applyInventoryModelDefaults(modelId: string): void {
+  const model = inventoryModels.value.find((item) => String(item.id) === modelId);
+  if (!model) return;
+  const brand = inventoryBrands.value.find((item) => String(item.id) === String(model.brandId));
+  // 换型号时按新型号覆盖（型号没填的项留空），避免残留上一台机器的配置
+  form.brand = brand?.name ?? "";
+  form.model = model.name ?? "";
+  form.cpu = model.cpu ?? "";
+  form.memory = model.memory ?? "";
+  form.storage = model.storage ?? "";
+  form.gpu = model.gpu ?? "";
+  form.purchaseDate = String(model.inboundDate ?? "").slice(0, 10);
+  const typeName = inventoryTypes.value.find((item) => String(item.id) === String(model.typeId))?.name;
+  const deviceType = guessComputerDeviceType(`${model.name} ${typeName ?? ""}`);
+  if (deviceType) form.deviceType = deviceType;
+}
+
+// 选型号 / 换仓库后重新预填；型号被清空（该仓库无库存）时不动已有内容。
+watch(
+  () => [form.registrationMode, form.inventoryModelId] as const,
+  () => {
+    if (form.registrationMode !== "warehouse" || !form.inventoryModelId) return;
+    applyInventoryModelDefaults(form.inventoryModelId);
   },
 );
 const scrapReasons = ref<ScrapReason[]>([]);
@@ -128,7 +175,6 @@ let searchTimer: number | undefined;
 
 const formVisible = ref(false);
 const editingId = ref("");
-const form = reactive<ComputerFormPayload>(emptyComputerForm());
 
 const scrapVisible = ref(false);
 const scrapTarget = ref<ComputerRow | null>(null);
@@ -191,6 +237,7 @@ async function load(force = false): Promise<void> {
     employees.value = data.employees;
     warehouses.value = data.warehouses;
     inventoryTypes.value = data.inventoryTypes;
+    inventoryBrands.value = data.inventoryBrands;
     inventoryModels.value = data.inventoryModels;
     inventoryStocks.value = data.inventoryStocks;
     await loadRows();
@@ -633,6 +680,9 @@ onMounted(async () => {
               <div v-else-if="!computerInventoryModels.length" class="oa-hint">
                 这个仓库里没有可用的电脑型号：换一个仓库，或先到「IT 物资」把电脑型号入库，
                 也可以改用「自定义登记」。
+              </div>
+              <div v-else class="oa-hint">
+                选中型号后会自动填入品牌、型号、CPU / 内存 / 存储 / 显卡和入库日期，可按实物再改。
               </div>
             </el-form-item>
           </el-col>

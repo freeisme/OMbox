@@ -2432,6 +2432,35 @@ class ComputerWarehouseRegistrationTests(TestCase):
         self.assertNotIn("does not have enough inventory", service)
         self.assertIn("所选仓库里这个型号的库存不足", service)
 
+    def test_selected_model_prefills_device_information(self):
+        view = (ROOT / "frontend" / "src" / "views" / "ComputersView.vue").read_text(
+            encoding="utf-8"
+        )
+        api = (ROOT / "frontend" / "src" / "api" / "computers.ts").read_text(encoding="utf-8")
+
+        # 选完型号要把型号上的设备信息预填进表单（品牌换名字、其余直接覆盖）
+        self.assertIn("applyInventoryModelDefaults", view)
+        self.assertIn("form.cpu = model.cpu", view)
+        self.assertIn("form.memory = model.memory", view)
+        self.assertIn("form.storage = model.storage", view)
+        self.assertIn("form.purchaseDate", view)
+        self.assertIn("inventoryBrands", view)
+        # 品牌名要靠 inventoryBrands 查，接口必须带上它
+        self.assertIn("inventoryBrands", api)
+        self.assertIn("include=orgs,employees,warehouses,nonAssetTypes,inventoryBrands", api)
+
+    def test_form_is_declared_before_the_watchers_that_read_it(self):
+        view = (ROOT / "frontend" / "src" / "views" / "ComputersView.vue").read_text(
+            encoding="utf-8"
+        )
+
+        # watch 的 getter 在 setup 阶段立即执行：form 声明晚了会命中暂时性死区，
+        # 异常被 Vue 吞掉后 watcher 静默失效（型号预填和换仓库清型号都会不生效）。
+        self.assertLess(
+            view.index("const form = reactive<ComputerFormPayload>"),
+            view.index("watch("),
+        )
+
 
 class ComputerInventoryModelFilterTests(TestCase):
     """「从库存登记」只能选电脑类型的型号：前端过滤规则必须与后端一致（原来会列出鼠标键盘等）。"""
@@ -2446,7 +2475,7 @@ class ComputerInventoryModelFilterTests(TestCase):
         self.assertIn("computerInventoryModels", view)
         self.assertIn('v-for="model in computerInventoryModels"', view)
         self.assertIn("isComputerInventoryType", view)
-        self.assertIn("nonAssetTypes,inventoryModels", api_ts)
+        self.assertIn("nonAssetTypes,inventoryBrands,inventoryModels", api_ts)
         # 切到「从库存登记」时清掉不适用的型号，避免提交后才被后端拒绝
         self.assertIn('form.inventoryModelId = ""', view)
 
