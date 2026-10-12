@@ -2306,6 +2306,31 @@ class DevicePanelTopologyRegressionTests(TestCase):
         self.assertIn("required_table_count = 72", server_source)
 
 
+class InspectionTemplateExportTests(TestCase):
+    """巡检模板也能导出：整份清单摊平成「一份模板一行一个检查项」，同样可选 CSV / Excel。"""
+
+    def test_frontend_exports_templates_with_their_items(self):
+        view = (ROOT / "frontend" / "src" / "views" / "InspectionView.vue").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("TEMPLATE_EXPORT_HEADER", view)
+        self.assertIn("async function templateExportRows(", view)
+        # 明细按需取回（列表接口只带 itemCount）
+        self.assertIn("await fetchInspectionTemplate(template.id)", view)
+        self.assertIn("label=\"导出全部模板\"", view)
+        # 每行也有自己的导出
+        self.assertIn("templateExportRows([row])", view)
+
+    def test_export_menu_supports_lazy_loading(self):
+        menu = (ROOT / "frontend" / "src" / "components" / "ui" / "ExportMenu.vue").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("load?: () => Promise<{ header: string[]; rows: string[][] }>", menu)
+        self.assertIn("props.load ? await props.load()", menu)
+
+
 class TableExportTests(TestCase):
     """台账导出统一支持 CSV / Excel：xlsx 由后端 xlsx.py 渲染带样式的模板。"""
 
