@@ -16,6 +16,19 @@ export interface InventoryModelRow {
   brandId: string;
   name: string;
   quantity: number | string;
+  /** 「从库存登记」时用来预填设备信息的字段（后端返回，可能为空）。 */
+  inboundDate?: string;
+  cpu?: string;
+  memory?: string;
+  storage?: string;
+  gpu?: string;
+}
+
+/** IT 物资品牌：型号行里只有 brandId，预填「品牌」时要靠它换成名字。 */
+export interface InventoryBrandRow {
+  id: string;
+  typeId: string;
+  name: string;
 }
 
 export interface ScrapReason {
@@ -29,6 +42,7 @@ export interface ComputersData {
   employees: EmployeeRow[];
   warehouses: WarehouseRow[];
   inventoryTypes: InventoryTypeRow[];
+  inventoryBrands: InventoryBrandRow[];
   inventoryModels: InventoryModelRow[];
   inventoryStocks: WarehouseStockRow[];
 }
@@ -39,6 +53,7 @@ interface FullStatePayload {
   employees?: EmployeeRow[];
   warehouses?: WarehouseRow[];
   nonAssetTypes?: InventoryTypeRow[];
+  inventoryBrands?: InventoryBrandRow[];
   inventoryModels?: InventoryModelRow[];
   warehouseStocks?: WarehouseStockRow[];
 }
@@ -76,13 +91,14 @@ let cache: { at: number; data: ComputersData } | null = null;
 export async function loadComputersData(force = false): Promise<ComputersData> {
   if (cache && !force && Date.now() - cache.at < 60_000) return cache.data;
   const payload = await api<FullStatePayload>(
-    "/api/state?include=orgs,employees,warehouses,nonAssetTypes,inventoryModels,warehouseStocks",
+    "/api/state?include=orgs,employees,warehouses,nonAssetTypes,inventoryBrands,inventoryModels,warehouseStocks",
   );
   const data: ComputersData = {
     orgs: Array.isArray(payload.orgs) ? payload.orgs : [],
     employees: Array.isArray(payload.employees) ? payload.employees : [],
     warehouses: Array.isArray(payload.warehouses) ? payload.warehouses : [],
     inventoryTypes: Array.isArray(payload.nonAssetTypes) ? payload.nonAssetTypes : [],
+    inventoryBrands: Array.isArray(payload.inventoryBrands) ? payload.inventoryBrands : [],
     inventoryModels: Array.isArray(payload.inventoryModels) ? payload.inventoryModels : [],
     inventoryStocks: Array.isArray(payload.warehouseStocks) ? payload.warehouseStocks : [],
   };
