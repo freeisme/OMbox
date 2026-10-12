@@ -563,6 +563,14 @@ non_asset_type
 `database_backup` 保存备份文件名、路径、大小、SHA-256、类型、请求人和状态。
 备份文件存放在 `BACKUP_DIR`，不通过静态文件服务暴露。
 
+管理员可以在设置页：
+
+- 手动创建备份。
+- 开关每日自动备份。
+- 设置每日时间。
+- 设置保留天数。
+- 输入当前密码后下载已完成的备份。
+
 #### 其他业务模块（各自有独立文档）
 
 这些模块的表结构与接口较多，细节写在对应的开发文档里，这里只列入口：
@@ -578,13 +586,28 @@ non_asset_type
 `topology_node_position`，"移出画布"删掉这一行；画布文字存在 `topology_annotation`，
 删除是软删除。
 
-管理员可以在设置页：
+#### 批量导入（使用人员 / 办公终端 / 机房设备）
 
-- 手动创建备份。
-- 开关每日自动备份。
-- 设置每日时间。
-- 设置保留天数。
-- 输入当前密码后下载已完成的备份。
+三处导入共用同一套解析与交互（v3.0.26 起）：
+
+- 解析在 `office_asset/xlsx.py`：`read_upload_rows(file_name, data)`（.xlsx/.xlsm/.csv，
+  CSV 走 UTF-8 BOM 或 GBK，上限 8MB）与 `map_headers(header_row, aliases)`
+  （列名忽略大小写、空格与标点）；机房设备导入也改用它，三处只有一份实现；
+- 服务端接口：`POST /api/datacenter-devices/import`、`POST /api/employees/import`
+  （权限 `employees:create`）、`POST /api/computers/import`（权限 `it_assets:create`）；
+  入参 `{fileName, contentBase64, dryRun, mode}`，`mode` 取 `skip`（默认）或 `update`，
+  匹配键分别是 设备编号 / 工号 / 设备名称；
+- 逐行容错：一行出错只记 `errors[{row, code, message}]`，其余照常导入；`dryRun=true` 只统计不写库；
+  导入整体写一条审计（`datacenter_device_imported` / `employees_imported` / `computers_imported`）；
+- 使用人员：组织必须能在 `org_unit` 里按**编码或名称**找到；工号可留空（按组织自动分配，
+  公用人员带 `SHARED-` 前缀）；工号留空的行按「姓名 + 组织」判重，重复导入不会反复生成新工号；
+  `离职` 只能走离职办理，导入只接受 在职 / 停用 / 公用；
+- 办公终端：`registrationMode` 固定为 `custom`（只写台账、不从仓库扣库存，也不自动分配给使用人）；
+  日期支持 `2026-01-31`、`2026/1/31` 与 Excel 序列号；MAC 统一规范成 `AA-BB-CC-DD-EE-FF`；
+  登记日期早于购置日期会在导入前拦下（对应 `ck_computer_dates`）；
+- 前端共用一个弹窗组件 `frontend/src/components/ui/ImportExcelDialog.vue`
+  （选文件 → 预览 → 确认导入 → 结果），使用人员与办公终端各接一次
+  （机房设备仍保留自己的旧弹窗，逻辑一致）。
 
 ## 6. 前端扩展方法
 

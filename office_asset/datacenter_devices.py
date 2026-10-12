@@ -14,14 +14,12 @@
 from __future__ import annotations
 
 import base64
-import csv
-import io
 import re
 from dataclasses import dataclass
 
 from .scope import OrganizationScopeService
 from .sql import SqlGateway, parse_bool
-from .xlsx import WorkbookError, read_sheet
+from .xlsx import WorkbookError, map_headers, read_upload_rows
 
 
 STATUSES = {"stock", "installed", "repair", "scrapped"}
@@ -572,38 +570,13 @@ class DatacenterDeviceService:
         return normalise_key(value)
 
     def _read_upload(self, file_name: str, data: bytes) -> list[list[str]]:
-        if len(data) > MAX_UPLOAD_BYTES:
-            raise self.api_error(f"文件过大（上限 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB）。")
-        lower = file_name.lower()
-        if lower.endswith(".csv"):
-            try:
-                text = data.decode("utf-8-sig")
-            except UnicodeDecodeError:
-                try:
-                    text = data.decode("gbk")
-                except UnicodeDecodeError as exc:
-                    raise self.api_error("CSV 编码无法识别，请另存为 UTF-8 或 xlsx。") from exc
-            return [list(row) for row in csv.reader(io.StringIO(text))]
-        if lower.endswith((".xlsx", ".xlsm")):
-            try:
-                return read_sheet(data)
-            except WorkbookError as exc:
-                raise self.api_error(str(exc)) from exc
-        raise self.api_error("只支持 .xlsx、.xlsm 或 .csv 文件。")
+        try:
+            return read_upload_rows(file_name, data, max_bytes=MAX_UPLOAD_BYTES)
+        except WorkbookError as exc:
+            raise self.api_error(str(exc)) from exc
 
     def _map_headers(self, header_row: list[str]) -> dict[str, int]:
-        mapping: dict[str, int] = {}
-        for index, raw in enumerate(header_row):
-            key = self._normalise_header(raw)
-            if not key:
-                continue
-            for field, aliases in HEADER_ALIASES.items():
-                if field in mapping:
-                    continue
-                if key in {self._normalise_header(alias) for alias in aliases}:
-                    mapping[field] = index
-                    break
-        return mapping
+        return map_headers(header_row, HEADER_ALIASES)
 
     @staticmethod
     def _cell(row: list[str], index: int | None) -> str:

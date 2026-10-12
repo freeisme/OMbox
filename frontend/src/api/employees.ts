@@ -1,4 +1,5 @@
 import { api } from "./client";
+import type { ImportSummary } from "./datacenter";
 
 export interface UsageItem {
   id?: string;
@@ -236,6 +237,16 @@ export async function allocateInventoryToEmployee(payload: {
   remaining?: number;
 }> {
   return api("/api/inventory/allocations", { method: "POST", body: payload });
+}
+
+/** 批量导入使用人员：dryRun=true 只预览不写库；mode=skip 跳过已有工号，mode=update 覆盖。 */
+export function importEmployees(payload: {
+  fileName: string;
+  contentBase64: string;
+  dryRun?: boolean;
+  mode?: "skip" | "update";
+}): Promise<ImportSummary> {
+  return api<ImportSummary>("/api/employees/import", { method: "POST", body: payload });
 }
 
 /** 归还人员名下的显示屏 / 非资产物资，回收到指定仓库。 */

@@ -3,12 +3,119 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import base64
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Callable
 
 from .scope import OrganizationScopeService
 from .sql import SqlGateway, parse_bool
+from .xlsx import WorkbookError, map_headers, normalise_header, read_upload_rows
+
+
+# 使用人员 / 办公终端导入：允许的表头写法（大小写、空格与标点会被忽略）
+EMPLOYEE_IMPORT_ALIASES: dict[str, set[str]] = {
+    "employeeNo": {"工号", "员工编号", "人员编号", "编号", "employeeno", "employeeid", "no"},
+    "name": {"姓名", "名称", "人员姓名", "name", "employeename"},
+    "orgCode": {"组织", "组织编码", "所属组织", "部门编码", "组织名称", "org", "orgcode", "orgname"},
+    "department": {"部门", "所属部门", "department"},
+    "position": {"岗位", "职位", "position", "job"},
+    "email": {"邮箱", "电子邮箱", "email", "mail"},
+    "mobile": {"手机", "手机号", "电话", "mobile", "phone"},
+    "status": {"状态", "人员状态", "在职状态", "status"},
+}
+EMPLOYEE_STATUS_ALIASES: dict[str, str] = {
+    "在职": "active",
+    "active": "active",
+    "正常": "active",
+    "停用": "inactive",
+    "inactive": "inactive",
+    "离职": "left",
+    "left": "left",
+    "公用": "shared",
+    "shared": "shared",
+}
+
+COMPUTER_IMPORT_ALIASES: dict[str, set[str]] = {
+    "deviceName": {"设备名称", "名称", "设备名", "电脑名称", "devicename", "name"},
+    "orgCode": {"组织", "组织编码", "所属组织", "部门编码", "组织名称", "org", "orgcode", "orgname"},
+    "deviceType": {"设备类型", "类型", "devicetype", "type"},
+    "status": {"状态", "设备状态", "使用状态", "status"},
+    "brand": {"品牌", "厂商", "brand", "vendor"},
+    "model": {"型号", "品牌型号", "model"},
+    "cpu": {"cpu", "处理器"},
+    "memory": {"内存", "memory", "ram"},
+    "storage": {"硬盘", "存储", "storage", "disk"},
+    "gpu": {"显卡", "gpu"},
+    "fixedAssetCode": {"固资编码", "固定资产编号", "资产编码", "固资编号", "fixedassetcode"},
+    "snSt": {"sn", "sn/st", "序列号", "snst", "st"},
+    "wifiMac": {"wifi", "wifi mac", "无线 mac", "wifimac"},
+    "ethernetMac": {"网口 mac", "有线 mac", "ethernetmac", "mac"},
+    "location": {"位置", "存放位置", "location"},
+    "department": {"部门", "所属部门", "department"},
+    "position": {"岗位", "职位", "position"},
+    "purchaseDate": {"购置日期", "购买日期", "purchasedate"},
+    "registeredDate": {"登记日期", "注册日期", "registereddate"},
+    "remarks": {"备注", "说明", "remarks", "note"},
+}
+COMPUTER_TYPE_ALIASES: dict[str, str] = {
+    "笔记本": "laptop",
+    "笔记本电脑": "laptop",
+    "laptop": "laptop",
+    "台式机": "desktop",
+    "台式电脑": "desktop",
+    "desktop": "desktop",
+    "工作站": "workstation",
+    "workstation": "workstation",
+    "迷你主机": "mini_pc",
+    "minipc": "mini_pc",
+    "mini_pc": "mini_pc",
+}
+COMPUTER_STATUS_ALIASES: dict[str, str] = {
+    "在用": "in_use",
+    "in_use": "in_use",
+    "闲置": "idle",
+    "idle": "idle",
+    "维修": "repair",
+    "repair": "repair",
+    "报废": "retired",
+    "retired": "retired",
+    "丢失": "lost",
+    "lost": "lost",
+}
+
+
+def _import_cell(row: list[str], index: int | None) -> str:
+    if index is None or index >= len(row):
+        return ""
+    return (row[index] or "").strip()
+
+
+def _import_mac(value: str) -> str:
+    """把 MAC 规范成 AA-BB-CC-DD-EE-FF（接受冒号、短横线或连写）；空值返回空串。"""
+    raw = re.sub(r"[^0-9A-Fa-f]", "", value or "").upper()
+    if not raw:
+        return ""
+    if len(raw) != 12:
+        raise ValueError(value)
+    return "-".join(raw[index : index + 2] for index in range(0, 12, 2))
+
+
+def _import_date(value: str) -> str:
+    """把单元格里的日期转成 YYYY-MM-DD；Excel 序列号（如 45678）也认。
+
+    空值返回空串；识别不了时抛 ValueError，由调用方汇报成行错误。
+    """
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    match = re.match(r"^(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})", raw)
+    if match:
+        return f"{match.group(1)}-{int(match.group(2)):02d}-{int(match.group(3)):02d}"
+    if re.fullmatch(r"\d{5}(\.\d+)?", raw):
+        # Excel 的 1900 日期系统（含闰年 bug）以 1899-12-30 为第 0 天
+        return (datetime(1899, 12, 30) + timedelta(days=int(float(raw)))).strftime("%Y-%m-%d")
+    raise ValueError(raw)
 
 
 COMPUTER_STATUS_TRANSITIONS = {
@@ -763,6 +870,341 @@ class AssetService:
         if resource_type == "inventory-model":
             return self._save_inventory_model(resource_id, payload, context)
         raise self.api_error("Unsupported resource type.")
+
+    # ------------------------------------------------- 使用人员 / 办公终端批量导入
+
+    def _read_import_rows(self, payload: dict) -> tuple[str, list[list[str]]]:
+        file_name = self.db.text(payload.get("fileName"))[:200]
+        content = self.db.text(payload.get("contentBase64"))
+        if not content:
+            raise self.api_error("请上传 .xlsx 或 .csv 文件。")
+        try:
+            data = base64.b64decode(content, validate=True)
+        except (ValueError, TypeError) as exc:
+            raise self.api_error("文件内容不是合法的 base64 编码。") from exc
+        try:
+            rows = read_upload_rows(file_name, data)
+        except WorkbookError as exc:
+            raise self.api_error(str(exc)) from exc
+        if not rows:
+            raise self.api_error("文件里没有可读取的内容。")
+        return file_name, rows
+
+    def _import_table(
+        self, rows: list[list[str]], aliases: dict[str, set[str]]
+    ) -> tuple[dict[str, int], list[list[str]], int]:
+        """在前 10 行里找表头，返回 (列映射, 数据行, 表头行号)。"""
+        for index, row in enumerate(rows[:10]):
+            mapping = map_headers(row, aliases)
+            if mapping:
+                return mapping, rows[index + 1 :], index
+        raise self.api_error("没找到表头行，请确认第一行是列名。")
+
+    def _import_sheet_headers(
+        self, rows: list[list[str]], header_index: int, mapping: dict[str, int]
+    ) -> dict[str, str]:
+        header_row = rows[header_index] if header_index < len(rows) else []
+        return {
+            field: (header_row[index] if index < len(header_row) else "")
+            for field, index in sorted(mapping.items(), key=lambda item: item[1])
+        }
+
+    def _org_lookup(self) -> dict[str, int]:
+        """组织编码 / 名称 → org_unit_id（大小写、空格与标点不敏感）。"""
+        rows = (
+            self.db.json(
+                """
+                SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
+                  'id', CAST(org_unit_id AS CHAR),
+                  'code', org_code,
+                  'name', org_name
+                )), JSON_ARRAY())
+                FROM org_unit
+                WHERE is_active = 1
+                """,
+                [],
+            )
+            or []
+        )
+        lookup: dict[str, int] = {}
+        for row in rows:
+            org_id = self.db.integer(row.get("id"), 0)
+            for key in (
+                normalise_header(self.db.text(row.get("code"))),
+                normalise_header(self.db.text(row.get("name"))),
+            ):
+                if key:
+                    lookup.setdefault(key, org_id)
+        return lookup
+
+    def _import_summary(self, file_name: str, total: int, dry_run: bool) -> dict:
+        return {
+            "fileName": file_name,
+            "sheetHeaders": {},
+            "totalRows": total,
+            "created": 0,
+            "updated": 0,
+            "skipped": 0,
+            "errors": [],
+            "errorCount": 0,
+            "warnings": [],
+            "warningCount": 0,
+            "dryRun": dry_run,
+        }
+
+    def _import_audit(self, action: str, file_name: str, summary: dict, context: dict) -> None:
+        self.db.execute(
+            self._audit_sql(
+                action,
+                "bulk_import",
+                "'batch'",
+                file_name or "批量导入",
+                f"批量导入 {file_name}（新增 {summary['created']}，更新 {summary['updated']}，"
+                f"跳过 {summary['skipped']}，错误 {summary['errorCount']}）",
+                context,
+                None,
+                {
+                    "fileName": file_name,
+                    "totalRows": summary["totalRows"],
+                    "created": summary["created"],
+                    "updated": summary["updated"],
+                    "skipped": summary["skipped"],
+                    "errors": summary["errorCount"],
+                },
+            )
+            + ";"
+        )
+
+    def import_employees(self, payload: dict, context: dict) -> dict:
+        """批量导入使用人员：按工号匹配，mode=skip 跳过已存在 / mode=update 覆盖。"""
+        file_name, rows = self._read_import_rows(payload)
+        mapping, data_rows, header_index = self._import_table(rows, EMPLOYEE_IMPORT_ALIASES)
+        if "name" not in mapping:
+            raise self.api_error("表头必须包含「姓名」。")
+        dry_run = parse_bool(payload.get("dryRun"))
+        mode = "update" if self.db.text(payload.get("mode")) == "update" else "skip"
+        orgs = self._org_lookup()
+        summary = self._import_summary(file_name, len(data_rows), dry_run)
+        summary["sheetHeaders"] = self._import_sheet_headers(rows, header_index, mapping)
+
+        numbers = [_import_cell(row, mapping.get("employeeNo")) for row in data_rows]
+        existing: dict[str, int] = {}
+        # 工号留空的行按「姓名 + 组织」判重，否则重复导入会不停生成新的自动工号
+        existing_by_name: dict[str, int] = {}
+        wanted = [number for number in numbers if number]
+        names_wanted = [
+            _import_cell(row, mapping.get("name")) for row in data_rows
+        ]
+        quoted_numbers = ", ".join(self.db.quote(number) for number in wanted) or "NULL"
+        quoted_names = ", ".join(self.db.quote(name) for name in names_wanted if name) or "NULL"
+        if wanted or quoted_names != "NULL":
+            for row in (
+                self.db.json(
+                    f"""
+                    SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
+                      'id', CAST(employee_id AS CHAR),
+                      'no', employee_no,
+                      'name', employee_name,
+                      'orgId', COALESCE(CAST(org_unit_id AS CHAR), '')
+                    )), JSON_ARRAY())
+                    FROM employee
+                    WHERE employee_no IN ({quoted_numbers})
+                       OR employee_name IN ({quoted_names})
+                    """,
+                    [],
+                )
+                or []
+            ):
+                existing[self.db.text(row.get("no")).upper()] = self.db.integer(row.get("id"), 0)
+                existing_by_name[
+                    f"{normalise_header(self.db.text(row.get('name')))}|{self.db.integer(row.get('orgId'), 0)}"
+                ] = self.db.integer(row.get("id"), 0)
+
+        for offset, row in enumerate(data_rows):
+            row_no = header_index + offset + 2
+            employee_no = _import_cell(row, mapping.get("employeeNo"))
+            name = _import_cell(row, mapping.get("name"))
+            org_key = _import_cell(row, mapping.get("orgCode"))
+            status_raw = _import_cell(row, mapping.get("status"))
+            problems: list[str] = []
+            if not name:
+                problems.append("缺少姓名")
+            org_id = orgs.get(normalise_header(org_key), 0) if org_key else 0
+            if org_id <= 0:
+                problems.append(f"组织「{org_key or '未填'}」找不到，请填组织编码或名称")
+            status = "active"
+            if status_raw:
+                status = EMPLOYEE_STATUS_ALIASES.get(normalise_header(status_raw), "")
+                if not status:
+                    problems.append(f"状态「{status_raw}」无法识别（可用：在职 / 停用 / 公用）")
+                elif status == "left":
+                    problems.append("「离职」请走离职办理流程，导入只支持 在职 / 停用 / 公用")
+            if problems:
+                summary["errors"].append(
+                    {"row": row_no, "code": employee_no or name, "message": "；".join(problems)}
+                )
+                continue
+
+            target_id = (
+                existing.get(employee_no.upper())
+                if employee_no
+                else existing_by_name.get(f"{normalise_header(name)}|{org_id}")
+            )
+            if target_id and mode == "skip":
+                summary["skipped"] += 1
+                continue
+            fields = {
+                "employeeNo": employee_no,
+                "name": name,
+                "orgId": str(org_id),
+                "department": _import_cell(row, mapping.get("department")),
+                "position": _import_cell(row, mapping.get("position")),
+                "email": _import_cell(row, mapping.get("email")),
+                "mobile": _import_cell(row, mapping.get("mobile")),
+                "status": status,
+            }
+            if dry_run:
+                summary["updated" if target_id else "created"] += 1
+                continue
+            try:
+                saved = self._save_employee(str(target_id) if target_id else None, fields, context)
+                employee = saved.get("employee") or {}
+                saved_id = self.db.integer(employee.get("id"), 0)
+                saved_no = self.db.text(employee.get("employeeNo")) or employee_no
+                if saved_no:
+                    existing[saved_no.upper()] = saved_id
+                existing_by_name[f"{normalise_header(name)}|{org_id}"] = saved_id
+                summary["updated" if target_id else "created"] += 1
+            except Exception as exc:
+                summary["errors"].append(
+                    {"row": row_no, "code": employee_no or name, "message": str(exc)}
+                )
+
+        summary["errorCount"] = len(summary["errors"])
+        summary["warningCount"] = len(summary["warnings"])
+        if not dry_run:
+            self._import_audit("employees_imported", file_name, summary, context)
+        return summary
+
+    def import_computers(self, payload: dict, context: dict) -> dict:
+        """批量导入办公终端：按设备名称匹配，mode=skip 跳过已存在 / mode=update 覆盖。"""
+        file_name, rows = self._read_import_rows(payload)
+        mapping, data_rows, header_index = self._import_table(rows, COMPUTER_IMPORT_ALIASES)
+        if "deviceName" not in mapping:
+            raise self.api_error("表头必须包含「设备名称」。")
+        dry_run = parse_bool(payload.get("dryRun"))
+        mode = "update" if self.db.text(payload.get("mode")) == "update" else "skip"
+        orgs = self._org_lookup()
+        summary = self._import_summary(file_name, len(data_rows), dry_run)
+        summary["sheetHeaders"] = self._import_sheet_headers(rows, header_index, mapping)
+
+        names = [_import_cell(row, mapping.get("deviceName")) for row in data_rows]
+        existing: dict[str, int] = {}
+        wanted = [name for name in names if name]
+        if wanted:
+            quoted = ", ".join(self.db.quote(name) for name in wanted)
+            for row in (
+                self.db.json(
+                    f"""
+                    SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
+                      'id', CAST(computer_id AS CHAR),
+                      'name', device_name
+                    )), JSON_ARRAY())
+                    FROM computer_asset
+                    WHERE device_name IN ({quoted})
+                    """,
+                    [],
+                )
+                or []
+            ):
+                existing[self.db.text(row.get("name")).upper()] = self.db.integer(row.get("id"), 0)
+
+        for offset, row in enumerate(data_rows):
+            row_no = header_index + offset + 2
+            device_name = _import_cell(row, mapping.get("deviceName"))
+            org_key = _import_cell(row, mapping.get("orgCode"))
+            type_raw = _import_cell(row, mapping.get("deviceType"))
+            status_raw = _import_cell(row, mapping.get("status"))
+            problems = []
+            if not device_name:
+                problems.append("缺少设备名称")
+            org_id = orgs.get(normalise_header(org_key), 0) if org_key else 0
+            if org_key and org_id <= 0:
+                problems.append(f"组织「{org_key}」找不到，请填组织编码或名称")
+            device_type = "desktop"
+            if type_raw:
+                device_type = COMPUTER_TYPE_ALIASES.get(normalise_header(type_raw), "")
+                if not device_type:
+                    problems.append(f"设备类型「{type_raw}」无法识别（可用：笔记本 / 台式机 / 工作站 / 迷你主机）")
+            status = "idle"
+            if status_raw:
+                status = COMPUTER_STATUS_ALIASES.get(normalise_header(status_raw), "")
+                if not status:
+                    problems.append(f"状态「{status_raw}」无法识别（可用：在用 / 闲置 / 维修 / 报废 / 丢失）")
+            try:
+                purchase_date = _import_date(_import_cell(row, mapping.get("purchaseDate")))
+                registered_date = _import_date(_import_cell(row, mapping.get("registeredDate")))
+            except ValueError:
+                problems.append("日期格式无法识别，请用 2026-01-31 或 Excel 日期单元格")
+                purchase_date = registered_date = ""
+            if purchase_date and registered_date and registered_date < purchase_date:
+                problems.append(f"登记日期 {registered_date} 早于购置日期 {purchase_date}")
+            try:
+                wifi_mac = _import_mac(_import_cell(row, mapping.get("wifiMac")))
+                ethernet_mac = _import_mac(_import_cell(row, mapping.get("ethernetMac")))
+            except ValueError:
+                problems.append("MAC 地址格式无法识别，请填 12 位十六进制（如 AA-BB-CC-DD-EE-FF）")
+                wifi_mac = ethernet_mac = ""
+            if problems:
+                summary["errors"].append(
+                    {"row": row_no, "code": device_name, "message": "；".join(problems)}
+                )
+                continue
+
+            target_id = existing.get(device_name.upper())
+            if target_id and mode == "skip":
+                summary["skipped"] += 1
+                continue
+            fields = {
+                "deviceName": device_name,
+                "orgId": str(org_id) if org_id > 0 else "",
+                "deviceType": device_type,
+                "status": status,
+                "brand": _import_cell(row, mapping.get("brand")),
+                "model": _import_cell(row, mapping.get("model")),
+                "cpu": _import_cell(row, mapping.get("cpu")),
+                "memory": _import_cell(row, mapping.get("memory")),
+                "storage": _import_cell(row, mapping.get("storage")),
+                "gpu": _import_cell(row, mapping.get("gpu")),
+                "fixedAssetCode": _import_cell(row, mapping.get("fixedAssetCode")),
+                "snSt": _import_cell(row, mapping.get("snSt")),
+                "wifiMac": wifi_mac,
+                "ethernetMac": ethernet_mac,
+                "location": _import_cell(row, mapping.get("location")),
+                "department": _import_cell(row, mapping.get("department")),
+                "position": _import_cell(row, mapping.get("position")),
+                "purchaseDate": purchase_date,
+                "registeredDate": registered_date,
+                "remarks": _import_cell(row, mapping.get("remarks")),
+                # 导入只登记台账，不从仓库扣库存（与"自定义登记"一致）。
+                "registrationMode": "custom",
+            }
+            if dry_run:
+                summary["updated" if target_id else "created"] += 1
+                continue
+            try:
+                self._save_computer(str(target_id) if target_id else None, fields, context)
+                summary["updated" if target_id else "created"] += 1
+            except Exception as exc:
+                summary["errors"].append(
+                    {"row": row_no, "code": device_name, "message": str(exc)}
+                )
+
+        summary["errorCount"] = len(summary["errors"])
+        summary["warningCount"] = len(summary["warnings"])
+        if not dry_run:
+            self._import_audit("computers_imported", file_name, summary, context)
+        return summary
 
     def list_warehouses(self, context: dict) -> list[dict]:
         rows = list(

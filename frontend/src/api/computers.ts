@@ -1,5 +1,6 @@
 import { api } from "./client";
 import type { ComputerRow, EmployeeRow, OrgRow } from "./state";
+import type { ImportSummary } from "./datacenter";
 
 export interface WarehouseRow {
   id: string;
@@ -158,6 +159,16 @@ export async function saveComputer(
     return;
   }
   await api("/api/resources/computer", { method: "POST", body });
+}
+
+/** 批量导入办公终端：dryRun=true 只预览不写库；mode=skip 跳过已有设备名，mode=update 覆盖。 */
+export function importComputers(payload: {
+  fileName: string;
+  contentBase64: string;
+  dryRun?: boolean;
+  mode?: "skip" | "update";
+}): Promise<ImportSummary> {
+  return api<ImportSummary>("/api/computers/import", { method: "POST", body: payload });
 }
 
 export async function scrapComputer(
