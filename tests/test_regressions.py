@@ -2306,6 +2306,77 @@ class DevicePanelTopologyRegressionTests(TestCase):
         self.assertIn("required_table_count = 72", server_source)
 
 
+class BulkImportTests(TestCase):
+    """使用人员 / 办公终端批量导入：共用 xlsx 解析、dryRun 预览、skip/update 与逐行容错。"""
+
+    def test_shared_xlsx_helpers_parse_uploads(self):
+        module = (ROOT / "office_asset" / "xlsx.py").read_text(encoding="utf-8")
+
+        for token in ("def read_upload_rows(", "def map_headers(", "def normalise_header("):
+            self.assertIn(token, module)
+        # 机房设备导入改为复用同一套解析（不再各写一份）
+        datacenter = (ROOT / "office_asset" / "datacenter_devices.py").read_text(encoding="utf-8")
+        self.assertIn("read_upload_rows(file_name, data, max_bytes=MAX_UPLOAD_BYTES)", datacenter)
+        self.assertIn("map_headers(header_row, HEADER_ALIASES)", datacenter)
+        self.assertNotIn("import csv", datacenter)
+
+    def test_service_imports_employees_and_computers(self):
+        service = (ROOT / "office_asset" / "asset_service.py").read_text(encoding="utf-8")
+        employees = service.split("    def import_employees(", 1)[1].split(
+            "\n    def import_computers(", 1
+        )[0]
+        computers = service.split("    def import_computers(", 1)[1].split(
+            "\n    def list_warehouses(", 1
+        )[0]
+
+        for block in (employees, computers):
+            self.assertIn("dryRun", block)
+            self.assertIn("mode", block)
+            self.assertIn("summary[\"errors\"]", block)
+            self.assertIn("_import_audit(", block)
+        # 人员：组织必须解析得到，工号留空按组织自动分配；终端：只写台账，不扣库存
+        self.assertIn("_org_lookup()", employees)
+        self.assertIn('"registrationMode": "custom"', computers)
+        self.assertIn("_import_date(", computers)
+        self.assertIn("_import_mac(", computers)
+
+    def test_router_serves_both_import_endpoints(self):
+        router = (ROOT / "office_asset" / "api_router.py").read_text(encoding="utf-8")
+
+        self.assertIn('path == "/api/employees/import" and method == "POST"', router)
+        self.assertIn("self.assets.import_employees(", router)
+        self.assertIn('path == "/api/computers/import" and method == "POST"', router)
+        self.assertIn("self.assets.import_computers(", router)
+
+    def test_frontend_reuses_one_import_dialog(self):
+        component = (
+            ROOT / "frontend" / "src" / "components" / "ui" / "ImportExcelDialog.vue"
+        ).read_text(encoding="utf-8")
+        employees = (ROOT / "frontend" / "src" / "views" / "EmployeesView.vue").read_text(
+            encoding="utf-8"
+        )
+        computers = (ROOT / "frontend" / "src" / "views" / "ComputersView.vue").read_text(
+            encoding="utf-8"
+        )
+        employees_api = (ROOT / "frontend" / "src" / "api" / "employees.ts").read_text(
+            encoding="utf-8"
+        )
+        computers_api = (ROOT / "frontend" / "src" / "api" / "computers.ts").read_text(
+            encoding="utf-8"
+        )
+
+        # 一个共用弹窗，两个页面各接一次
+        self.assertIn('accept=".xlsx,.xlsm,.csv"', component)
+        self.assertIn("dryRun: true", component)
+        self.assertIn("downloadTemplate", component)
+        self.assertIn("ImportExcelDialog", employees)
+        self.assertIn("ImportExcelDialog", computers)
+        self.assertIn('title="导入使用人员"', employees)
+        self.assertIn('title="导入办公终端"', computers)
+        self.assertIn("/api/employees/import", employees_api)
+        self.assertIn("/api/computers/import", computers_api)
+
+
 class ComputerMovementHistoryTests(TestCase):
     """办公终端「流转」按钮：走既有 movement-history 接口，弹窗里看分配 / 归还 / 状态变更。"""
 

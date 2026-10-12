@@ -8,6 +8,7 @@ import {
   fetchComputerMovementHistory,
   fetchScrapReasons,
   formFromComputer,
+  importComputers,
   invalidateComputersCache,
   loadComputersData,
   saveComputer,
@@ -20,6 +21,7 @@ import { fetchComputerPage } from "../api/lists";
 import type { ComputerRow } from "../api/state";
 import DataPanel from "../components/ui/DataPanel.vue";
 import FilterBar from "../components/ui/FilterBar.vue";
+import ImportExcelDialog from "../components/ui/ImportExcelDialog.vue";
 import PageHeader from "../components/ui/PageHeader.vue";
 import { confirmAction } from "../composables/useConfirm";
 import { deviceTypeLabel, statusLabel, statusTagType } from "../labels";
@@ -36,6 +38,31 @@ const employees = ref<Array<{ id: string; name: string; employeeNo: string }>>([
 const warehouses = ref<Array<{ id: string; name: string; code: string; isActive: unknown }>>([]);
 const inventoryModels = ref<Array<{ id: string; name: string; quantity: unknown }>>([]);
 const scrapReasons = ref<ScrapReason[]>([]);
+const importDialog = ref(false);
+
+/** 办公终端导入模板：表头与后端 COMPUTER_IMPORT_ALIASES 对应。 */
+const COMPUTER_IMPORT_FIELDS: Record<string, string> = {
+  deviceName: "设备名称",
+  orgCode: "组织",
+  deviceType: "设备类型",
+  status: "状态",
+  brand: "品牌",
+  model: "型号",
+  cpu: "CPU",
+  memory: "内存",
+  storage: "硬盘",
+  gpu: "显卡",
+  fixedAssetCode: "固资编码",
+  snSt: "SN/ST",
+  wifiMac: "WiFi MAC",
+  ethernetMac: "网口 MAC",
+  location: "位置",
+  department: "部门",
+  position: "岗位",
+  purchaseDate: "购置日期",
+  registeredDate: "登记日期",
+  remarks: "备注",
+};
 
 /** 流转记录弹窗：只读展示这台终端的分配 / 归还 / 状态变更时间线。 */
 const movementVisible = ref(false);
@@ -365,6 +392,9 @@ onMounted(async () => {
       <el-button :disabled="!selectedIds.length" @click="exportSelected">
         导出选中 {{ selectedIds.length }}
       </el-button>
+      <el-button v-if="hasPermission('it_assets', 'create')" @click="importDialog = true">
+        导入 Excel
+      </el-button>
       <el-button v-if="hasPermission('it_assets', 'create')" type="primary" @click="openCreate">
         ＋ 新增办公终端
       </el-button>
@@ -620,6 +650,25 @@ onMounted(async () => {
       </el-form-item>
     </el-form>
   </FormDialog>
+
+  <ImportExcelDialog
+    v-model="importDialog"
+    title="导入办公终端"
+    :field-labels="COMPUTER_IMPORT_FIELDS"
+    :template-header="[
+      '设备名称', '组织', '设备类型', '状态', '品牌', '型号', 'CPU', '内存', '硬盘', '显卡',
+      '固资编码', 'SN/ST', 'WiFi MAC', '网口 MAC', '位置', '部门', '岗位', '购置日期', '登记日期', '备注',
+    ]"
+    :template-sample="[
+      'PC-IT-01', 'IT部', '笔记本', '闲置', '联想', 'ThinkPad E14', 'i5-1340P', '16G', '512G SSD', '',
+      'FA-2026-0101', 'SN123456', '', 'AA-BB-CC-DD-EE-FF', '1 楼库房', '信息部', '工程师',
+      '2026-01-31', '2026-02-01', '库存登记',
+    ]"
+    template-file-name="办公终端导入模板.csv"
+    hint="表头需包含「设备名称」。组织填组织编码或名称（必须已存在）；设备类型填 笔记本 / 台式机 / 工作站 / 迷你主机；状态填 在用 / 闲置 / 维修 / 报废 / 丢失；日期用 2026-01-31 或 Excel 日期单元格。导入只写台账，不从仓库扣库存，也不会自动分配给使用人。"
+    :import-fn="importComputers"
+    @imported="invalidateComputersCache(); load(true)"
+  />
 
   <FormDialog
     v-model="movementVisible"

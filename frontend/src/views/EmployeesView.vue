@@ -9,6 +9,7 @@ import {
   employeesToCsv,
   fetchOffboardingPreview,
   formFromEmployee,
+  importEmployees,
   invalidateEmployeesCache,
   loadEmployeesData,
   offboardEmployee,
@@ -26,6 +27,7 @@ import {
   type UsageItem,
 } from "../api/employees";
 import type { ComputerRow } from "../api/state";
+import ImportExcelDialog from "../components/ui/ImportExcelDialog.vue";
 import { loadInventoryData, type InventoryData, type InventoryModelRow } from "../api/inventory";
 import {
   fetchComputerBriefs,
@@ -81,6 +83,19 @@ const pageSize = ref(50);
 const formVisible = ref(false);
 const editingId = ref("");
 const form = reactive<EmployeeFormPayload>(emptyEmployeeForm());
+const importDialog = ref(false);
+
+/** 使用人员导入模板：表头与后端 EMPLOYEE_IMPORT_ALIASES 对应。 */
+const EMPLOYEE_IMPORT_FIELDS: Record<string, string> = {
+  employeeNo: "工号",
+  name: "姓名",
+  orgCode: "组织",
+  department: "部门",
+  position: "岗位",
+  email: "邮箱",
+  mobile: "手机",
+  status: "状态",
+};
 
 const offboardVisible = ref(false);
 const offboardingEmployeeId = ref("");
@@ -857,6 +872,9 @@ onMounted(async () => {
         <el-button :disabled="!selectedIds.length" @click="exportSelected">
           导出选中 {{ selectedIds.length }}
         </el-button>
+        <el-button v-if="hasPermission('employees', 'create')" @click="importDialog = true">
+          导入 Excel
+        </el-button>
         <el-button v-if="hasPermission('employees', 'create')" type="primary" @click="openCreate">
           ＋ 新增人员
         </el-button>
@@ -1572,6 +1590,18 @@ onMounted(async () => {
       </div>
     </el-form>
   </FormDialog>
+
+  <ImportExcelDialog
+    v-model="importDialog"
+    title="导入使用人员"
+    :field-labels="EMPLOYEE_IMPORT_FIELDS"
+    :template-header="['工号', '姓名', '组织', '部门', '岗位', '邮箱', '手机', '状态']"
+    :template-sample="['IT-01', '张三', 'IT部', '信息部', '工程师', 'zhangsan@example.com', '13800000000', '在职']"
+    template-file-name="使用人员导入模板.csv"
+    hint="表头需包含「姓名」与「组织」：组织填组织编码或名称（必须已存在）。工号可以留空，留空时按组织自动分配；状态填 在职 / 停用 / 公用（离职请走离职办理）。"
+    :import-fn="importEmployees"
+    @imported="invalidateEmployeesCache(); load(true)"
+  />
 </template>
 
 <style scoped>

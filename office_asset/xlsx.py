@@ -14,6 +14,7 @@ merged cells and charts.
 
 from __future__ import annotations
 
+import csv
 import io
 import re
 import zipfile
@@ -27,10 +28,64 @@ NS_PKG_REL = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 MAX_ROWS = 20000
 MAX_CELLS = 400000
 CELL_REF = re.compile(r"^([A-Z]+)(\d+)$")
+MAX_UPLOAD_BYTES = 8 * 1024 * 1024
+HEADER_NOISE = re.compile(r"[\s_\-/（）()]")
 
 
 class WorkbookError(ValueError):
     """Raised when the uploaded workbook cannot be read."""
+
+
+def normalise_header(value: str) -> str:
+    """Normalise a header or enum label for alias lookups (case/space/punctuation free)."""
+    return HEADER_NOISE.sub("", (value or "").strip().lower())
+
+
+def map_headers(header_row: list[str], aliases: dict[str, set[str]]) -> dict[str, int]:
+    """Map a header row to field names using per-field alias sets."""
+    known = {
+        field: {normalise_header(alias) for alias in names} for field, names in aliases.items()
+    }
+    mapping: dict[str, int] = {}
+    for index, raw in enumerate(header_row):
+        key = normalise_header(raw)
+        if not key:
+            continue
+        for field, names in known.items():
+            if field in mapping:
+                continue
+            if key in names:
+                mapping[field] = index
+                break
+    return mapping
+
+
+def read_upload_rows(
+    file_name: str,
+    data: bytes,
+    *,
+    max_bytes: int = MAX_UPLOAD_BYTES,
+) -> list[list[str]]:
+    """Read an uploaded .xlsx / .xlsm / .csv file into rows of strings.
+
+    Raises :class:`WorkbookError` with a user-facing message on any problem.
+    """
+    if not data:
+        raise WorkbookError("文件内容为空。")
+    if max_bytes and len(data) > max_bytes:
+        raise WorkbookError(f"文件过大（上限 {max_bytes // (1024 * 1024)}MB）。")
+    lower = (file_name or "").lower()
+    if lower.endswith(".csv"):
+        for encoding in ("utf-8-sig", "gbk"):
+            try:
+                text = data.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+            return [list(row) for row in csv.reader(io.StringIO(text))]
+        raise WorkbookError("CSV 编码无法识别，请另存为 UTF-8 或 xlsx。")
+    if lower.endswith((".xlsx", ".xlsm")):
+        return read_sheet(data)
+    raise WorkbookError("只支持 .xlsx、.xlsm 或 .csv 文件。")
 
 
 def _column_index(reference: str) -> int:

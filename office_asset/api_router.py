@@ -868,6 +868,16 @@ class DomainApiRouter:
             send_json(self.assets.offboarding_preview(parts[3], context))
             return True
 
+        # 使用人员 / 办公终端的批量导入（xlsx、csv；dryRun 预览 + skip/update）
+        if path == "/api/employees/import" and method == "POST":
+            context = self._write_context(handler, "employees", "create")
+            send_json(self.assets.import_employees(self._payload(handler), context), status=201)
+            return True
+        if path == "/api/computers/import" and method == "POST":
+            context = self._write_context(handler, "it_assets", "create")
+            send_json(self.assets.import_computers(self._payload(handler), context), status=201)
+            return True
+
         if path.startswith("/api/resources/"):
             parts = path.split("/")
             resource_modules = {
