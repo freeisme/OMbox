@@ -28,6 +28,7 @@ export interface ComputersData {
   orgs: OrgRow[];
   employees: EmployeeRow[];
   warehouses: WarehouseRow[];
+  inventoryTypes: InventoryTypeRow[];
   inventoryModels: InventoryModelRow[];
 }
 
@@ -36,7 +37,25 @@ interface FullStatePayload {
   orgs?: OrgRow[];
   employees?: EmployeeRow[];
   warehouses?: WarehouseRow[];
+  nonAssetTypes?: InventoryTypeRow[];
   inventoryModels?: InventoryModelRow[];
+}
+
+/** IT 物资类型（判断型号是不是"电脑"类型用得到）。 */
+export interface InventoryTypeRow {
+  id: string;
+  code: string;
+  name: string;
+}
+
+/** 与后端 `_save_computer` 的判定保持一致：只有电脑类型的型号能用于「从库存登记」。 */
+export const COMPUTER_TYPE_CODES = ["computer", "pc"];
+export const COMPUTER_TYPE_NAMES = ["电脑", "办公终端", "办公设备终端", "computer", "pc"];
+
+export function isComputerInventoryType(type?: InventoryTypeRow): boolean {
+  const code = String(type?.code ?? "").trim().toLowerCase();
+  const name = String(type?.name ?? "").trim().toLowerCase();
+  return COMPUTER_TYPE_CODES.includes(code) || COMPUTER_TYPE_NAMES.includes(name);
 }
 
 let cache: { at: number; data: ComputersData } | null = null;
@@ -48,12 +67,13 @@ let cache: { at: number; data: ComputersData } | null = null;
 export async function loadComputersData(force = false): Promise<ComputersData> {
   if (cache && !force && Date.now() - cache.at < 60_000) return cache.data;
   const payload = await api<FullStatePayload>(
-    "/api/state?include=orgs,employees,warehouses,inventoryModels",
+    "/api/state?include=orgs,employees,warehouses,nonAssetTypes,inventoryModels",
   );
   const data: ComputersData = {
     orgs: Array.isArray(payload.orgs) ? payload.orgs : [],
     employees: Array.isArray(payload.employees) ? payload.employees : [],
     warehouses: Array.isArray(payload.warehouses) ? payload.warehouses : [],
+    inventoryTypes: Array.isArray(payload.nonAssetTypes) ? payload.nonAssetTypes : [],
     inventoryModels: Array.isArray(payload.inventoryModels) ? payload.inventoryModels : [],
   };
   cache = { at: Date.now(), data };
