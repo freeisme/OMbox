@@ -24,7 +24,6 @@ import {
   saveSettings,
   saveTargetPermissions,
   saveUser,
-  UPDATE_RELEASE_CHANNELS,
   UPDATE_SOURCES,
   type AccessModule,
   type AccessRole,
@@ -1091,32 +1090,16 @@ onMounted(async () => {
 
         <template v-else-if="tab.key === 'updates'">
           <el-form label-position="top" style="max-width: 760px">
-            <el-row :gutter="12">
-              <el-col :xs="24" :sm="12">
-                <el-form-item label="更新来源">
-                  <el-select v-model="updateSource" :disabled="updateBusy" class="oa-full-width">
-                    <el-option
-                      v-for="(label, value) in UPDATE_SOURCES"
-                      :key="value"
-                      :label="label"
-                      :value="value"
-                    />
-                  </el-select>
-                </el-form-item>
-              </el-col>
-              <el-col :xs="24" :sm="12">
-                <el-form-item label="更新通道">
-                  <el-select v-model="updateReleaseChannel" :disabled="updateBusy" class="oa-full-width">
-                    <el-option
-                      v-for="(label, value) in UPDATE_RELEASE_CHANNELS"
-                      :key="value"
-                      :label="label"
-                      :value="value"
-                    />
-                  </el-select>
-                </el-form-item>
-              </el-col>
-            </el-row>
+            <el-form-item label="更新来源">
+              <el-select v-model="updateSource" :disabled="updateBusy" class="oa-full-width">
+                <el-option
+                  v-for="(label, value) in UPDATE_SOURCES"
+                  :key="value"
+                  :label="label"
+                  :value="value"
+                />
+              </el-select>
+            </el-form-item>
             <el-form-item v-if="updateSource === 'custom'" label="自定义项目地址">
               <el-input
                 v-model="updateRepositoryUrl"

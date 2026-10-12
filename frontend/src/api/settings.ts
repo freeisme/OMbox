@@ -6,12 +6,8 @@ export const UPDATE_SOURCES: Record<string, string> = {
   custom: "自定义更新地址",
 };
 
-export const UPDATE_RELEASE_CHANNELS: Record<string, string> = {
-  release: "发行版",
-  beta: "Beta 版",
-};
-
-export const DEFAULT_UPDATE_RELEASE_CHANNEL = "beta";
+/** 更新通道只保留发行版（稳定标签）；beta 通道已下线，界面上不再提供选项。 */
+export const DEFAULT_UPDATE_RELEASE_CHANNEL = "release";
 export const GITHUB_UPDATE_REPOSITORY_URL = "https://github.com/freeisme/OMbox.git";
 
 export const ROLE_CATEGORIES: Record<string, string> = {

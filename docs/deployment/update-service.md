@@ -181,9 +181,9 @@ Webhook 端口（默认 `9000`）必须由主机防火墙限制在 Docker 网桥
 「设置 → 系统设置」把 `update_repository_url` 指向内网 Git 仓库地址——这两处都是运行时
 配置，不需要改代码。
 
-管理员在页面上可以选择**发行版**或 **Beta 版**通道：发行版只显示稳定的
-`vMAJOR.MINOR.PATCH` 标签，Beta 版只显示 `vMAJOR.MINOR.PATCH-beta.N` 之类的预发布标签，
-默认 Beta 版。更新控制服务会校验所选标签是注释标签、属于目标仓库 `main` 历史、
+页面固定使用**发行版**通道，只显示稳定的 `vMAJOR.MINOR.PATCH` 标签（Beta 通道已下线，
+设置页不再提供该选项；控制服务接口仍接受 `beta` 参数，需要时可用脚本直接调用）。
+更新控制服务会校验所选标签是注释标签、属于目标仓库 `main` 历史、
 在 `VERSION_NOTES.md` 里有同名小节，并且版本号高于当前版本。HTTP 项目地址只接受内网、
 本机或私有网络主机，且不能包含账号、口令或令牌。GitHub 这类 HTTPS 仓库固定使用 HTTP/1.1，
 遇到连接重置等短暂传输失败会自动重试三次（可用 `DEPLOY_GIT_FETCH_ATTEMPTS=1-5` 与
