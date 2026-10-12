@@ -10,7 +10,7 @@ const props = withDefaults(
     header?: string[];
     rows?: string[][];
     /** 导出内容需要现算（例如逐份模板取明细）时给这个函数，选中格式后再调用。 */
-    load?: () => Promise<{ header: string[]; rows: string[][] }>;
+    load?: () => Promise<{ header: string[]; rows: string[][]; title?: string[][] }>;
     label?: string;
     sheetName?: string;
     disabled?: boolean;
@@ -31,7 +31,9 @@ const busy = ref(false);
 async function run(format: string): Promise<void> {
   busy.value = true;
   try {
-    const data = props.load ? await props.load() : { header: props.header, rows: props.rows };
+    const data = props.load
+      ? await props.load()
+      : { header: props.header, rows: props.rows, title: [] as string[][] };
     if (!data.rows.length) {
       ElMessage.warning("没有可导出的数据。");
       return;
@@ -41,6 +43,7 @@ async function run(format: string): Promise<void> {
       sheetName: props.sheetName,
       header: data.header,
       rows: data.rows,
+      title: data.title,
       format: format as ExportFormat,
     });
     ElMessage.success(format === "csv" ? "已导出 CSV。" : "已导出 Excel。");

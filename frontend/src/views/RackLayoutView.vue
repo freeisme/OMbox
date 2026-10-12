@@ -15,6 +15,7 @@ import {
   type RackSummary,
 } from "../api/datacenter";
 import { RACK_CATEGORY_LABELS as CATEGORY_LABELS, rackCategoryLabel, statusLabel } from "../labels";
+import ExportMenu from "../components/ui/ExportMenu.vue";
 import { hasPermission } from "../session";
 
 const router = useRouter();
@@ -367,10 +368,6 @@ function escapeHtml(value: unknown): string {
   );
 }
 
-function csvCell(value: unknown): string {
-  return `"${String(value ?? "").replace(/"/g, '""')}"`;
-}
-
 function exportRows(items: RackDetail[]): string[][] {
   const rows: string[][] = [];
   items.forEach((item) => {
@@ -395,10 +392,6 @@ function exportRows(items: RackDetail[]): string[][] {
       });
   });
   return rows;
-}
-
-function exportFileName(items: RackDetail[]): string {
-  return items.length === 1 ? items[0].name : `${items.length}个机柜`;
 }
 
 function mergeTableHtml(items: RackDetail[]): string {
@@ -463,24 +456,15 @@ function rackDiagramHtml(items: RackDetail[], withList: boolean): string {
     <div class="board">${columns}</div>${withList ? mergeTableHtml(items) : ""}</body></html>`;
 }
 
-async function exportMergedCsv(): Promise<void> {
+/** 机柜设备清单（CSV / Excel 由下拉决定）：按所选机柜现取数据。 */
+async function exportRackList(): Promise<{ header: string[]; rows: string[][] }> {
   const items = await pickedRacks();
-  if (!items.length) return;
-  const rows = exportRows(items);
-  if (!rows.length) {
-    ElMessage.warning("所选机柜里还没有上架设备。");
-    return;
+  const rows = items.length ? exportRows(items) : [];
+  if (rows.length) {
+    exportDialog.value = false;
+    ElMessage.success(`已导出 ${items.length} 个机柜、${rows.length} 台设备。`);
   }
-  const csv = `\ufeff${EXPORT_HEADER.join(",")}\n${rows
-    .map((row) => row.map(csvCell).join(","))
-    .join("\n")}`;
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-  link.download = `机柜设备清单-${exportFileName(items)}.csv`;
-  link.click();
-  URL.revokeObjectURL(link.href);
-  exportDialog.value = false;
-  ElMessage.success(`已导出 ${items.length} 个机柜、${rows.length} 台设备。`);
+  return { header: EXPORT_HEADER, rows };
 }
 
 async function exportRackDiagram(): Promise<void> {
@@ -796,14 +780,13 @@ onMounted(async () => {
     </p>
     <template #footer>
       <el-button size="small" @click="exportDialog = false">取消</el-button>
-      <el-button
-        size="small"
+      <ExportMenu
+        :file-name="`机柜设备清单-${exportRackIds.length > 1 ? `${exportRackIds.length}个机柜` : (racks.find((item) => item.id === exportRackIds[0])?.name ?? '机柜')}`"
+        sheet-name="机柜设备"
+        :load="exportRackList"
         :disabled="!exportRackIds.length"
-        :loading="exportBusy"
-        @click="exportMergedCsv"
-      >
-        导出 CSV
-      </el-button>
+        label="导出清单"
+      />
       <el-button
         type="primary"
         size="small"

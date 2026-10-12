@@ -32,6 +32,7 @@ import {
   type TopologyPosition,
 } from "../api/datacenter";
 import { hasPermission } from "../session";
+import ExportMenu from "../components/ui/ExportMenu.vue";
 
 interface PlacedNode {
   node: TopologyNode;
@@ -1675,13 +1676,6 @@ function downloadBlob(blob: Blob, fileName: string): void {
   URL.revokeObjectURL(link.href);
 }
 
-function downloadCsv(fileName: string, header: string[], rows: string[][]): void {
-  const escape = (value: string) =>
-    /[",\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
-  const content = [header, ...rows].map((row) => row.map(escape).join(",")).join("\r\n");
-  downloadBlob(new Blob([`\ufeff${content}\r\n`], { type: "text/csv;charset=utf-8" }), fileName);
-}
-
 function exportSvg(): void {
   if (!placed.value.length) {
     ElMessage.warning("当前筛选条件下没有节点。");
@@ -1710,12 +1704,21 @@ function exportPng(): void {
 }
 
 /** 链路清单：A/B 两端设备与端口、介质、长度、标签、状态，便于交付布线资料。 */
-function exportLinkList(): void {
-  if (!visibleLinks.value.length) {
-    ElMessage.warning("当前没有可导出的链路。");
-    return;
-  }
-  const rows = visibleLinks.value.map((link, index) => [
+const LINK_EXPORT_HEADER = [
+  "序号",
+  "A 端设备",
+  "A 端端口",
+  "B 端设备",
+  "B 端端口",
+  "介质",
+  "长度(米)",
+  "标签",
+  "状态",
+  "备注",
+];
+
+function linkExportRows(): string[][] {
+  return visibleLinks.value.map((link, index) => [
     String(index + 1),
     link.aPlacementName,
     link.aPortName,
@@ -1727,20 +1730,24 @@ function exportLinkList(): void {
     CABLE_STATUS_OPTIONS.find((item) => item.value === link.status)?.label ?? link.status,
     link.notes,
   ]);
-  downloadCsv(
-    "链路清单.csv",
-    ["序号", "A 端设备", "A 端端口", "B 端设备", "B 端端口", "介质", "长度(米)", "标签", "状态", "备注"],
-    rows,
-  );
 }
 
 /** 节点清单：设备、型号、位置、端口使用与层级。 */
-function exportNodeList(): void {
-  if (!placed.value.length) {
-    ElMessage.warning("当前没有可导出的节点。");
-    return;
-  }
-  const rows = placed.value.map((item, index) => [
+const NODE_EXPORT_HEADER = [
+  "序号",
+  "设备",
+  "型号",
+  "类别",
+  "机房",
+  "机柜",
+  "起始 U 位",
+  "端口数",
+  "已连端口",
+  "层级",
+];
+
+function nodeExportRows(): string[][] {
+  return placed.value.map((item, index) => [
     String(index + 1),
     item.node.name,
     item.node.brandModel,
@@ -1752,11 +1759,6 @@ function exportNodeList(): void {
     String(item.node.linkedPortCount),
     String(item.level + 1),
   ]);
-  downloadCsv(
-    "拓扑节点清单.csv",
-    ["序号", "设备", "型号", "类别", "机房", "机柜", "起始 U 位", "端口数", "已连端口", "层级"],
-    rows,
-  );
 }
 
 function printTopology(): void {
@@ -1918,8 +1920,22 @@ onUnmounted(() => {
         </el-button>
         <el-button size="small" @click="exportSvg">导出 SVG</el-button>
         <el-button size="small" @click="exportPng">导出 PNG</el-button>
-        <el-button size="small" @click="exportLinkList">导出链路清单</el-button>
-        <el-button size="small" @click="exportNodeList">导出节点清单</el-button>
+        <ExportMenu
+          file-name="链路清单"
+          sheet-name="链路清单"
+          :header="LINK_EXPORT_HEADER"
+          :rows="linkExportRows()"
+          label="导出链路清单"
+          :disabled="!visibleLinks.length"
+        />
+        <ExportMenu
+          file-name="拓扑节点清单"
+          sheet-name="节点清单"
+          :header="NODE_EXPORT_HEADER"
+          :rows="nodeExportRows()"
+          label="导出节点清单"
+          :disabled="!placed.length"
+        />
         <el-button size="small" @click="printTopology">打印</el-button>
       </div>
     </template>

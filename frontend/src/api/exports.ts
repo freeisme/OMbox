@@ -8,9 +8,9 @@ export function asText(value: unknown): string {
   return value === null || value === undefined ? "" : String(value);
 }
 
-export function csvFromRows(header: string[], rows: string[][]): string {
+export function csvFromRows(header: string[], rows: string[][], title: string[][] = []): string {
   const escape = (value: string) => (/[",\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value);
-  return [header, ...rows]
+  return [...title, header, ...rows]
     .map((row) => row.map((cell) => escape(String(cell ?? ""))).join(","))
     .join("\r\n");
 }
@@ -33,16 +33,19 @@ export async function downloadTable(options: {
   sheetName?: string;
   header: string[];
   rows: string[][];
+  /** 表头之上的说明行（如巡检表的任务信息），CSV 与 Excel 都会保留。 */
+  title?: string[][];
   format: ExportFormat;
 }): Promise<void> {
   if (options.format === "csv") {
-    const csv = `\ufeff${csvFromRows(options.header, options.rows)}`;
+    const csv = `\ufeff${csvFromRows(options.header, options.rows, options.title)}`;
     downloadBlob(new Blob([csv], { type: "text/csv;charset=utf-8" }), `${options.fileName}.csv`);
     return;
   }
   await downloadFile("/api/exports/xlsx", {
     fileName: options.fileName,
     sheetName: options.sheetName ?? "数据",
+    title: options.title ?? [],
     header: options.header,
     rows: options.rows,
   });
