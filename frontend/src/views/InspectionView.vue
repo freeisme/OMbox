@@ -36,6 +36,7 @@ import { hasPermission } from "../session";
 import { confirmAction } from "../composables/useConfirm";
 import { useRoute, useRouter } from "vue-router";
 import DataPanel from "../components/ui/DataPanel.vue";
+import ExportMenu from "../components/ui/ExportMenu.vue";
 import PageHeader from "../components/ui/PageHeader.vue";
 import ToolbarActions from "../components/ui/ToolbarActions.vue";
 
@@ -359,6 +360,56 @@ const TEMPLATE_VALUE_TYPES = [
   { value: "number", label: "数值" },
   { value: "text", label: "文本" },
 ];
+
+/** 巡检模板导出：一份模板一行一个检查项，方便交给现场核对/评审。 */
+const TEMPLATE_EXPORT_HEADER = [
+  "模板编码",
+  "模板名称",
+  "适用对象",
+  "模板说明",
+  "序号",
+  "类别",
+  "检查项",
+  "检查方法",
+  "取值类型",
+  "单位",
+  "正常范围",
+  "是否必填",
+];
+
+function templateValueTypeLabel(value: unknown): string {
+  const key = String(value ?? "");
+  return TEMPLATE_VALUE_TYPES.find((item) => item.value === key)?.label ?? key;
+}
+
+/** 把一份或多份模板摊平成导出用的行（每份模板的明细由服务端按需取回）。 */
+async function templateExportRows(templates_: InspectionTemplate[]): Promise<string[][]> {
+  const rows: string[][] = [];
+  for (const template of templates_) {
+    const detail = await fetchInspectionTemplate(template.id);
+    (detail.items ?? []).forEach((item) => {
+      rows.push([
+        detail.code ?? "",
+        detail.name ?? "",
+        SITE_TYPE_LABELS[detail.siteType ?? "both"] ?? detail.siteType ?? "通用",
+        detail.description ?? "",
+        String(item.seqNo ?? ""),
+        item.category ?? "",
+        item.title ?? "",
+        item.checkMethod ?? "",
+        templateValueTypeLabel(item.valueType),
+        item.unit ?? "",
+        item.normalRange ?? "",
+        item.isRequired ? "是" : "否",
+      ]);
+    });
+  }
+  return rows;
+}
+
+const templateExportName = computed(
+  () => `巡检模板-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")}`,
+);
 
 function emptyTemplateItem(): InspectionTemplateItemPayload {
   return {
@@ -966,6 +1017,13 @@ onMounted(async () => {
       >
         ＋ 新增模板
       </el-button>
+      <ExportMenu
+        :file-name="templateExportName"
+        sheet-name="巡检模板"
+        :load="() => templateExportRows(templates).then((rows) => ({ header: TEMPLATE_EXPORT_HEADER, rows }))"
+        label="导出全部模板"
+        :disabled="!templates.length"
+      />
     </ToolbarActions>
 
     <el-table
@@ -1058,7 +1116,7 @@ onMounted(async () => {
           {{ SITE_TYPE_LABELS[row.siteType ?? "both"] ?? row.siteType ?? "通用" }}
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="130" fixed="right">
+      <el-table-column label="操作" width="190" fixed="right">
         <template #default="{ row }">
           <el-button
             v-if="hasPermission('inspection_management', 'update')"
@@ -1068,6 +1126,14 @@ onMounted(async () => {
           >
             编辑
           </el-button>
+          <ExportMenu
+            :file-name="`巡检模板-${row.code || row.name}`"
+            sheet-name="巡检模板"
+            :load="
+              () => templateExportRows([row]).then((rows) => ({ header: TEMPLATE_EXPORT_HEADER, rows }))
+            "
+            label="导出"
+          />
           <el-button
             v-if="hasPermission('inspection_management', 'delete')"
             link

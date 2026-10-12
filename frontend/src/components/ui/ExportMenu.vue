@@ -7,30 +7,40 @@ import { downloadTable, type ExportFormat } from "../../api/exports";
 const props = withDefaults(
   defineProps<{
     fileName: string;
-    header: string[];
-    rows: string[][];
+    header?: string[];
+    rows?: string[][];
+    /** 导出内容需要现算（例如逐份模板取明细）时给这个函数，选中格式后再调用。 */
+    load?: () => Promise<{ header: string[]; rows: string[][] }>;
     label?: string;
     sheetName?: string;
     disabled?: boolean;
     size?: "small" | "default" | "large";
   }>(),
-  { label: "导出", sheetName: "数据", disabled: false, size: "small" },
+  {
+    header: () => [],
+    rows: () => [],
+    label: "导出",
+    sheetName: "数据",
+    disabled: false,
+    size: "small",
+  },
 );
 
 const busy = ref(false);
 
 async function run(format: string): Promise<void> {
-  if (!props.rows.length) {
-    ElMessage.warning("没有可导出的数据。");
-    return;
-  }
   busy.value = true;
   try {
+    const data = props.load ? await props.load() : { header: props.header, rows: props.rows };
+    if (!data.rows.length) {
+      ElMessage.warning("没有可导出的数据。");
+      return;
+    }
     await downloadTable({
       fileName: props.fileName,
       sheetName: props.sheetName,
-      header: props.header,
-      rows: props.rows,
+      header: data.header,
+      rows: data.rows,
       format: format as ExportFormat,
     });
     ElMessage.success(format === "csv" ? "已导出 CSV。" : "已导出 Excel。");
