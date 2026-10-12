@@ -30,6 +30,7 @@ export interface ComputersData {
   warehouses: WarehouseRow[];
   inventoryTypes: InventoryTypeRow[];
   inventoryModels: InventoryModelRow[];
+  inventoryStocks: WarehouseStockRow[];
 }
 
 interface FullStatePayload {
@@ -39,6 +40,14 @@ interface FullStatePayload {
   warehouses?: WarehouseRow[];
   nonAssetTypes?: InventoryTypeRow[];
   inventoryModels?: InventoryModelRow[];
+  warehouseStocks?: WarehouseStockRow[];
+}
+
+/** 某个仓库里某个型号的库存数量（「从库存登记」按这个扣减）。 */
+export interface WarehouseStockRow {
+  modelId: string;
+  warehouseId: string;
+  quantity: number | string;
 }
 
 /** IT 物资类型（判断型号是不是"电脑"类型用得到）。 */
@@ -67,7 +76,7 @@ let cache: { at: number; data: ComputersData } | null = null;
 export async function loadComputersData(force = false): Promise<ComputersData> {
   if (cache && !force && Date.now() - cache.at < 60_000) return cache.data;
   const payload = await api<FullStatePayload>(
-    "/api/state?include=orgs,employees,warehouses,nonAssetTypes,inventoryModels",
+    "/api/state?include=orgs,employees,warehouses,nonAssetTypes,inventoryModels,warehouseStocks",
   );
   const data: ComputersData = {
     orgs: Array.isArray(payload.orgs) ? payload.orgs : [],
@@ -75,6 +84,7 @@ export async function loadComputersData(force = false): Promise<ComputersData> {
     warehouses: Array.isArray(payload.warehouses) ? payload.warehouses : [],
     inventoryTypes: Array.isArray(payload.nonAssetTypes) ? payload.nonAssetTypes : [],
     inventoryModels: Array.isArray(payload.inventoryModels) ? payload.inventoryModels : [],
+    inventoryStocks: Array.isArray(payload.warehouseStocks) ? payload.warehouseStocks : [],
   };
   cache = { at: Date.now(), data };
   return data;
