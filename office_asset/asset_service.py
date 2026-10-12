@@ -1477,7 +1477,10 @@ class AssetService:
                 "computer",
                 "pc",
             }:
-                raise self.api_error("Warehouse registration can only use a computer inventory model.")
+                raise self.api_error(
+                    "「从库存登记」只能选「电脑 / 办公终端」类型的型号，"
+                    "请到 IT 物资里建这类型号并入库，或改用「自定义登记」。"
+                )
             inventory_stock_adjusted = True
 
         # The selected inventory model is the stock deduction reference only.

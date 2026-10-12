@@ -9,6 +9,7 @@ import {
   fetchScrapReasons,
   formFromComputer,
   importComputers,
+  isComputerInventoryType,
   invalidateComputersCache,
   loadComputersData,
   saveComputer,
@@ -37,6 +38,26 @@ const orgs = ref<Array<{ id: string; code: string; name: string; parentId: strin
 const employees = ref<Array<{ id: string; name: string; employeeNo: string }>>([]);
 const warehouses = ref<Array<{ id: string; name: string; code: string; isActive: unknown }>>([]);
 const inventoryModels = ref<Array<{ id: string; name: string; quantity: unknown }>>([]);
+const inventoryTypes = ref<Array<{ id: string; code: string; name: string }>>([]);
+
+/** 「从库存登记」只能选电脑类型的型号——过滤规则与后端一致，避免选了鼠标键盘再被后端拒绝。 */
+const computerInventoryModels = computed(() => {
+  const types = new Map(inventoryTypes.value.map((type) => [String(type.id), type]));
+  return inventoryModels.value
+    .filter((model) => isComputerInventoryType(types.get(String((model as { typeId?: string }).typeId))))
+    .sort((a, b) => String(a.name).localeCompare(String(b.name), "zh-Hans-CN"));
+});
+
+// 切到「从库存登记」时，把之前选中的非电脑型号清掉，避免提交到后端才报错
+watch(
+  () => [form.registrationMode, computerInventoryModels.value.length] as const,
+  () => {
+    if (form.registrationMode !== "warehouse") return;
+    if (!computerInventoryModels.value.some((model) => model.id === form.inventoryModelId)) {
+      form.inventoryModelId = "";
+    }
+  },
+);
 const scrapReasons = ref<ScrapReason[]>([]);
 const importDialog = ref(false);
 
@@ -152,6 +173,7 @@ async function load(force = false): Promise<void> {
     orgs.value = data.orgs;
     employees.value = data.employees;
     warehouses.value = data.warehouses;
+    inventoryTypes.value = data.inventoryTypes;
     inventoryModels.value = data.inventoryModels;
     await loadRows();
   } catch (error) {
@@ -559,14 +581,23 @@ onMounted(async () => {
         <template v-if="form.registrationMode === 'warehouse'">
           <el-col :xs="24" :md="8">
             <el-form-item label="库存型号" required>
-              <el-select v-model="form.inventoryModelId" filterable class="oa-full-width">
+              <el-select
+                v-model="form.inventoryModelId"
+                filterable
+                class="oa-full-width"
+                placeholder="选择电脑类型的库存型号"
+              >
                 <el-option
-                  v-for="model in inventoryModels"
+                  v-for="model in computerInventoryModels"
                   :key="model.id"
                   :label="`${model.name}（库存 ${model.quantity}）`"
                   :value="model.id"
                 />
               </el-select>
+              <div v-if="!computerInventoryModels.length" class="oa-hint">
+                库存里还没有「电脑 / 办公终端」类型的型号：请先到「IT 物资」里建这类型号并入库，
+                或者改用「自定义登记」。
+              </div>
             </el-form-item>
           </el-col>
           <el-col :xs="24" :md="8">

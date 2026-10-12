@@ -2306,6 +2306,36 @@ class DevicePanelTopologyRegressionTests(TestCase):
         self.assertIn("required_table_count = 72", server_source)
 
 
+class ComputerInventoryModelFilterTests(TestCase):
+    """「从库存登记」只能选电脑类型的型号：前端过滤规则必须与后端一致（原来会列出鼠标键盘等）。"""
+
+    def test_frontend_lists_only_computer_models(self):
+        view = (ROOT / "frontend" / "src" / "views" / "ComputersView.vue").read_text(
+            encoding="utf-8"
+        )
+        api_ts = (ROOT / "frontend" / "src" / "api" / "computers.ts").read_text(encoding="utf-8")
+
+        # 型号下拉只渲染过滤后的列表，并且类型数据要跟着型号一起取
+        self.assertIn("computerInventoryModels", view)
+        self.assertIn('v-for="model in computerInventoryModels"', view)
+        self.assertIn("isComputerInventoryType", view)
+        self.assertIn("nonAssetTypes,inventoryModels", api_ts)
+        # 切到「从库存登记」时清掉不适用的型号，避免提交后才被后端拒绝
+        self.assertIn('form.inventoryModelId = ""', view)
+
+    def test_frontend_and_backend_agree_on_computer_types(self):
+        service = (ROOT / "office_asset" / "asset_service.py").read_text(encoding="utf-8")
+        api_ts = (ROOT / "frontend" / "src" / "api" / "computers.ts").read_text(encoding="utf-8")
+
+        self.assertIn('COMPUTER_TYPE_CODES = ["computer", "pc"]', api_ts)
+        self.assertIn('type_code not in {"computer", "pc"}', service)
+        for word in ("电脑", "办公终端", "办公设备终端"):
+            self.assertIn(f'"{word}"', api_ts)
+            self.assertIn(f'"{word}"', service)
+        # 后端兜底提示也改成中文，保持一致
+        self.assertIn("「从库存登记」只能选「电脑 / 办公终端」类型的型号", service)
+
+
 class BulkImportTests(TestCase):
     """使用人员 / 办公终端批量导入：共用 xlsx 解析、dryRun 预览、skip/update 与逐行容错。"""
 
