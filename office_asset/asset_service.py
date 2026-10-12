@@ -1704,9 +1704,12 @@ class AssetService:
                 stock_updated = self.db.integer(result[0] if result else 0, 0)
                 computer_id = self.db.integer(result[1] if len(result) > 1 else 0, 0)
                 if stock_updated != 1:
-                    raise self.conflict_error("The selected warehouse does not have enough inventory.")
+                    raise self.conflict_error(
+                        "所选仓库里这个型号的库存不足：请换一个型号或仓库，"
+                        "也可以先用「自定义登记」建台账，随后到「IT 物资」补库存。"
+                    )
             if computer_id <= 0:
-                raise self.api_error("Unable to create computer.")
+                raise self.api_error("办公终端创建失败，请重试。")
         return {"computer": self._computer(computer_id)}
 
     def _shared_employee_number(self, org_id: object, exclude_employee_id: object = 0) -> str:

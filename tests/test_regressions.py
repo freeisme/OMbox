@@ -1128,7 +1128,7 @@ class InventoryRecoveryRegressionTests(TestCase):
         self.assertIn("从库存登记", view)
         self.assertIn("registrationMode", view)
         self.assertIn('registration_mode == "warehouse"', service)
-        self.assertIn("The selected warehouse does not have enough inventory.", service)
+        self.assertIn("所选仓库里这个型号的库存不足", service)
         self.assertIn("inventory_stock_adjusted", service)
         self.assertIn("inventoryStockAdjusted", service)
         self.assertIn('preferred_org_id=employee.get("orgId")', service)
@@ -2401,6 +2401,32 @@ class TableExportTests(TestCase):
             source = (ROOT / "frontend" / "src" / "views" / view).read_text(encoding="utf-8")
             self.assertIn("ExportMenu", source, view)
             self.assertNotIn("link.download = `", source, view)
+
+
+class ComputerWarehouseRegistrationTests(TestCase):
+    """「从库存登记」先选仓库，型号下拉只列该仓库里还有库存的电脑型号。"""
+
+    def test_form_puts_warehouse_first_and_filters_models_by_stock(self):
+        view = (ROOT / "frontend" / "src" / "views" / "ComputersView.vue").read_text(
+            encoding="utf-8"
+        )
+
+        # 表单顺序：入库仓库在库存型号之前
+        self.assertLess(view.index('label="入库仓库"'), view.index('label="库存型号"'))
+        # 型号下拉在没选仓库前禁用并给提示
+        self.assertIn(':disabled="!form.warehouseId"', view)
+        self.assertIn("请先选择入库仓库", view)
+        # 候选按「该仓库库存 + 型号总量」过滤，标签显示仓库剩余
+        self.assertIn("inventoryStocks", view)
+        self.assertIn("仓库剩余 ${model.available}", view)
+        self.assertIn("这个仓库里没有可用的电脑型号", view)
+        self.assertIn("model.available > 0 && (Number(model.quantity) || 0) > 0", view)
+
+    def test_backend_insufficient_stock_message_is_chinese(self):
+        service = (ROOT / "office_asset" / "asset_service.py").read_text(encoding="utf-8")
+
+        self.assertNotIn("does not have enough inventory", service)
+        self.assertIn("所选仓库里这个型号的库存不足", service)
 
 
 class ComputerInventoryModelFilterTests(TestCase):
