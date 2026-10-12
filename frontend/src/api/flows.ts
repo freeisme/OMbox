@@ -1,4 +1,5 @@
 import { api } from "./client";
+import { asText } from "./exports";
 
 export interface FlowRecord {
   id: string;
@@ -91,37 +92,39 @@ export async function correctFlowNote(
   });
 }
 
-export function flowRecordsToCsv(records: FlowRecord[]): string {
-  const header = [
-    "时间",
-    "业务类型",
-    "业务分类",
-    "物资类型",
-    "品牌",
-    "型号",
-    "数量",
-    "库存影响",
-    "调出方",
-    "接收方",
-    "关联人员",
-    "备注",
-    "修正次数",
-  ];
-  const body = records.map((record) => [
-    record.occurredAt,
-    flowDefinition(record).label,
-    flowDefinition(record).category,
-    record.typeName,
-    record.brandName,
-    record.modelName,
-    record.quantity,
-    flowStockImpact(record),
-    record.sourceLabel,
-    record.targetLabel,
-    [record.relatedEmployeeName, record.relatedEmployeeNo].filter(Boolean).join(" / "),
-    flowNoteText(record),
-    (record.noteCorrections ?? []).length,
-  ]);
-  const escape = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
-  return [header, ...body].map((line) => line.map(escape).join(",")).join("\r\n");
+export const FLOW_EXPORT_HEADER = [
+  "时间",
+  "业务类型",
+  "业务分类",
+  "物资类型",
+  "品牌",
+  "型号",
+  "数量",
+  "库存影响",
+  "调出方",
+  "接收方",
+  "关联人员",
+  "备注",
+  "修正次数",
+];
+
+/** 导出用的二维表：CSV 与 Excel 共用同一份数据。 */
+export function flowRecordsToRows(records: FlowRecord[]): string[][] {
+  return records.map((record) =>
+    [
+      record.occurredAt,
+      flowDefinition(record).label,
+      flowDefinition(record).category,
+      record.typeName,
+      record.brandName,
+      record.modelName,
+      record.quantity,
+      flowStockImpact(record),
+      record.sourceLabel,
+      record.targetLabel,
+      [record.relatedEmployeeName, record.relatedEmployeeNo].filter(Boolean).join(" / "),
+      flowNoteText(record),
+      (record.noteCorrections ?? []).length,
+    ].map(asText),
+  );
 }

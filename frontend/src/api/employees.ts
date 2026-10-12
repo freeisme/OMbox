@@ -313,24 +313,26 @@ export function employeeUsageLabel(item: UsageItem): string {
   return `${name}${extras ? ` ${extras}` : ""}${quantity > 1 ? ` x${quantity}` : ""}`;
 }
 
-export function employeesToCsv(
+export const EMPLOYEE_EXPORT_HEADER = [
+  "工号",
+  "姓名",
+  "组织",
+  "部门",
+  "岗位",
+  "邮箱",
+  "手机",
+  "状态",
+  "办公终端",
+  "显示屏 / 非资产物资",
+];
+
+/** 导出用的二维表：CSV 与 Excel 共用同一份数据。 */
+export function employeesToRows(
   rows: EmployeeDetailRow[],
   orgNameOf: (orgId: string) => string,
   computerNamesOf: (employeeId: string) => string[],
-): string {
-  const header = [
-    "工号",
-    "姓名",
-    "组织",
-    "部门",
-    "岗位",
-    "邮箱",
-    "手机",
-    "状态",
-    "办公终端",
-    "显示屏 / 非资产物资",
-  ];
-  const body = rows.map((row) => [
+): string[][] {
+  return rows.map((row) => [
     row.employeeNo,
     row.name,
     orgNameOf(row.orgId),
@@ -342,6 +344,4 @@ export function employeesToCsv(
     computerNamesOf(row.id).join("；"),
     [...(row.monitors ?? []), ...(row.nonAssetItems ?? [])].map(employeeUsageLabel).join("；"),
   ]);
-  const escape = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
-  return [header, ...body].map((line) => line.map(escape).join(",")).join("\r\n");
 }

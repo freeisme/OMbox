@@ -100,8 +100,14 @@ export async function downloadFile(path: string, body: unknown = {}): Promise<st
   }
   const blob = await response.blob();
   const disposition = response.headers.get("Content-Disposition") || "";
-  const matched = /filename\*?=(?:UTF-8''|")?([^";]+)/i.exec(disposition);
-  const filename = matched ? decodeURIComponent(matched[1].replace(/"/g, "")) : "download";
+  // 优先 RFC 5987 的 filename*（中文名走这里），没有才退回 filename 的 ASCII 兜底
+  const extended = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+  const plain = /filename="?([^";]+)"?/i.exec(disposition);
+  const filename = extended
+    ? decodeURIComponent(extended[1].trim())
+    : plain
+      ? plain[1].trim()
+      : "download";
   const objectUrl = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = objectUrl;

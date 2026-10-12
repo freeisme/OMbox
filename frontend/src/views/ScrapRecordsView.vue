@@ -6,11 +6,13 @@ import {
   scrapKindLabel,
   scrapRecordSubtitle,
   scrapRecordTitle,
-  scrapRecordsToCsv,
+  SCRAP_EXPORT_HEADER,
+  scrapRecordsToRows,
   type ScrapRecord,
 } from "../api/scrap";
 import DataPanel from "../components/ui/DataPanel.vue";
 import FilterBar from "../components/ui/FilterBar.vue";
+import ExportMenu from "../components/ui/ExportMenu.vue";
 import PageHeader from "../components/ui/PageHeader.vue";
 
 const loading = ref(true);
@@ -57,22 +59,11 @@ async function load(): Promise<void> {
   }
 }
 
-function exportCsv(): void {
-  if (!filtered.value.length) {
-    ElMessage.warning("当前没有可导出的记录。");
-    return;
-  }
-  const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
-  const blob = new Blob([`\ufeff${scrapRecordsToCsv(filtered.value)}`], {
-    type: "text/csv;charset=utf-8;",
-  });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `报废记录-${stamp}.csv`;
-  link.click();
-  URL.revokeObjectURL(url);
-}
+/** 导出当前筛选结果；格式（CSV / Excel）由 ExportMenu 决定。 */
+const scrapExportRows = computed(() => scrapRecordsToRows(filtered.value));
+const scrapExportName = computed(
+  () => `报废记录-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")}`,
+);
 
 function openDetail(record: ScrapRecord): void {
   detail.value = record;
@@ -89,7 +80,14 @@ onMounted(load);
   >
     <template #actions>
       <el-button @click="load">刷新</el-button>
-      <el-button :disabled="!filtered.length" @click="exportCsv">导出当前结果</el-button>
+      <ExportMenu
+        :file-name="scrapExportName"
+        sheet-name="报废记录"
+        :header="SCRAP_EXPORT_HEADER"
+        :rows="scrapExportRows"
+        label="导出当前结果"
+        :disabled="!filtered.length"
+      />
     </template>
     <template #filters>
       <FilterBar

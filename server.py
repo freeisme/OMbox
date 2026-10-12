@@ -22,7 +22,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from office_asset.api_router import ApiDependencies, DomainApiRouter
@@ -5242,6 +5242,23 @@ class AppHandler(SimpleHTTPRequestHandler):
         try:
             with file_path.open("rb") as source:
                 shutil.copyfileobj(source, self.wfile, length=1024 * 1024)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def send_bytes(self, data: bytes, content_type: str, download_name: str) -> None:
+        """内存里的文件（例如导出的 xlsx）：文件名用 RFC 5987 的 filename* 保留中文。"""
+        ascii_name = re.sub(r"[^A-Za-z0-9._-]", "_", download_name) or "download"
+        quoted = quote(download_name, safe="")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header(
+            "Content-Disposition", f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted}"
+        )
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            self.wfile.write(data)
         except (BrokenPipeError, ConnectionResetError):
             pass
 

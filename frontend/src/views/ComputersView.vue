@@ -3,7 +3,8 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import {
   COMPUTER_STATUS_OPTIONS,
-  computersToCsv,
+  COMPUTER_EXPORT_HEADER,
+  computersToRows,
   emptyComputerForm,
   fetchComputerMovementHistory,
   fetchScrapReasons,
@@ -22,6 +23,7 @@ import { fetchComputerPage } from "../api/lists";
 import type { ComputerRow } from "../api/state";
 import DataPanel from "../components/ui/DataPanel.vue";
 import FilterBar from "../components/ui/FilterBar.vue";
+import ExportMenu from "../components/ui/ExportMenu.vue";
 import ImportExcelDialog from "../components/ui/ImportExcelDialog.vue";
 import PageHeader from "../components/ui/PageHeader.vue";
 import { confirmAction } from "../composables/useConfirm";
@@ -342,21 +344,13 @@ async function submitScrap(): Promise<void> {
   }
 }
 
-function exportSelected(): void {
-  if (!selectedComputers.value.length) {
-    ElMessage.warning("请先选择要导出的终端。");
-    return;
-  }
-  const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
-  const csv = computersToCsv(selectedComputers.value, orgNameOf, userNameOf);
-  const blob = new Blob([`\ufeff${csv}`], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `办公终端-${stamp}.csv`;
-  link.click();
-  URL.revokeObjectURL(url);
-}
+/** 导出勾选的终端；格式（CSV / Excel）由 ExportMenu 决定。 */
+const computerExportRows = computed(() =>
+  computersToRows(selectedComputers.value, orgNameOf, userNameOf),
+);
+const computerExportName = computed(
+  () => `办公终端-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")}`,
+);
 
 /** 全选"当前筛选结果"：需要全部 id，因此单独向服务端要一次不分页的数据。 */
 async function selectAllFiltered(): Promise<void> {
@@ -411,9 +405,14 @@ onMounted(async () => {
     <template #actions>
       <el-button @click="selectAllFiltered">全选当前结果</el-button>
       <el-button @click="clearSelection">清空选择</el-button>
-      <el-button :disabled="!selectedIds.length" @click="exportSelected">
-        导出选中 {{ selectedIds.length }}
-      </el-button>
+      <ExportMenu
+        :file-name="computerExportName"
+        sheet-name="办公终端"
+        :header="COMPUTER_EXPORT_HEADER"
+        :rows="computerExportRows"
+        :label="`导出选中 ${selectedIds.length}`"
+        :disabled="!selectedIds.length"
+      />
       <el-button v-if="hasPermission('it_assets', 'create')" @click="importDialog = true">
         导入 Excel
       </el-button>

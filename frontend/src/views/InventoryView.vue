@@ -20,6 +20,7 @@ import {
 } from "../api/inventory";
 import { hasPermission } from "../session";
 import { confirmAction } from "../composables/useConfirm";
+import ExportMenu from "../components/ui/ExportMenu.vue";
 
 interface OrgNode {
   id: string;
@@ -597,7 +598,10 @@ function clearInventoryFilters(): void {
   brandFilter.value = "";
 }
 
-function exportCurrent(): void {
+/** 导出当前仓库库存；格式（CSV / Excel）由 ExportMenu 决定。 */
+const INVENTORY_EXPORT_HEADER = ["物资类型", "单位", "品牌", "型号", "库存数量", "入库日期", "配置", "批次"];
+
+const inventoryExportRows = computed(() => {
   const rows: string[][] = [];
   filteredTree.value.forEach((type) =>
     type.children.forEach((brand) =>
@@ -615,22 +619,16 @@ function exportCurrent(): void {
       ),
     ),
   );
-  if (!rows.length) {
-    ElMessage.warning("当前仓库没有可导出的库存。");
-    return;
-  }
-  const header = ["物资类型", "单位", "品牌", "型号", "库存数量", "入库日期", "配置", "批次"];
-  const escape = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
-  const csv = [header, ...rows].map((line) => line.map(escape).join(",")).join("\r\n");
-  const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
-  const blob = new Blob([`\ufeff${csv}`], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `IT物资-${activeWarehouse.value?.name ?? "全部"}-${stamp}.csv`;
-  link.click();
-  URL.revokeObjectURL(url);
-}
+  return rows;
+});
+
+const inventoryExportName = computed(
+  () =>
+    `IT物资-${activeWarehouse.value?.name ?? "全部"}-${new Date()
+      .toISOString()
+      .slice(0, 16)
+      .replace(/[-:T]/g, "")}`,
+);
 
 onMounted(() => load(false));
 </script>
@@ -653,7 +651,14 @@ onMounted(() => load(false));
         <el-button v-if="hasPermission('inventory_operations', 'create')" @click="openReceive()">
           ＋ 入库
         </el-button>
-        <el-button @click="exportCurrent">导出当前仓库</el-button>
+        <ExportMenu
+          :file-name="inventoryExportName"
+          sheet-name="IT物资"
+          :header="INVENTORY_EXPORT_HEADER"
+          :rows="inventoryExportRows"
+          label="导出当前仓库"
+          :disabled="!inventoryExportRows.length"
+        />
         <el-button v-if="hasPermission('inventory_catalog', 'create')" @click="openTypeDialog()">
           新增类型
         </el-button>

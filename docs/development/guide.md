@@ -609,6 +609,23 @@ non_asset_type
   （选文件 → 预览 → 确认导入 → 结果），使用人员与办公终端各接一次
   （机房设备仍保留自己的旧弹窗，逻辑一致）。
 
+#### 导出表格（CSV / Excel）
+
+v3.0.29 起，设备与物资相关的导出统一走一个共用控件与一个后端接口：
+
+- 前端 `frontend/src/components/ui/ExportMenu.vue`：按钮 + 下拉（导出 CSV / 导出 Excel），
+  调用 `frontend/src/api/exports.ts` 的 `downloadTable()`；
+- CSV 在浏览器本地拼（UTF-8 BOM，`csvFromRows()`）；xlsx 走 `POST /api/exports/xlsx`
+  （登录 + CSRF，**不读数据库**，只把前端已经拿到的表格渲染成文件，上限 2 万行 / 40 万单元格）；
+- 样式模板在 `office_asset/xlsx.py` 的 `write_sheet()`：表头深蓝底白字加粗、整表细边框、
+  列宽按内容自适应（10–42）、**冻结首行**、自动筛选；数字型单元格写成数值而不是文本；
+  中文字体走「微软雅黑」。想换配色/加标题行就改这里的 `_styles_xml()` / `_sheet_xml()`；
+- 下载文件名走 RFC 5987：`server.py` 的 `send_bytes()` 同时下发 ASCII 兜底与
+  `filename*=UTF-8''…`，前端 `api/client.ts` 的 `downloadFile()` **优先取 `filename*`**，
+  所以中文名不会被压成下划线；
+- 各页面只需要把表头 + 二维数组准备好（`xxxToRows()` 与 CSV 共用同一份数据），
+  不用再自己拼 CSV 字符串。
+
 ## 6. 前端扩展方法
 
 ### 6.1 新增页面

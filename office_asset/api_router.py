@@ -14,6 +14,7 @@ from .scope import OrganizationScopeService
 from .sql import SqlGateway
 from .service_management import ServiceManagementService
 from .tickets import TicketService
+from .xlsx import EXPORT_MIME, WorkbookError, export_xlsx
 
 
 @dataclass(frozen=True)
@@ -876,6 +877,17 @@ class DomainApiRouter:
         if path == "/api/computers/import" and method == "POST":
             context = self._write_context(handler, "it_assets", "create")
             send_json(self.assets.import_computers(self._payload(handler), context), status=201)
+            return True
+
+        # 导出台账为 xlsx：只做格式化（不读数据库），数据来自调用方自己的界面
+        if path == "/api/exports/xlsx" and method == "POST":
+            context = self._authenticated(handler)
+            self.deps.require_csrf(handler, context)
+            try:
+                data, download_name = export_xlsx(self._payload(handler))
+            except WorkbookError as exc:
+                raise self.deps.api_error(str(exc)) from exc
+            handler.send_bytes(data, EXPORT_MIME, download_name)
             return True
 
         if path.startswith("/api/resources/"):

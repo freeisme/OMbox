@@ -18,6 +18,7 @@ import {
   type DeviceTypeSummary,
   type ImportSummary,
 } from "../api/datacenter";
+import ExportMenu from "../components/ui/ExportMenu.vue";
 import { hasPermission } from "../session";
 
 
@@ -254,13 +255,8 @@ function onSelectionChange(rows: DatacenterDeviceSummary[]): void {
 }
 
 /** 导出勾选的设备信息；不勾选时导出当前筛选条件下的整张表。 */
-function exportSelected(): void {
-  const list = selectedDevices.value.length ? selectedDevices.value : devices.value;
-  if (!list.length) {
-    ElMessage.warning("没有可以导出的设备。");
-    return;
-  }
-  const rows = list.map((item) =>
+const datacenterExportRows = computed(() =>
+  (selectedDevices.value.length ? selectedDevices.value : devices.value).map((item) =>
     [
       item.code,
       item.name,
@@ -279,20 +275,15 @@ function exportSelected(): void {
       item.memory ?? "",
       item.disk ?? "",
       item.notes ?? "",
-    ]
-      .map((cell) => `"${String(cell ?? "").replace(/"/g, '""')}"`)
-      .join(","),
-  );
-  const csv = `\ufeff${EXPORT_HEADER.join(",")}\n${rows.join("\n")}`;
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-  link.download = selectedDevices.value.length
-    ? `机房设备清单-选中${selectedDevices.value.length}台.csv`
-    : "机房设备清单.csv";
-  link.click();
-  URL.revokeObjectURL(link.href);
-  ElMessage.success(`已导出 ${list.length} 台设备信息。`);
-}
+    ] as string[],
+  ),
+);
+
+const datacenterExportName = computed(() =>
+  selectedDevices.value.length
+    ? `机房设备清单-选中${selectedDevices.value.length}台`
+    : "机房设备清单",
+);
 
 function downloadTemplate(): void {
   const header = [
@@ -442,9 +433,14 @@ onMounted(async () => {
         <div class="spacer" />
         <el-button v-if="canCreate" size="small" @click="importDialog = true">导入 Excel</el-button>
         <el-button size="small" @click="downloadTemplate">下载模板</el-button>
-        <el-button size="small" :disabled="!devices.length" @click="exportSelected">
-          导出{{ selectedDevices.length ? `选中 ${selectedDevices.length} 台` : "全部" }}
-        </el-button>
+        <ExportMenu
+          :file-name="datacenterExportName"
+          sheet-name="机房设备"
+          :header="EXPORT_HEADER"
+          :rows="datacenterExportRows"
+          :label="`导出${selectedDevices.length ? `选中 ${selectedDevices.length} 台` : '全部'}`"
+          :disabled="!devices.length"
+        />
         <el-button v-if="canCreate" type="primary" size="small" @click="openDialog(null)">
           ＋ 新增网络设备/服务器
         </el-button>
