@@ -1895,7 +1895,7 @@ class FrontendSpaMigrationTests(TestCase):
         self.assertIn('audit: () => import("../views/AuditView.vue"),', router)
         self.assertIn("fetchAuditLogs", api)
         self.assertIn("/api/audit-logs?", api)
-        self.assertIn("auditLogsToCsv", view)
+        self.assertIn("auditLogsToRows", view)
         # 审计动作码 → 中文标签，避免列表里出现英文原始码
         for label in ("离职归档", "办公终端分配变更", "库存数量变更"):
             self.assertIn(label, api)
@@ -2327,8 +2327,9 @@ class InspectionTemplateExportTests(TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("load?: () => Promise<{ header: string[]; rows: string[][] }>", menu)
-        self.assertIn("props.load ? await props.load()", menu)
+        self.assertIn("load?: () => Promise<{ header: string[]; rows: string[][]; title?: string[][] }>", menu)
+        self.assertIn("const data = props.load", menu)
+        self.assertIn("? await props.load()", menu)
 
 
 class TableExportTests(TestCase):
@@ -3137,11 +3138,13 @@ class TopologyEditingRegressionTests(TestCase):
         self.assertIn("snapGrid", view)
         self.assertIn("focusSelected", view)
         self.assertIn("只看选中设备相关", view)
-        # 导出：原有 SVG/PNG/打印 + 链路清单 / 节点清单
-        self.assertIn("exportLinkList", view)
-        self.assertIn("exportNodeList", view)
-        self.assertIn("链路清单.csv", view)
-        self.assertIn("拓扑节点清单.csv", view)
+        # 导出：原有 SVG/PNG/打印 + 链路清单 / 节点清单（v3.0.31 起可选 CSV / Excel）
+        self.assertIn("LINK_EXPORT_HEADER", view)
+        self.assertIn("NODE_EXPORT_HEADER", view)
+        self.assertIn("linkExportRows()", view)
+        self.assertIn("nodeExportRows()", view)
+        self.assertIn('label="导出链路清单"', view)
+        self.assertIn('label="导出节点清单"', view)
         # 编辑能力挂在既有权限上，不新增权限模块
         self.assertIn('hasPermission("rack_layout", "update")', view)
 
@@ -4113,10 +4116,10 @@ class RackExportDialogTests(TestCase):
         self.assertIn("v-model=\"exportWithList\"", view)
         self.assertIn("function mergeTableHtml(", view)
         self.assertIn("rackDiagramHtml(items, exportWithList.value)", view)
-        # CSV 导出保留（多机柜合并成一张表）。
-        self.assertIn("function exportMergedCsv(", view)
-        self.assertIn('link.download = `机柜设备清单-${exportFileName(items)}.csv`', view)
-        # 单机柜的老 CSV 导出已被合并版取代。
+        # 机柜设备清单同样可选 CSV / Excel（v3.0.31 起走共用的导出下拉）。
+        self.assertIn("async function exportRackList(", view)
+        self.assertIn(":load=\"exportRackList\"", view)
+        # 单机柜的老 CSV 导出早已被合并版取代。
         self.assertNotIn("function exportCsv(", view)
 
 

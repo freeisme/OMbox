@@ -11,13 +11,15 @@ import {
   auditCategoryLabel,
   auditChangeLabel,
   auditEntityTypeLabel,
-  auditLogsToCsv,
+  AUDIT_EXPORT_HEADER,
+  auditLogsToRows,
   auditTagType,
   auditValueText,
   fetchAuditLogs,
   type AuditLog,
 } from "../api/audit";
 import DataPanel from "../components/ui/DataPanel.vue";
+import ExportMenu from "../components/ui/ExportMenu.vue";
 import FilterBar from "../components/ui/FilterBar.vue";
 import PageHeader from "../components/ui/PageHeader.vue";
 
@@ -93,27 +95,12 @@ function openDetail(log: AuditLog): void {
   detailVisible.value = true;
 }
 
-function exportCsv(): void {
-  if (!logs.value.length) {
-    ElMessage.warning("当前没有可导出的日志。");
-    return;
-  }
-  const stamp = new Date()
-    .toISOString()
-    .slice(0, 16)
-    .replace(/-/g, "")
-    .replace("T", "-")
-    .replace(":", "");
-  const blob = new Blob([`\ufeff${auditLogsToCsv(logs.value)}`], {
-    type: "text/csv;charset=utf-8;",
-  });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `操作日志-${stamp}.csv`;
-  link.click();
-  URL.revokeObjectURL(url);
-}
+/** 导出当前筛选结果；格式（CSV / Excel）由 ExportMenu 决定。 */
+const auditExportRows = computed(() => auditLogsToRows(logs.value));
+const auditExportName = computed(
+  () =>
+    `操作日志-${new Date().toISOString().slice(0, 16).replace(/-/g, "").replace("T", "-").replace(":", "")}`,
+);
 
 onMounted(load);
 </script>
@@ -122,7 +109,14 @@ onMounted(load);
   <PageHeader title="操作日志" description="按操作类别、人员、对象与时间区间查看资产与物资的变动记录">
     <template #actions>
       <el-button :loading="loading" @click="load">刷新日志</el-button>
-      <el-button :disabled="!logs.length" @click="exportCsv">导出当前结果</el-button>
+      <ExportMenu
+        :file-name="auditExportName"
+        sheet-name="操作日志"
+        :header="AUDIT_EXPORT_HEADER"
+        :rows="auditExportRows"
+        label="导出当前结果"
+        :disabled="!logs.length"
+      />
     </template>
     <template #filters>
       <FilterBar :summary="summary" :resettable="hasFilters" @reset="reset">

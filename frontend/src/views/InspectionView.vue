@@ -37,6 +37,7 @@ import { confirmAction } from "../composables/useConfirm";
 import { useRoute, useRouter } from "vue-router";
 import DataPanel from "../components/ui/DataPanel.vue";
 import ExportMenu from "../components/ui/ExportMenu.vue";
+import { downloadTable } from "../api/exports";
 import PageHeader from "../components/ui/PageHeader.vue";
 import ToolbarActions from "../components/ui/ToolbarActions.vue";
 
@@ -214,26 +215,21 @@ async function submitImport(): Promise<void> {
   }
 }
 
-/** 导出当前巡检表：一份带表头信息的 CSV，可直接用 Excel 打开。 */
-async function exportInspectionSheet(row?: InspectionTask | null): Promise<void> {
+/** 组装一张巡检表（表头之上先放任务信息），供导出下拉按需取数。 */
+async function inspectionSheetExport(
+  row?: InspectionTask | null,
+): Promise<{ title: string[][]; header: string[]; rows: string[][] }> {
   let task = row ?? detail.value;
-  if (!task) return;
+  if (!task) throw new Error("没有可导出的巡检表。");
   // 列表行不带明细，先按需拉一次任务详情
   if (!(task.items ?? []).length) {
-    try {
-      task = await fetchInspectionTask(task.id);
-    } catch (error) {
-      ElMessage.error(error instanceof Error ? error.message : "读取巡检表失败。");
-      return;
-    }
+    task = await fetchInspectionTask(task.id);
   }
   const items = (task.items ?? []).slice();
   if (!items.length) {
-    ElMessage.warning("该巡检任务没有巡检事项可导出。");
-    return;
+    throw new Error("该巡检任务没有巡检事项可导出。");
   }
-  const escape = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
-  const lines: string[][] = [
+  const title: string[][] = [
     ["巡检表"],
     ["任务编号", task.number || task.id],
     ["机房", task.siteName || ""],
@@ -243,10 +239,9 @@ async function exportInspectionSheet(row?: InspectionTask | null): Promise<void>
     ["提交时间", task.submittedAt ? formatDateTimeText(task.submittedAt) : ""],
     ["状态", INSPECTION_TASK_STATUS_LABELS[task.status] || task.status],
     [],
-    ["序号", "分类", "检查项", "检查方法", "结论", "实测值", "说明", "检查人", "检查时间"],
   ];
-  items.forEach((item, index) => {
-    lines.push([
+  const header = ["序号", "分类", "检查项", "检查方法", "结论", "实测值", "说明", "检查人", "检查时间"];
+  const rows = items.map((item, index) => [
       String(index + 1),
       item.category ?? "",
       item.title ?? "",
@@ -258,15 +253,32 @@ async function exportInspectionSheet(row?: InspectionTask | null): Promise<void>
       item.checkedByName ?? "",
       item.checkedAt ? formatDateTimeText(item.checkedAt) : "",
     ]);
-  });
-  const csv = lines.map((line) => line.map(escape).join(",")).join("\r\n");
+  return { title, header, rows };
+}
+
+/** 导出当前巡检表（CSV / Excel），前面几行保留任务信息。 */
+async function exportInspectionSheet(
+  format: "csv" | "xlsx" = "csv",
+  row?: InspectionTask | null,
+): Promise<void> {
+  let data: { title: string[][]; header: string[]; rows: string[][] };
+  try {
+    data = await inspectionSheetExport(row);
+  } catch (error) {
+    ElMessage.warning((error as Error).message);
+    return;
+  }
+  const task = row ?? detail.value;
   const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(new Blob([`\ufeff${csv}`], { type: "text/csv;charset=utf-8" }));
-  link.download = `巡检表-${task.number || task.id}-${stamp}.csv`;
-  link.click();
-  URL.revokeObjectURL(link.href);
-  ElMessage.success("巡检表已开始下载。");
+  await downloadTable({
+    fileName: `巡检表-${task?.number || task?.id || ""}-${stamp}`,
+    sheetName: "巡检表",
+    title: data.title,
+    header: data.header,
+    rows: data.rows,
+    format,
+  });
+  ElMessage.success(format === "csv" ? "巡检表已开始下载。" : "巡检表已导出 Excel。");
 }
 
 /** 本次巡检（同批次）的目标名，用于横向表头。 */
@@ -289,7 +301,7 @@ function itemResultText(item?: InspectionTaskItem): string {
  * 横向导出本次巡检：一行一个检查项，一列一个巡检对象（机房 / 弱电间 / 会议室 / 机柜），
  * 最后再汇总异常说明，和纸质巡检表的结构一致。
  */
-async function exportBatchSheet(batchNo: string): Promise<void> {
+async function exportBatchSheet(batchNo: string, format: "csv" | "xlsx" = "csv"): Promise<void> {
   const batchTasks = tasks.value.filter((task) => (task.batchNo ?? "") === batchNo);
   if (!batchTasks.length) {
     ElMessage.warning("该批次没有找到巡检任务。");
@@ -315,16 +327,16 @@ async function exportBatchSheet(batchNo: string): Promise<void> {
   const findItem = (task: InspectionTask, item: InspectionTaskItem, index: number) =>
     (task.items ?? []).find((entry) => entry.seqNo === item.seqNo) ??
     (task.items ?? [])[index];
-  const escape = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
-  const lines: string[][] = [
+  const title: string[][] = [
     ["巡检表（本次巡检目标横向排列）"],
     ["批次号", batchNo],
     ["模板", details[0]?.templateName ?? ""],
     ["执行人", details[0]?.inspectorName ?? ""],
     ["巡检对象数", String(details.length)],
     [],
-    ["序号", "检查类别", "检查项目", "检查内容 / 判定标准", ...columns, "异常说明"],
   ];
+  const header = ["序号", "检查类别", "检查项目", "检查内容 / 判定标准", ...columns, "异常说明"];
+  const rows: string[][] = [];
   baseItems.forEach((item, index) => {
     const results = details.map((task) => itemResultText(findItem(task, item, index)));
     const abnormal = details
@@ -336,7 +348,7 @@ async function exportBatchSheet(batchNo: string): Promise<void> {
       })
       .filter(Boolean)
       .join("；");
-    lines.push([
+    rows.push([
       String(index + 1),
       item.category ?? "",
       item.title ?? "",
@@ -345,13 +357,15 @@ async function exportBatchSheet(batchNo: string): Promise<void> {
       abnormal,
     ]);
   });
-  const csv = lines.map((line) => line.map(escape).join(",")).join("\r\n");
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(new Blob([`\ufeff${csv}`], { type: "text/csv;charset=utf-8" }));
-  link.download = `巡检表-批次${batchNo}.csv`;
-  link.click();
-  URL.revokeObjectURL(link.href);
-  ElMessage.success("本次巡检表已开始下载。");
+  await downloadTable({
+    fileName: `巡检表-批次${batchNo}`,
+    sheetName: "巡检表",
+    title,
+    header,
+    rows,
+    format,
+  });
+  ElMessage.success(format === "csv" ? "本次巡检表已开始下载。" : "本次巡检表已导出 Excel。");
 }
 
 const TEMPLATE_VALUE_TYPES = [
@@ -929,9 +943,13 @@ function onTaskAction(command: string, row: InspectionTask): void {
   if (command === "view") {
     void openDetail(row);
   } else if (command === "download") {
-    void exportInspectionSheet(row);
+    void exportInspectionSheet("csv", row);
+  } else if (command === "downloadXlsx") {
+    void exportInspectionSheet("xlsx", row);
   } else if (command === "export") {
-    void exportBatchSheet(row.batchNo ?? "");
+    void exportBatchSheet(row.batchNo ?? "", "csv");
+  } else if (command === "exportXlsx") {
+    void exportBatchSheet(row.batchNo ?? "", "xlsx");
   } else if (command === "void") {
     void voidTask(row);
   } else if (command === "delete") {
@@ -1071,8 +1089,14 @@ onMounted(async () => {
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item command="view">查看</el-dropdown-item>
-                <el-dropdown-item command="download">下载巡检表</el-dropdown-item>
-                <el-dropdown-item v-if="row.batchNo" command="export">导出本次巡检表</el-dropdown-item>
+                <el-dropdown-item command="download">下载巡检表（CSV）</el-dropdown-item>
+                <el-dropdown-item command="downloadXlsx">导出巡检表（Excel）</el-dropdown-item>
+                <el-dropdown-item v-if="row.batchNo" command="export">
+                  导出本次巡检表（CSV）
+                </el-dropdown-item>
+                <el-dropdown-item v-if="row.batchNo" command="exportXlsx">
+                  导出本次巡检表（Excel）
+                </el-dropdown-item>
                 <el-dropdown-item
                   v-if="hasPermission('inspection_management', 'update') && row.status === 'running'"
                   command="void"
@@ -1366,7 +1390,12 @@ onMounted(async () => {
           </el-form-item>
         </el-form>
         <div class="oa-text-right">
-          <el-button @click="exportInspectionSheet(detail)">下载巡检表</el-button>
+          <ExportMenu
+            :file-name="`巡检表-${detail?.number || detail?.id || ''}`"
+            sheet-name="巡检表"
+            :load="() => inspectionSheetExport(detail)"
+            label="导出巡检表"
+          />
           <el-button type="primary" :loading="saving" @click="submitTask">提交巡检</el-button>
         </div>
       </template>

@@ -216,21 +216,8 @@ export async function fetchAuditLogs(
   };
 }
 
-export function auditLogsToCsv(logs: AuditLog[]): string {
-  const header = [
-    "时间",
-    "操作类别",
-    "具体变动",
-    "对象类型",
-    "变更对象",
-    "关联人员",
-    "人员编号",
-    "变更前",
-    "变更后",
-    "变更说明",
-    "操作人",
-    "来源",
-  ];
+/** 导出用的二维表：CSV 与 Excel 共用同一份数据。 */
+export function auditLogsToRows(logs: AuditLog[]): string[][] {
   const rows = logs.map((log) => [
     log.createdAt,
     auditCategoryLabel(log),
@@ -245,6 +232,20 @@ export function auditLogsToCsv(logs: AuditLog[]): string {
     log.actor || "",
     log.source || "",
   ]);
-  const escape = (value: string) => `"${String(value ?? "").replace(/"/g, '""')}"`;
-  return [header, ...rows].map((row) => row.map(escape).join(",")).join("\r\n");
+  return rows;
 }
+
+export const AUDIT_EXPORT_HEADER = [
+    "时间",
+    "操作类别",
+    "具体变动",
+    "对象类型",
+    "变更对象",
+    "关联人员",
+    "人员编号",
+    "变更前",
+    "变更后",
+    "变更说明",
+    "操作人",
+    "来源",
+  ];

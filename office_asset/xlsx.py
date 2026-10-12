@@ -262,13 +262,12 @@ def _sheet_name(value: object) -> str:
     return name or "数据"
 
 
-def _row_xml(row: list[object], row_index: int, header_row: bool) -> str:
-    style = "1" if header_row else "2"
+def _row_xml(row: list[object], row_index: int, style: str) -> str:
     cells = []
     for index, value in enumerate(row):
         text = "" if value is None else str(value)
         reference = f"{_column_letter(index)}{row_index}"
-        if not header_row and _NUMBER.match(text):
+        if style == "2" and _NUMBER.match(text):
             cells.append(f'<c r="{reference}" s="{style}"><v>{text}</v></c>')
             continue
         cells.append(
@@ -300,21 +299,24 @@ def _styles_xml() -> str:
         '<bottom style="thin"><color rgb="FFD0D7DE"/></bottom><diagonal/></border>'
         "</borders>"
         '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
-        '<cellXfs count="3">'
+        '<cellXfs count="4">'
         '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
         '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" '
         'applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" '
         'wrapText="1"/></xf>'
         '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" '
         'applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>'
+        '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>'
         "</cellXfs>"
         '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
         "</styleSheet>"
     )
 
 
-def _sheet_xml(header: list[str], rows: list[list[str]]) -> str:
-    width_count = max([len(header), *(len(row) for row in rows)] or [0])
+def _sheet_xml(title: list[list[str]], header: list[str], rows: list[list[str]]) -> str:
+    width_count = max(
+        [len(header), *(len(row) for row in title), *(len(row) for row in rows)] or [0]
+    )
     widths = []
     for index in range(width_count):
         longest = max(
@@ -327,22 +329,27 @@ def _sheet_xml(header: list[str], rows: list[list[str]]) -> str:
         f'<col min="{index + 1}" max="{index + 1}" width="{width}" customWidth="1"/>'
         for index, width in enumerate(widths)
     )
-    body = [_row_xml(header, 1, True)] + [
-        _row_xml(row, index + 2, False) for index, row in enumerate(rows)
+    preamble = [
+        _row_xml(row, index + 1, "3" if index == 0 else "0") for index, row in enumerate(title)
     ]
-    last = f"{_column_letter(max(width_count - 1, 0))}{len(rows) + 1}"
+    header_index = len(title) + 1
+    body = [_row_xml(header, header_index, "1")] + [
+        _row_xml(row, header_index + index + 1, "2") for index, row in enumerate(rows)
+    ]
+    last = f"{_column_letter(max(width_count - 1, 0))}{header_index + len(rows)}"
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
         f'<dimension ref="A1:{last}"/>'
         '<sheetViews><sheetView workbookViewId="0" tabSelected="1">'
-        '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>'
-        '<selection pane="bottomLeft" activeCell="A2" sqref="A2"/>'
+        f'<pane ySplit="{header_index}" topLeftCell="A{header_index + 1}" activePane="bottomLeft" '
+        'state="frozen"/>'
+        f'<selection pane="bottomLeft" activeCell="A{header_index + 1}" sqref="A{header_index + 1}"/>'
         "</sheetView></sheetViews>"
         '<sheetFormatPr defaultRowHeight="18"/>'
         f"<cols>{cols}</cols>"
-        f"<sheetData>{''.join(body)}</sheetData>"
-        f'<autoFilter ref="A1:{last}"/>'
+        f"<sheetData>{''.join(preamble + body)}</sheetData>"
+        f'<autoFilter ref="A{header_index}:{last}"/>'
         "</worksheet>"
     )
 
@@ -351,11 +358,13 @@ def write_sheet(
     rows: list[list[object]],
     *,
     header: list[str] | None = None,
+    title: list[list[str]] | None = None,
     sheet_name: str = "数据",
 ) -> bytes:
     """把二维表写成 xlsx（基础样式：表头加粗填色、细边框、自适应列宽、冻结首行、自动筛选）。"""
     table = [list(row) for row in rows]
     head = [str(cell) for cell in (header or [])]
+    preamble = [[str(cell) for cell in row] for row in (title or [])]
     with io.BytesIO() as buffer:
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.writestr(
@@ -393,13 +402,15 @@ def write_sheet(
                 "</Relationships>",
             )
             archive.writestr("xl/styles.xml", _styles_xml())
-            archive.writestr("xl/worksheets/sheet1.xml", _sheet_xml(head, table))
+            archive.writestr("xl/worksheets/sheet1.xml", _sheet_xml(preamble, head, table))
         return buffer.getvalue()
 
 
 def export_xlsx(payload: dict) -> tuple[bytes, str]:
     """把 `{fileName, sheetName, header, rows}` 渲染成 xlsx，返回 (内容, 下载文件名)。"""
     header = [str(cell) for cell in (payload.get("header") or [])]
+    # 表头之上的说明行（例如巡检表的「任务编号 / 执行人」几行）
+    title = [[str(cell) for cell in (row or [])] for row in (payload.get("title") or [])]
     raw_rows = payload.get("rows") or []
     if not header:
         raise WorkbookError("导出内容缺少表头。")
@@ -413,4 +424,7 @@ def export_xlsx(payload: dict) -> tuple[bytes, str]:
     name = re.sub(r"[\\/:*?\"<>|]", "-", str(payload.get("fileName") or "导出").strip())[:80]
     if not name.lower().endswith(".xlsx"):
         name = f"{name or '导出'}.xlsx"
-    return write_sheet(rows, header=header, sheet_name=payload.get("sheetName") or "数据"), name
+    return (
+        write_sheet(rows, header=header, title=title, sheet_name=payload.get("sheetName") or "数据"),
+        name,
+    )
