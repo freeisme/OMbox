@@ -1276,7 +1276,10 @@ class ScrapManagementRegressionTests(TestCase):
         self.assertIn('title="报废记录"', scrap_view)
         self.assertIn("导出当前结果", scrap_view)
         self.assertIn("报废记录详情", scrap_view)
-        self.assertIn("库存影响", scrap_view)
+        # 页面只列办公终端（带设备信息），不再出现 IT 物资的类型筛选
+        self.assertIn("待报废", scrap_view)
+        self.assertIn("scrapModelLabel", scrap_view)
+        self.assertNotIn("IT物资", scrap_view)
         self.assertIn('page: "scrapRecords"', navigation)
         self.assertIn('modules: ["scrap_management"]', navigation)
 
@@ -2075,7 +2078,7 @@ class FrontendSpaMigrationTests(TestCase):
             self.assertIn(f"{action}: {{", flows)
         for text in ("物资流转记录", "修正流转备注", "库存影响"):
             self.assertIn(text, flow_view)
-        for text in ("报废记录", "报废记录详情", "库存影响"):
+        for text in ("报废记录", "报废记录详情", "待报废"):
             self.assertIn(text, scrap_view)
 
     def test_inventory_page_migrated_to_vue(self):
@@ -2490,6 +2493,39 @@ class ComputerInventoryModelFilterTests(TestCase):
             self.assertIn(f'"{word}"', service)
         # 后端兜底提示也改成中文，保持一致
         self.assertIn("「从库存登记」只能选「电脑 / 办公终端」类型的型号", service)
+
+
+class ScrapRecordsAssetOnlyTests(TestCase):
+    """报废记录页只列办公终端：IT 物资的报废只在操作日志留痕。"""
+
+    def test_page_only_lists_computer_scrap_records(self):
+        view = (ROOT / "frontend" / "src" / "views" / "ScrapRecordsView.vue").read_text(
+            encoding="utf-8"
+        )
+        scrap = (ROOT / "frontend" / "src" / "api" / "scrap.ts").read_text(encoding="utf-8")
+
+        self.assertIn("fetchAssetScrapRecords", view)
+        self.assertIn('kind: "asset"', scrap)
+        # 页面上不再有 IT物资 / 类型筛选
+        self.assertNotIn("IT物资", view)
+        self.assertNotIn('label="办公终端" value="asset"', view)
+        # 展示办公终端的报废设备信息
+        for token in ("deviceName", "scrapModelLabel", "scrapConfigLabel", "fixedAssetCode", "snSt"):
+            self.assertIn(token, view)
+
+    def test_scrapped_computer_status_reads_pending_scrap(self):
+        labels = (ROOT / "frontend" / "src" / "labels.ts").read_text(encoding="utf-8")
+        server = (ROOT / "server.py").read_text(encoding="utf-8")
+        service = (ROOT / "office_asset" / "asset_service.py").read_text(encoding="utf-8")
+        scrap = (ROOT / "frontend" / "src" / "api" / "scrap.ts").read_text(encoding="utf-8")
+
+        # 展示层把 retired 叫「待报废」（数据库值不变，避免动状态机与历史数据）
+        self.assertIn('retired: "待报废"', labels)
+        self.assertIn('"retired": "待报废"', server)
+        self.assertIn('SCRAP_STATUS_LABEL = "待报废"', scrap)
+        # 导入模板提示与别名跟着改，旧写法「报废」仍然可用
+        self.assertIn('"待报废": "retired"', service)
+        self.assertIn('"报废": "retired"', service)
 
 
 class BulkImportTests(TestCase):

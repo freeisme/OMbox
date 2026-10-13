@@ -126,7 +126,7 @@ AUDIT_STATUS_LABELS = {
     "in_use": "在用",
     "idle": "闲置",
     "repair": "维修",
-    "retired": "报废",
+    "retired": "待报废",
     "lost": "丢失",
 }
 

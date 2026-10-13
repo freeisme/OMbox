@@ -765,7 +765,7 @@ async function submitScrap(): Promise<void> {
   deviceSaving.value = true;
   try {
     await scrapEmployeeUsage(target.allocationType, target.usageId, reason, scrapForm.notes.trim());
-    ElMessage.success("已报废并从人员名下核销，可在「报废记录」与「物资流转记录」查看。");
+    ElMessage.success("已报废并从人员名下核销，可在「操作日志」与「物资流转记录」查看。");
     scrapVisible.value = false;
     usageActionTarget.value = null;
     await reloadEmployees(employee.id);
@@ -1549,8 +1549,8 @@ onMounted(async () => {
       </el-form-item>
       <el-alert type="warning" :closable="false" show-icon>
         <template #title>
-          报废会直接把这条物资从人员名下核销：不回收入库、不回补库存，并在「报废记录」与
-          「物资流转记录」各留一条记录。
+          报废会直接把这条物资从人员名下核销：不回收入库、不回补库存，并在「物资流转记录」与
+          「操作日志」各留一条记录（IT 物资的报废不进「报废记录」页）。
         </template>
       </el-alert>
     </el-form>

@@ -124,7 +124,7 @@ const todos = computed<TodoItem[]>(() => {
     label: "待关注资产",
     count: metrics.value.attention,
     path: "/computers",
-    hint: "维修 / 丢失 / 报废状态",
+    hint: "维修 / 丢失 / 待报废状态",
   });
   add(hasPermission("quality"), {
     key: "quality",
