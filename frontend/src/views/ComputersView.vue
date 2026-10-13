@@ -386,7 +386,7 @@ async function submitScrap(): Promise<void> {
     return;
   }
   const confirmed = await confirmAction(
-    `确认报废「${target.deviceName}」？该设备不会回收库存，但会保留审计记录。`,
+    `确认报废「${target.deviceName}」？状态将改为「待报废」，设备不会回收库存，但会保留审计记录。`,
     { title: "报废确认", confirmText: "确认报废", danger: true },
   );
   if (!confirmed) return;
@@ -396,7 +396,7 @@ async function submitScrap(): Promise<void> {
       reasonCode: scrapForm.reasonCode,
       notes: scrapForm.notes.trim(),
     });
-    ElMessage.success("已完成报废登记。");
+    ElMessage.success("已完成报废登记，设备状态为「待报废」。");
     scrapVisible.value = false;
     invalidateComputersCache();
     await load(true);
@@ -770,7 +770,7 @@ onMounted(async () => {
       '2026-01-31', '2026-02-01', '库存登记',
     ]"
     template-file-name="办公终端导入模板.csv"
-    hint="表头需包含「设备名称」。组织填组织编码或名称（必须已存在）；设备类型填 笔记本 / 台式机 / 工作站 / 迷你主机；状态填 在用 / 闲置 / 维修 / 报废 / 丢失；日期用 2026-01-31 或 Excel 日期单元格。导入只写台账，不从仓库扣库存，也不会自动分配给使用人。"
+    hint="表头需包含「设备名称」。组织填组织编码或名称（必须已存在）；设备类型填 笔记本 / 台式机 / 工作站 / 迷你主机；状态填 在用 / 闲置 / 维修 / 待报废 / 丢失；日期用 2026-01-31 或 Excel 日期单元格。导入只写台账，不从仓库扣库存，也不会自动分配给使用人。"
     :import-fn="importComputers"
     @imported="invalidateComputersCache(); load(true)"
   />

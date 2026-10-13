@@ -138,7 +138,7 @@ const VIEW_LOADERS: Record<string, () => Promise<unknown>> = {
 | 离职人员 `/left-employees` | 关键字检索、分页、详情抽屉与离职设备快照 |
 | IT物资 `/inventory` | 仓库切换、类型/品牌筛选、库存树、类型/品牌/型号维护、入库/调拨/仓库维护、采购入库记录、CSV 导出 |
 | 物资流转记录 `/flow-control` | 多条件筛选、库存影响、备注修正、CSV 导出 |
-| 报废记录 `/scrap-records` | 关键字/类型筛选、详情弹窗、CSV 导出 |
+| 报废记录 `/scrap-records` | 只列办公终端报废（设备名/品牌型号/配置/固资编码/SN/状态=待报废）、关键字筛选、详情弹窗、CSV 或 Excel 导出；IT 物资报废只在操作日志留痕 |
 | 工单 `/tickets` | 筛选、SLA 展示、处理记录、状态流转、新建工单 |
 | 服务管理 `/service-management` | 变更/问题/知识库/SLA/审批/通知标签页，含新建与审批决策 |
 | 同步与质量 `/governance` | 同步批次应用、数据质量问题解决/忽略、运行质量检查 |

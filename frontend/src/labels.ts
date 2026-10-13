@@ -4,7 +4,7 @@ export const STATUS_LABELS: Record<string, string> = {
   in_use: "在用",
   idle: "闲置",
   repair: "维修",
-  retired: "报废",
+  retired: "待报废",
   lost: "丢失",
   active: "在职",
   inactive: "停用",
@@ -87,12 +87,12 @@ export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
   system: "系统",
 };
 
-export function statusLabel(value: string): string {
-  return STATUS_LABELS[value] || value || "—";
+export function statusLabel(value?: string): string {
+  return (value ? STATUS_LABELS[value] : "") || value || "—";
 }
 
-export function deviceTypeLabel(value: string): string {
-  return DEVICE_TYPE_LABELS[value] || value || "";
+export function deviceTypeLabel(value?: string): string {
+  return (value ? DEVICE_TYPE_LABELS[value] : "") || value || "";
 }
 
 export function statusTagType(value: string): "success" | "info" | "warning" | "danger" {

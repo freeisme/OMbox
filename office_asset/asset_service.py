@@ -79,6 +79,7 @@ COMPUTER_STATUS_ALIASES: dict[str, str] = {
     "维修": "repair",
     "repair": "repair",
     "报废": "retired",
+    "待报废": "retired",
     "retired": "retired",
     "丢失": "lost",
     "lost": "lost",
@@ -1140,7 +1141,7 @@ class AssetService:
             if status_raw:
                 status = COMPUTER_STATUS_ALIASES.get(normalise_header(status_raw), "")
                 if not status:
-                    problems.append(f"状态「{status_raw}」无法识别（可用：在用 / 闲置 / 维修 / 报废 / 丢失）")
+                    problems.append(f"状态「{status_raw}」无法识别（可用：在用 / 闲置 / 维修 / 待报废 / 丢失）")
             try:
                 purchase_date = _import_date(_import_cell(row, mapping.get("purchaseDate")))
                 registered_date = _import_date(_import_cell(row, mapping.get("registeredDate")))
