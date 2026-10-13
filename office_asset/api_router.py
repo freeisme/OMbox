@@ -912,6 +912,10 @@ class DomainApiRouter:
                 context = self._write_context(handler, module_code, "update")
                 send_json(self.assets.save_resource(parts[3], parts[4], self._payload(handler), context))
                 return True
+            if len(parts) == 5 and method == "DELETE":
+                context = self._write_context(handler, module_code, "delete")
+                send_json(self.assets.delete_resource(parts[3], parts[4], context))
+                return True
 
         if path == "/api/relations" and method == "GET":
             context = self._read_context(handler, "organizations")

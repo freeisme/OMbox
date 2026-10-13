@@ -872,6 +872,13 @@ class AssetService:
             return self._save_inventory_model(resource_id, payload, context)
         raise self.api_error("Unsupported resource type.")
 
+    def delete_resource(self, resource_type: str, resource_id: object, context: dict) -> dict:
+        if resource_type == "inventory-model":
+            return self._delete_inventory_model(resource_id, context)
+        if resource_type == "inventory-brand":
+            return self._delete_inventory_brand(resource_id, context)
+        raise self.api_error("Unsupported resource type.")
+
     # ------------------------------------------------- 使用人员 / 办公终端批量导入
 
     def _read_import_rows(self, payload: dict) -> tuple[str, list[list[str]]]:
@@ -2064,6 +2071,136 @@ class AssetService:
         if not inventory_brand:
             raise self.api_error("Inventory brand does not exist.")
         return {"inventoryBrand": inventory_brand}
+
+    def _delete_inventory_model(self, resource_id: object, context: dict) -> dict:
+        """删除（停用）库存型号：``is_active = 0``。
+
+        建错了的品牌型号要能删掉，但库存或人员名下的领用记录还在时不能删——
+        那种情况下先把库存调平 / 回收报废，或者直接用「编辑」改正，别让历史记录变成孤儿。
+        历史流水（入库、调拨、领用、报废、办公终端登记）都留着，字段里带名字或型号 id。
+        """
+        model_id = self.db.integer(resource_id, 0)
+        if model_id <= 0:
+            raise self.api_error("库存型号标识无效。")
+        model = self.db.json(
+            f"""
+            SELECT JSON_OBJECT(
+              'id', CAST(model.model_id AS CHAR),
+              'name', model.model_name,
+              'brandName', brand.brand_name,
+              'typeName', type_row.type_name
+            )
+            FROM it_inventory_model model
+            JOIN it_inventory_brand brand ON brand.brand_id = model.brand_id
+            JOIN non_asset_type type_row ON type_row.non_asset_type_id = model.non_asset_type_id
+            WHERE model.model_id = {model_id} AND model.is_active = 1
+            """,
+            None,
+        )
+        if not model:
+            raise self.api_error("库存型号不存在或已删除。")
+        stock = self.db.scalar(
+            f"SELECT COALESCE(SUM(quantity), 0) FROM inventory_warehouse_stock WHERE model_id = {model_id};"
+        )
+        if stock > 0:
+            raise self.conflict_error(
+                f"该型号在仓库里还有 {stock} 件库存，不能删除："
+                "请先在「IT物资」把库存领用 / 调拨 / 调整到 0，或者用「编辑」改正品牌型号。"
+            )
+        held = self.db.scalar(
+            f"""
+            SELECT
+              (SELECT COUNT(*) FROM employee_monitor_usage
+               WHERE inventory_model_id = {model_id} AND is_active = 1)
+              + (SELECT COUNT(*) FROM employee_non_asset_usage
+                 WHERE inventory_model_id = {model_id} AND is_active = 1);
+            """
+        )
+        if held:
+            raise self.conflict_error(
+                f"该型号还有 {held} 条领用记录挂在人员名下，不能删除："
+                "请先在「使用人员」回收或报废这些物资。"
+            )
+        display_name = " ".join(
+            part
+            for part in (
+                self.db.text(model.get("brandName")),
+                self.db.text(model.get("name")),
+            )
+            if part
+        )
+        self.db.execute(
+            f"""
+            START TRANSACTION;
+            DELETE FROM inventory_warehouse_stock WHERE model_id = {model_id} AND quantity = 0;
+            UPDATE it_inventory_model SET is_active = 0 WHERE model_id = {model_id} AND is_active = 1;
+            {self._audit_sql(
+                'inventory_model_deleted',
+                'it_inventory_model',
+                model_id,
+                display_name or self.db.text(model.get('name')),
+                'Inventory model deleted',
+                context,
+                model,
+                None,
+            )};
+            COMMIT;
+            """
+        )
+        return {
+            "deleted": True,
+            "kind": "inventory-model",
+            "id": str(model_id),
+            "name": display_name,
+        }
+
+    def _delete_inventory_brand(self, resource_id: object, context: dict) -> dict:
+        """删除（停用）品牌：下面还有型号时先删型号，避免型号指向不存在的品牌。"""
+        brand_id = self.db.integer(resource_id, 0)
+        if brand_id <= 0:
+            raise self.api_error("品牌标识无效。")
+        brand = self.db.json(
+            f"""
+            SELECT JSON_OBJECT(
+              'id', CAST(brand.brand_id AS CHAR),
+              'name', brand.brand_name,
+              'typeName', type_row.type_name
+            )
+            FROM it_inventory_brand brand
+            JOIN non_asset_type type_row ON type_row.non_asset_type_id = brand.non_asset_type_id
+            WHERE brand.brand_id = {brand_id} AND brand.is_active = 1
+            """,
+            None,
+        )
+        if not brand:
+            raise self.api_error("品牌不存在或已删除。")
+        models = self.db.scalar(
+            f"SELECT COUNT(*) FROM it_inventory_model WHERE brand_id = {brand_id} AND is_active = 1;"
+        )
+        if models:
+            raise self.conflict_error(
+                f"该品牌下还有 {models} 个型号，不能删除：请先删掉这些型号，"
+                "或者用「编辑品牌」改名。"
+            )
+        name = self.db.text(brand.get("name"))
+        self.db.execute(
+            f"""
+            START TRANSACTION;
+            UPDATE it_inventory_brand SET is_active = 0 WHERE brand_id = {brand_id} AND is_active = 1;
+            {self._audit_sql(
+                'inventory_brand_deleted',
+                'it_inventory_brand',
+                brand_id,
+                name,
+                'Inventory brand deleted',
+                context,
+                brand,
+                None,
+            )};
+            COMMIT;
+            """
+        )
+        return {"deleted": True, "kind": "inventory-brand", "id": str(brand_id), "name": name}
 
     def assign_computer(self, computer_id: object, payload: dict, context: dict, idempotency_key: str = "") -> dict:
         cached = self._idempotency_result("computer.assign", idempotency_key, payload)

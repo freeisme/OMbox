@@ -166,6 +166,16 @@ export async function deleteWarehouse(warehouseId: string): Promise<void> {
   await api(`/api/inventory/warehouses/${warehouseId}`, { method: "DELETE" });
 }
 
+/** 删除（停用）品牌：品牌下还有型号、或型号还有库存 / 领用记录时后端会拒绝。 */
+export async function deleteInventoryBrand(brandId: string): Promise<void> {
+  await api(`/api/resources/inventory-brand/${brandId}`, { method: "DELETE" });
+}
+
+/** 删除（停用）库存型号：仓库还有库存、或还有人挂在名下时后端会拒绝。 */
+export async function deleteInventoryModel(modelId: string): Promise<void> {
+  await api(`/api/resources/inventory-model/${modelId}`, { method: "DELETE" });
+}
+
 export async function saveInventoryType(
   payload: { code: string; name: string; unit: string },
   typeId = "",
@@ -262,6 +272,7 @@ export interface InventoryTreeModel {
 export function buildInventoryTree(
   data: InventoryData,
   warehouseId: string,
+  includeEmptyModels = false,
 ): InventoryTreeType[] {
   const stockByModel = new Map<string, number>();
   data.stocks.forEach((row) => {
@@ -278,7 +289,10 @@ export function buildInventoryTree(
       .filter((brand) => brand.typeId === type.id)
       .map((brand) => {
         const models = data.models
-          .filter((model) => model.brandId === brand.id && quantityOf(model) > 0)
+          .filter(
+            (model) =>
+              model.brandId === brand.id && (includeEmptyModels || quantityOf(model) > 0),
+          )
           .map((model) => ({
             id: model.id,
             key: `model:${model.id}`,

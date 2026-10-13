@@ -4,6 +4,8 @@ import { ElMessage } from "element-plus";
 import {
   adjustInventory,
   buildInventoryTree,
+  deleteInventoryBrand,
+  deleteInventoryModel,
   deleteWarehouse,
   invalidateInventoryCache,
   loadInventoryData,
@@ -18,6 +20,7 @@ import {
   type InventoryModelPayload,
   type WarehouseRow,
 } from "../api/inventory";
+import { invalidateComputersCache } from "../api/computers";
 import { hasPermission } from "../session";
 import { confirmAction } from "../composables/useConfirm";
 import ExportMenu from "../components/ui/ExportMenu.vue";
@@ -48,6 +51,8 @@ const warehouseId = ref("");
 const keyword = ref("");
 const typeFilter = ref("");
 const brandFilter = ref("");
+/** 默认只看有库存的型号；勾上后连 0 库存的型号也列出来（建错了要删的时候用）。 */
+const showEmptyModels = ref(false);
 const expandedKeys = ref<string[]>([]);
 const page = ref(1);
 const pageSize = ref(20);
@@ -133,7 +138,9 @@ const activeWarehouse = computed<WarehouseRow | undefined>(() =>
   data.value.warehouses.find((item) => item.id === warehouseId.value),
 );
 
-const tree = computed(() => buildInventoryTree(data.value, warehouseId.value));
+const tree = computed(() =>
+  buildInventoryTree(data.value, warehouseId.value, showEmptyModels.value),
+);
 
 const filteredTree = computed(() => {
   let nodes = tree.value;
@@ -294,6 +301,8 @@ async function load(force = false): Promise<void> {
 
 async function refresh(): Promise<void> {
   invalidateInventoryCache();
+  // 「从库存登记」等页面共用同一份型号快照，删完要让它们重新取一次
+  invalidateComputersCache();
   await load(true);
 }
 
@@ -500,6 +509,42 @@ async function submitBrand(): Promise<void> {
   }
 }
 
+/** 删除品牌：下面还有型号时后端会拒绝，提示改成「编辑品牌」。 */
+async function removeBrand(row: Record<string, unknown>): Promise<void> {
+  const name = String(row.name ?? "");
+  const confirmed = await confirmAction(`确认删除品牌「${name}」？`, {
+    title: "删除确认",
+    confirmText: "删除",
+    danger: true,
+  });
+  if (!confirmed) return;
+  try {
+    await deleteInventoryBrand(String(row.id ?? ""));
+    ElMessage.success("品牌已删除。");
+    await refresh();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "删除品牌失败。");
+  }
+}
+
+/** 删除型号：仓库还有库存、或还有人挂在名下时后端会拒绝，提示先调平库存 / 回收。 */
+async function removeModel(row: Record<string, unknown>): Promise<void> {
+  const name = String(row.name ?? "");
+  const confirmed = await confirmAction(`确认删除型号「${name}」？`, {
+    title: "删除确认",
+    confirmText: "删除",
+    danger: true,
+  });
+  if (!confirmed) return;
+  try {
+    await deleteInventoryModel(String(row.id ?? ""));
+    ElMessage.success("型号已删除。");
+    await refresh();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "删除型号失败。");
+  }
+}
+
 /** 只有电脑类物资需要记录入库日期与配置，与旧前端保持一致。 */
 function isComputerType(typeId: string): boolean {
   const type = data.value.types.find((item) => item.id === typeId);
@@ -596,6 +641,7 @@ function clearInventoryFilters(): void {
   keyword.value = "";
   typeFilter.value = "";
   brandFilter.value = "";
+  showEmptyModels.value = false;
 }
 
 /** 导出当前仓库库存；格式（CSV / Excel）由 ExportMenu 决定。 */
@@ -666,7 +712,7 @@ onMounted(() => load(false));
     <template #filters>
       <FilterBar
         :summary="`当前仓库：${activeWarehouse ? activeWarehouse.name : '全部仓库'}`"
-        :resettable="Boolean(keyword || typeFilter || brandFilter)"
+        :resettable="Boolean(keyword || typeFilter || brandFilter || showEmptyModels)"
         @reset="clearInventoryFilters"
       >
         <el-button
@@ -717,6 +763,7 @@ onMounted(() => load(false));
         </el-select>
         <el-button @click="expandedKeys = allKeys">展开全部</el-button>
         <el-button @click="expandedKeys = []">收起全部</el-button>
+        <el-checkbox v-model="showEmptyModels">含无库存型号</el-checkbox>
       </FilterBar>
     </template>
   </PageHeader>
@@ -755,7 +802,7 @@ onMounted(() => load(false));
           <span class="oa-muted"> {{ row.unit || "件" }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="230" fixed="right">
+      <el-table-column label="操作" width="280" fixed="right">
         <template #default="{ row }">
           <template v-if="inventoryRowLevel(row) === 'type'">
             <el-button
@@ -790,6 +837,14 @@ onMounted(() => load(false));
             >
               新增型号
             </el-button>
+            <el-button
+              v-if="hasPermission('inventory_catalog', 'delete')"
+              link
+              type="danger"
+              @click="removeBrand(row)"
+            >
+              删除品牌
+            </el-button>
           </template>
           <template v-else>
             <el-button
@@ -799,6 +854,14 @@ onMounted(() => load(false));
               @click="openModelDialog(row)"
             >
               编辑
+            </el-button>
+            <el-button
+              v-if="hasPermission('inventory_catalog', 'delete')"
+              link
+              type="danger"
+              @click="removeModel(row)"
+            >
+              删除
             </el-button>
             <el-button
               v-if="hasPermission('inventory_operations', 'create')"

@@ -2495,6 +2495,54 @@ class ComputerInventoryModelFilterTests(TestCase):
         self.assertIn("「从库存登记」只能选「电脑 / 办公终端」类型的型号", service)
 
 
+class InventoryCatalogDeleteTests(TestCase):
+    """IT 物资里建错的品牌 / 型号能删掉（软删除），但有库存或领用记录时必须拒绝。"""
+
+    def test_router_exposes_delete_for_catalog_resources(self):
+        router = (ROOT / "office_asset" / "api_router.py").read_text(encoding="utf-8")
+
+        self.assertIn('if len(parts) == 5 and method == "DELETE":', router)
+        self.assertIn('self._write_context(handler, module_code, "delete")', router)
+        self.assertIn("self.assets.delete_resource(parts[3], parts[4], context)", router)
+
+    def test_model_deletion_is_soft_and_guarded(self):
+        service = (ROOT / "office_asset" / "asset_service.py").read_text(encoding="utf-8")
+        model_delete = service.split("def _delete_inventory_model", 1)[1].split(
+            "def _delete_inventory_brand", 1
+        )[0]
+        brand_delete = service.split("def _delete_inventory_brand", 1)[1].split(
+            "def assign_computer", 1
+        )[0]
+
+        # 软删除：历史流水、办公终端登记的型号 id 都还在
+        self.assertIn("SET is_active = 0", model_delete)
+        self.assertNotIn("DELETE FROM it_inventory_model", model_delete)
+        # 有库存 / 有人挂在名下就拒绝
+        self.assertIn("FROM inventory_warehouse_stock WHERE model_id", model_delete)
+        self.assertIn("FROM employee_monitor_usage", model_delete)
+        self.assertIn("FROM employee_non_asset_usage", model_delete)
+        self.assertIn("inventory_model_deleted", model_delete)
+        # 品牌：下面还有型号就不能删
+        self.assertIn("SELECT COUNT(*) FROM it_inventory_model WHERE brand_id", brand_delete)
+        self.assertIn("SET is_active = 0", brand_delete)
+        self.assertIn("inventory_brand_deleted", brand_delete)
+
+    def test_page_offers_delete_buttons(self):
+        view = (ROOT / "frontend" / "src" / "views" / "InventoryView.vue").read_text(
+            encoding="utf-8"
+        )
+        api_module = (ROOT / "frontend" / "src" / "api" / "inventory.ts").read_text(
+            encoding="utf-8"
+        )
+
+        for token in ("removeBrand", "removeModel", "deleteInventoryBrand", "deleteInventoryModel"):
+            self.assertIn(token, view)
+        self.assertIn("hasPermission('inventory_catalog', 'delete')", view)
+        self.assertIn("export async function deleteInventoryBrand", api_module)
+        self.assertIn("export async function deleteInventoryModel", api_module)
+        self.assertIn('{ method: "DELETE" }', api_module)
+
+
 class ScrapRecordsAssetOnlyTests(TestCase):
     """报废记录页只列办公终端：IT 物资的报废只在操作日志留痕。"""
 
