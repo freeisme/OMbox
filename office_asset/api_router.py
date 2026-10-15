@@ -481,6 +481,34 @@ class DomainApiRouter:
                 status=201,
             )
             return True
+        # 机房 / 弱电间批量导入（同一个入口，可用「类型」列区分）
+        if path == "/api/inspection/server-rooms/import" and method == "POST":
+            context = self._write_context(handler, "inspection_management", "create")
+            send_json(
+                self.inspection.import_sites(
+                    self._payload(handler),
+                    context,
+                    "server_room",
+                    {"server_room", "weak_room"},
+                ),
+                status=201,
+            )
+            return True
+        # 机柜 / 巡检模板 / 会议室设备的批量导入
+        if path == "/api/inspection/racks/import" and method == "POST":
+            context = self._write_context(handler, "inspection_management", "create")
+            send_json(self.inspection.import_racks(self._payload(handler), context), status=201)
+            return True
+        if path == "/api/inspection/templates/import" and method == "POST":
+            context = self._write_context(handler, "inspection_management", "create")
+            send_json(self.inspection.import_templates(self._payload(handler), context), status=201)
+            return True
+        if path == "/api/inspection/site-devices/import" and method == "POST":
+            context = self._write_context(handler, "inspection_management", "create")
+            send_json(
+                self.inspection.import_site_devices(self._payload(handler), context), status=201
+            )
+            return True
         if path.startswith("/api/inspection/sites/") and method == "PUT":
             site_id = path.split("/")[-1]
             context = self._write_context(handler, "inspection_management", "update")
@@ -887,6 +915,18 @@ class DomainApiRouter:
         if path == "/api/computers/import" and method == "POST":
             context = self._write_context(handler, "it_assets", "create")
             send_json(self.assets.import_computers(self._payload(handler), context), status=201)
+            return True
+        # 组织架构 / IT 物资目录的批量导入
+        if path == "/api/organizations/import" and method == "POST":
+            context = self._write_context(handler, "organizations", "create")
+            send_json(self.assets.import_organizations(self._payload(handler), context), status=201)
+            return True
+        if path == "/api/inventory/catalog/import" and method == "POST":
+            context = self._write_context(handler, "inventory_catalog", "create")
+            send_json(
+                self.assets.import_inventory_catalog(self._payload(handler), context),
+                status=201,
+            )
             return True
 
         # 导出台账为 xlsx：只做格式化（不读数据库），数据来自调用方自己的界面

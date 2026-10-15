@@ -386,7 +386,7 @@ async function submitScrap(): Promise<void> {
     return;
   }
   const confirmed = await confirmAction(
-    `确认报废「${target.deviceName}」？状态将改为「待报废」，设备不会回收库存，但会保留审计记录。`,
+    `确认报废「${target.deviceName}」？该设备将归档并生成报废记录，不会回收库存；归档后不再出现在办公终端台账。`,
     { title: "报废确认", confirmText: "确认报废", danger: true },
   );
   if (!confirmed) return;
@@ -396,7 +396,7 @@ async function submitScrap(): Promise<void> {
       reasonCode: scrapForm.reasonCode,
       notes: scrapForm.notes.trim(),
     });
-    ElMessage.success("已完成报废登记，设备状态为「待报废」。");
+    ElMessage.success("已完成报废，设备已归档。");
     scrapVisible.value = false;
     invalidateComputersCache();
     await load(true);
@@ -561,8 +561,9 @@ onMounted(async () => {
           <el-button v-if="hasPermission('it_assets', 'update')" link type="primary" @click="openEdit(row)">
             编辑
           </el-button>
+          <!-- 只有标成「待报废」的设备才给报废按钮：先把状态改成待报废，再在这里确认归档 -->
           <el-button
-            v-if="hasPermission('scrap_management', 'create')"
+            v-if="hasPermission('scrap_management', 'create') && row.status === 'retired'"
             link
             type="danger"
             @click="openScrap(row)"
@@ -627,6 +628,9 @@ onMounted(async () => {
                 :value="status"
               />
             </el-select>
+            <div class="oa-hint">
+              标成「待报废」保存后，台账操作列才会出现「报废」按钮。
+            </div>
           </el-form-item>
         </el-col>
       </el-row>

@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
 import {
+  importOrganizations,
   invalidateDirectoryCache,
   loadDirectoryData,
   saveInventoryType,
@@ -13,7 +14,19 @@ import {
 import { hasPermission } from "../session";
 import DataPanel from "../components/ui/DataPanel.vue";
 import FilterBar from "../components/ui/FilterBar.vue";
+import ImportExcelDialog from "../components/ui/ImportExcelDialog.vue";
 import PageHeader from "../components/ui/PageHeader.vue";
+
+const importDialog = ref(false);
+
+/** 组织导入模板：表头与后端 ORG_IMPORT_ALIASES 对应。 */
+const ORG_IMPORT_FIELDS: Record<string, string> = {
+  code: "组织编码",
+  name: "组织名称",
+  parent: "上级组织",
+  sortOrder: "排序",
+  isActive: "启用",
+};
 
 interface OrgTreeNode extends OrgNode {
   children: OrgTreeNode[];
@@ -184,6 +197,9 @@ onMounted(async () => {
       <el-button v-if="hasPermission('organizations', 'create')" type="primary" @click="openOrg()">
         ＋ 新增根组织
       </el-button>
+      <el-button v-if="hasPermission('organizations', 'create')" @click="importDialog = true">
+        导入 Excel
+      </el-button>
     </template>
     <template #filters>
       <FilterBar
@@ -296,6 +312,18 @@ onMounted(async () => {
       </el-form-item>
     </el-form>
   </FormDialog>
+
+  <ImportExcelDialog
+    v-model="importDialog"
+    title="导入组织架构"
+    :field-labels="ORG_IMPORT_FIELDS"
+    :template-header="['组织编码', '组织名称', '上级组织', '排序', '启用']"
+    :template-sample="['ORG', '示例部门', '', '100', '1']"
+    template-file-name="组织架构导入模板.csv"
+    hint="表头需包含「组织编码」「组织名称」；上级组织可以写编码或名称，写在本文件的上面或下面都行；启用列写 1/0 或 是/否，留空按启用处理。导入只新增/更新，不删除组织。"
+    :import-fn="importOrganizations"
+    @imported="load(true)"
+  />
 
   <FormDialog
     v-model="typeDialogVisible"

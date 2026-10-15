@@ -195,6 +195,46 @@ export function importInspectionSites(payload: {
   return api<ImportSummary>("/api/inspection/sites/import", { method: "POST", body: payload });
 }
 
+/** 批量导入机房 / 弱电间（表头多一列「类型」，可用 机房 / 弱电间 区分）。 */
+export function importServerRooms(payload: {
+  fileName: string;
+  contentBase64: string;
+  dryRun?: boolean;
+  mode?: "skip" | "update";
+}): Promise<ImportSummary> {
+  return api<ImportSummary>("/api/inspection/server-rooms/import", { method: "POST", body: payload });
+}
+
+/** 批量导入机柜（表头：机柜编码 / 机柜名称 / 机房 / 高度U / 备注）。 */
+export function importInspectionRacks(payload: {
+  fileName: string;
+  contentBase64: string;
+  dryRun?: boolean;
+  mode?: "skip" | "update";
+}): Promise<ImportSummary> {
+  return api<ImportSummary>("/api/inspection/racks/import", { method: "POST", body: payload });
+}
+
+/** 批量导入巡检模板及明细（同一个模板名多行合并；mode=update 会替换原有检查项）。 */
+export function importInspectionTemplates(payload: {
+  fileName: string;
+  contentBase64: string;
+  dryRun?: boolean;
+  mode?: "skip" | "update";
+}): Promise<ImportSummary> {
+  return api<ImportSummary>("/api/inspection/templates/import", { method: "POST", body: payload });
+}
+
+/** 批量导入会议室 / 巡检对象里的设备（自定义登记，不扣 IT 物资库存）。 */
+export function importSiteDevices(payload: {
+  fileName: string;
+  contentBase64: string;
+  dryRun?: boolean;
+  mode?: "skip" | "update";
+}): Promise<ImportSummary> {
+  return api<ImportSummary>("/api/inspection/site-devices/import", { method: "POST", body: payload });
+}
+
 export interface InspectionTemplateItemPayload {
   category: string;
   title: string;

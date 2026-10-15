@@ -27,6 +27,9 @@ from urllib.request import Request, urlopen
 
 from office_asset.api_router import ApiDependencies, DomainApiRouter
 from office_asset.xlsx import WorkbookError, decode_logo_data_uri
+from office_asset.xlsx import map_headers as map_sheet_headers
+from office_asset.xlsx import normalise_header as normalise_sheet_header
+from office_asset.xlsx import read_upload_rows
 from office_asset.jobs import finish_job_execution, job_run_key, run_periodic_job, start_job_execution
 from office_asset.permissions import PermissionService
 from office_asset.sql import SqlGateway, parse_bool
@@ -606,6 +609,265 @@ def find_user_by_id(user_id: str) -> dict | None:
         """,
         None,
     )
+
+
+USER_IMPORT_ALIASES: dict[str, set[str]] = {
+    "username": {"用户名", "账号", "登录名", "username", "login"},
+    "displayName": {"显示名称", "姓名", "名称", "displayname", "name"},
+    "role": {"角色", "角色编码", "role", "rolecode"},
+    "password": {"初始密码", "密码", "password"},
+    "employeeNo": {"绑定人员工号", "工号", "绑定工号", "employeeno", "employee"},
+    "isActive": {"启用", "是否启用", "状态", "isactive", "active"},
+}
+
+
+def employee_binding_lookup() -> dict[str, int]:
+    """工号 / 姓名 → employee_id（只含可绑定的人员：非离职、非公用、未停用）。"""
+    rows = json_query_one(
+        """
+        SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
+          'id', CAST(employee_id AS CHAR),
+          'no', employee_no,
+          'name', employee_name
+        )), JSON_ARRAY())
+        FROM employee
+        WHERE is_active = 1
+          AND employment_status NOT IN ('left', 'shared')
+        """,
+        [],
+    )
+    lookup: dict[str, int] = {}
+    for row in rows or []:
+        employee_id = sql_int(row.get("id"), 0)
+        for value in (text_value(row.get("no")), text_value(row.get("name"))):
+            if value:
+                lookup.setdefault(normalise_sheet_header(value), employee_id)
+    return lookup
+
+
+def role_lookup() -> dict[str, dict]:
+    """角色编码 / 角色名称 → 角色记录。"""
+    rows = json_query_one(
+        """
+        SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
+          'id', CAST(role_id AS CHAR),
+          'code', role_code,
+          'name', role_name,
+          'isSuperAdmin', is_super_admin
+        )), JSON_ARRAY())
+        FROM auth_role
+        WHERE is_active = 1
+        """,
+        [],
+    )
+    lookup: dict[str, dict] = {}
+    for row in rows or []:
+        record = {
+            "id": text_value(row.get("id")),
+            "code": text_value(row.get("code")),
+            "name": text_value(row.get("name")),
+            "isSuperAdmin": parse_bool(row.get("isSuperAdmin")),
+        }
+        for value in (record["code"], record["name"]):
+            if value:
+                lookup.setdefault(normalise_sheet_header(value), record)
+    return lookup
+
+
+def import_users(payload: dict, context: dict) -> dict:
+    """批量导入用户账号：按用户名匹配，mode=skip 跳过已存在 / mode=update 覆盖。
+
+    表头：用户名 / 显示名称 / 角色 / 初始密码 / 绑定人员工号 / 是否启用。
+    新建账号必须给初始密码（≥8 位）；普通角色必须绑定在职人员；超管角色只有超管能分配。
+    """
+    file_name = text_value(payload.get("fileName"))[:200]
+    content = text_value(payload.get("contentBase64"))
+    if not content:
+        raise ApiError("请上传 .xlsx 或 .csv 文件。")
+    try:
+        data = base64.b64decode(content, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise ApiError("文件内容不是合法的 base64 编码。") from exc
+    try:
+        rows = read_upload_rows(file_name, data)
+    except WorkbookError as exc:
+        raise ApiError(str(exc)) from exc
+    if not rows:
+        raise ApiError("文件里没有可读取的内容。")
+    mapping: dict[str, int] = {}
+    header_index = 0
+    for index, row in enumerate(rows[:10]):
+        candidate = map_sheet_headers(row, USER_IMPORT_ALIASES)
+        if candidate:
+            header_index, mapping = index, candidate
+            break
+    if "username" not in mapping:
+        raise ApiError("表头必须包含「用户名」。")
+    dry_run = parse_bool(payload.get("dryRun"))
+    update_existing = text_value(payload.get("mode")) == "update"
+    data_rows = [row for row in rows[header_index + 1 :] if any((cell or "").strip() for cell in row)]
+    if not data_rows:
+        raise ApiError("表头下面没有数据行。")
+    if len(data_rows) > 1000:
+        raise ApiError("一次最多导入 1000 个账号，请拆分文件。")
+
+    def cell(row: list[str], field: str) -> str:
+        index = mapping.get(field)
+        if index is None or index >= len(row):
+            return ""
+        return (row[index] or "").strip()
+
+    roles = role_lookup()
+    employees = employee_binding_lookup()
+    summary = {
+        "fileName": file_name,
+        "sheetHeaders": {
+            field: (rows[header_index][index] if index < len(rows[header_index]) else "")
+            for field, index in sorted(mapping.items(), key=lambda item: item[1])
+        },
+        "totalRows": len(data_rows),
+        "created": 0,
+        "updated": 0,
+        "skipped": 0,
+        "errors": [],
+        "errorCount": 0,
+        "warnings": [],
+        "warningCount": 0,
+        "dryRun": dry_run,
+    }
+    errors: list[dict] = summary["errors"]
+    warnings: list[dict] = summary["warnings"]
+    pending: list[dict] = []
+    seen: set[str] = set()
+    actor_is_super = PERMISSIONS.is_super_admin(context)
+    for offset, row in enumerate(data_rows):
+        excel_row = header_index + 2 + offset
+        username = cell(row, "username")
+        if not username:
+            errors.append({"row": excel_row, "code": "", "message": "缺少用户名"})
+            continue
+        try:
+            username = validate_username(username)
+        except ApiError as exc:
+            errors.append({"row": excel_row, "code": username, "message": str(exc)})
+            continue
+        key = username.lower()
+        if key in seen:
+            errors.append({"row": excel_row, "code": username, "message": "文件内用户名重复"})
+            continue
+        seen.add(key)
+        display_name = cell(row, "displayName")[:128] or username
+        role_raw = cell(row, "role") or "operator"
+        role_record = roles.get(normalise_sheet_header(role_raw))
+        if not role_record:
+            errors.append({"row": excel_row, "code": username, "message": f"角色「{role_raw}」不存在"})
+            continue
+        if role_record["isSuperAdmin"] and not actor_is_super:
+            errors.append({"row": excel_row, "code": username, "message": "只有超级管理员能分配超级管理员角色"})
+            continue
+        employee_id = 0
+        employee_raw = cell(row, "employeeNo")
+        if employee_raw:
+            employee_id = employees.get(normalise_sheet_header(employee_raw), 0)
+            if employee_id <= 0:
+                errors.append(
+                    {"row": excel_row, "code": username, "message": f"绑定人员「{employee_raw}」不存在或不可绑定"}
+                )
+                continue
+        if not role_record["isSuperAdmin"] and not employee_id:
+            errors.append({"row": excel_row, "code": username, "message": "普通角色必须绑定在职人员"})
+            continue
+        password = cell(row, "password")
+        active_raw = cell(row, "isActive")
+        is_active = 1 if (parse_bool(active_raw, True) if active_raw else True) else 0
+        existing_user = find_user_by_username(username)
+        if existing_user and not update_existing:
+            summary["skipped"] += 1
+            warnings.append({"row": excel_row, "code": username, "message": f"账号「{username}」已存在，按跳过处理"})
+            continue
+        if not existing_user and not password:
+            errors.append({"row": excel_row, "code": username, "message": "新建账号必须填写初始密码"})
+            continue
+        if password:
+            try:
+                password = validate_password(password)
+            except ApiError as exc:
+                errors.append({"row": excel_row, "code": username, "message": str(exc)})
+                continue
+        if employee_id:
+            try:
+                validate_employee_binding(
+                    str(employee_id), text_value(existing_user.get("id")) if existing_user else ""
+                )
+            except ApiError as exc:
+                errors.append({"row": excel_row, "code": username, "message": str(exc)})
+                continue
+        pending.append(
+            {
+                "id": text_value(existing_user.get("id")) if existing_user else "",
+                "username": username,
+                "displayName": display_name,
+                "role": role_record["code"],
+                "password": password,
+                "employeeId": employee_id,
+                "isActive": is_active,
+            }
+        )
+        if existing_user:
+            summary["updated"] += 1
+        else:
+            summary["created"] += 1
+    summary["errorCount"] = len(errors)
+    summary["warningCount"] = len(warnings)
+    if dry_run or not pending:
+        return summary
+
+    statements: list[str] = []
+    for item in pending:
+        password_clause = (
+            f"password_hash = {sql_quote(password_hash(item['password']))}, "
+            "failed_attempts = 0, locked_until = NULL, "
+            if item["password"]
+            else ""
+        )
+        if item["id"]:
+            statements.append(
+                f"""
+                UPDATE user_account
+                SET display_name = {sql_quote(item['displayName'])},
+                    {password_clause}user_role = {sql_quote(legacy_role_value(item['role']))},
+                    role_code = {sql_quote(item['role'])},
+                    employee_id = {item['employeeId'] if item['employeeId'] else 'NULL'},
+                    is_active = {item['isActive']}
+                WHERE user_id = {sql_quote(item['id'])}
+                """
+            )
+        else:
+            statements.append(
+                f"""
+                INSERT INTO user_account (
+                  username, display_name, password_hash, user_role, role_code, employee_id, is_active
+                )
+                VALUES (
+                  {sql_quote(item['username'])},
+                  {sql_quote(item['displayName'])},
+                  {sql_quote(password_hash(item['password']))},
+                  {sql_quote(legacy_role_value(item['role']))},
+                  {sql_quote(item['role'])},
+                  {item['employeeId'] if item['employeeId'] else 'NULL'},
+                  {item['isActive']}
+                )
+                """
+            )
+    run_mysql("START TRANSACTION;\n" + ";\n".join(statements) + ";\nCOMMIT;", database=DB_NAME)
+    write_auth_audit(
+        text_value(context.get("username")),
+        "users_imported",
+        "batch",
+        file_name or "账号导入",
+        f"批量导入账号（新增 {summary['created']}，更新 {summary['updated']}，跳过 {summary['skipped']}，错误 {summary['errorCount']}）",
+    )
+    return summary
 
 
 def list_users() -> list[dict]:
@@ -5610,6 +5872,13 @@ class AppHandler(SimpleHTTPRequestHandler):
             context = require_auth(self)
             require_permission(context, "user_management", "view")
             self.send_json({"users": list_users()})
+            return
+
+        if parsed.path == "/api/users/import" and self.command == "POST":
+            context = require_auth(self)
+            require_permission(context, "user_management", "create")
+            require_csrf(self, context)
+            self.send_json(import_users(self.read_json(), context), status=HTTPStatus.CREATED)
             return
 
         if parsed.path == "/api/users" and self.command == "POST":

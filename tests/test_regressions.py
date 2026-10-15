@@ -2495,6 +2495,99 @@ class ComputerInventoryModelFilterTests(TestCase):
         self.assertIn("「从库存登记」只能选「电脑 / 办公终端」类型的型号", service)
 
 
+class BulkImportEntryTests(TestCase):
+    """七个批量导入入口：组织架构 / IT物资目录 / 机柜 / 机房弱电间 / 巡检模板 / 用户账号 / 会议室设备。"""
+
+    ROUTES = {
+        "/api/organizations/import": "import_organizations",
+        "/api/inventory/catalog/import": "import_inventory_catalog",
+        "/api/inspection/server-rooms/import": "import_sites",
+        "/api/inspection/racks/import": "import_racks",
+        "/api/inspection/templates/import": "import_templates",
+        "/api/inspection/site-devices/import": "import_site_devices",
+        "/api/inspection/sites/import": "import_sites",
+    }
+
+    def test_router_exposes_all_import_entries(self):
+        router = (ROOT / "office_asset" / "api_router.py").read_text(encoding="utf-8")
+        server = (ROOT / "server.py").read_text(encoding="utf-8")
+
+        for path, handler in self.ROUTES.items():
+            self.assertIn(f'if path == "{path}" and method == "POST":', router, path)
+            self.assertIn(handler, router)
+        # 用户账号导入在 server.py 里（账号 CRUD 也在这里）
+        self.assertIn('if parsed.path == "/api/users/import" and self.command == "POST":', server)
+        self.assertIn("def import_users(", server)
+
+    def test_services_implement_the_importers(self):
+        assets = (ROOT / "office_asset" / "asset_service.py").read_text(encoding="utf-8")
+        inspection = (ROOT / "office_asset" / "inspection.py").read_text(encoding="utf-8")
+
+        self.assertIn("def import_organizations(", assets)
+        self.assertIn("ORG_IMPORT_ALIASES", assets)
+        self.assertIn("def import_inventory_catalog(", assets)
+        self.assertIn("INVENTORY_IMPORT_ALIASES", assets)
+        for name in ("import_racks", "import_templates", "import_site_devices"):
+            self.assertIn(f"def {name}(", inspection)
+        # 机房 / 弱电间共用 import_sites，靠 allowed_types 限制类型
+        self.assertIn("allowed_types: set[str] | None = None", inspection)
+        self.assertIn('{"server_room", "weak_room"}', (ROOT / "office_asset" / "api_router.py").read_text(encoding="utf-8"))
+        # 每个导入都要能预览（dryRun）并能选跳过 / 更新
+        for source in (assets, inspection):
+            self.assertIn('parse_bool(payload.get("dryRun"))', source)
+            self.assertIn('== "update"', source)
+
+    def test_frontend_pages_have_import_buttons(self):
+        pages = {
+            "DictionaryView.vue": "importOrganizations",
+            "InventoryView.vue": "importInventoryCatalog",
+            "InspectionView.vue": "importInspectionRacks",
+            "MeetingRoomView.vue": "importSiteDevices",
+            "SettingsView.vue": "importUsers",
+        }
+        for page, fn in pages.items():
+            view = (ROOT / "frontend" / "src" / "views" / page).read_text(encoding="utf-8")
+            self.assertIn("ImportExcelDialog", view, page)
+            self.assertIn(fn, view, page)
+        inspection_view = (ROOT / "frontend" / "src" / "views" / "InspectionView.vue").read_text(
+            encoding="utf-8"
+        )
+        for fn in ("importServerRooms", "importInspectionRacks", "importInspectionTemplates"):
+            self.assertIn(fn, inspection_view)
+
+    def test_service_importers_write_audit_entries(self):
+        assets = (ROOT / "office_asset" / "asset_service.py").read_text(encoding="utf-8")
+        inspection = (ROOT / "office_asset" / "inspection.py").read_text(encoding="utf-8")
+        server = (ROOT / "server.py").read_text(encoding="utf-8")
+
+        for action in ("organizations_imported", "inventory_catalog_imported"):
+            self.assertIn(action, assets)
+        for action in (
+            "inspection_sites_imported",
+            "inspection_racks_imported",
+            "inspection_templates_imported",
+            "inspection_site_devices_imported",
+        ):
+            self.assertIn(action, inspection)
+        self.assertIn('"users_imported"', server)
+
+
+class ComputerScrapButtonTests(TestCase):
+    """报废按钮只在设备状态为「待报废」时出现（先标待报废，再确认报废归档）。"""
+
+    def test_scrap_button_requires_pending_status(self):
+        view = (ROOT / "frontend" / "src" / "views" / "ComputersView.vue").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("hasPermission('scrap_management', 'create') && row.status === 'retired'", view)
+        # 状态改成待报废的入口提示
+        self.assertIn("台账操作列才会出现「报废」按钮", view)
+        # 后端仍允许把 retired 状态归档
+        service = (ROOT / "office_asset" / "asset_service.py").read_text(encoding="utf-8")
+        self.assertIn('"retired": {"retired"}', service)
+
+
 class MeetingRoomImportTests(TestCase):
     """会议室支持 xlsx / csv 批量导入（表头：编码 / 名称 / 位置 / 备注）。"""
 

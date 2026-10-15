@@ -1,4 +1,5 @@
 import { api, downloadFile } from "./client";
+import type { ImportSummary } from "./datacenter";
 
 /** 系统更新来源与通道，取值必须与后端保持一致。 */
 export const UPDATE_SOURCES: Record<string, string> = {
@@ -196,6 +197,16 @@ export async function saveUser(payload: UserPayload, userId = ""): Promise<void>
     return;
   }
   await api("/api/users", { method: "POST", body: payload });
+}
+
+/** 批量导入用户账号：用户名 / 显示名称 / 角色 / 初始密码 / 绑定人员工号 / 是否启用。 */
+export function importUsers(payload: {
+  fileName: string;
+  contentBase64: string;
+  dryRun?: boolean;
+  mode?: "skip" | "update";
+}): Promise<ImportSummary> {
+  return api<ImportSummary>("/api/users/import", { method: "POST", body: payload });
 }
 
 export interface AccessControlData {

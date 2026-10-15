@@ -96,8 +96,77 @@ MAX_IMPORT_BYTES = 8 * 1024 * 1024
 SITE_IMPORT_ALIASES: dict[str, set[str]] = {
     "code": {"编码", "编号", "会议室编码", "机房编码", "弱电间编码", "code"},
     "name": {"名称", "会议室名称", "机房名称", "弱电间名称", "name"},
+    "siteType": {"类型", "对象类型", "巡检对象类型", "sitetype", "type"},
     "location": {"位置", "地点", "楼层", "location"},
     "remarks": {"备注", "说明", "remarks", "note"},
+}
+
+# 机房 / 弱电间 / 会议室的中文与英文写法
+SITE_TYPE_ALIASES: dict[str, str] = {
+    "机房": "server_room",
+    "serverroom": "server_room",
+    "server_room": "server_room",
+    "弱电间": "weak_room",
+    "weakroom": "weak_room",
+    "weak_room": "weak_room",
+    "会议室": "meeting_room",
+    "meetingroom": "meeting_room",
+    "meeting_room": "meeting_room",
+}
+
+# 机柜导入：归属的机房 / 弱电间可以写编码或名称
+RACK_IMPORT_ALIASES: dict[str, set[str]] = {
+    "code": {"机柜编码", "编码", "编号", "rackcode", "code"},
+    "name": {"机柜名称", "名称", "rackname", "name"},
+    "site": {
+        "机房",
+        "弱电间",
+        "机房/弱电间",
+        "所属机房",
+        "所属机房/弱电间",
+        "归属机房",
+        "site",
+        "sitename",
+    },
+    "heightU": {"高度", "高度u", "u数", "heightu", "height"},
+    "remarks": {"备注", "说明", "remarks", "note"},
+}
+
+# 巡检模板导入：同一个模板名的多行合并成一份模板 + 多条明细
+TEMPLATE_IMPORT_ALIASES: dict[str, set[str]] = {
+    "templateCode": {"模板编码", "编码", "templatecode", "code"},
+    "templateName": {"模板名称", "名称", "templatename", "name"},
+    "siteType": {"适用对象", "对象类型", "类型", "sitetype", "type"},
+    "category": {"检查项分类", "分类", "类别", "category"},
+    "title": {"检查项目", "检查项", "巡检事项", "title", "item"},
+    "checkMethod": {"检查内容", "检查方法", "判定标准", "检查内容/判定标准", "checkmethod"},
+    "valueType": {"取值类型", "valuetype"},
+    "unit": {"单位", "unit"},
+    "normalRange": {"正常范围", "normalrange"},
+    "isRequired": {"是否必填", "必填", "isrequired"},
+}
+TEMPLATE_SITE_TYPE_ALIASES: dict[str, str] = {
+    "机房": "server_room",
+    "serverroom": "server_room",
+    "弱电间": "weak_room",
+    "weakroom": "weak_room",
+    "会议室": "meeting_room",
+    "meetingroom": "meeting_room",
+    "通用": "both",
+    "both": "both",
+    "全部": "both",
+    "all": "both",
+}
+
+# 会议室内设备导入（自定义登记，不扣 IT 物资库存）
+SITE_DEVICE_IMPORT_ALIASES: dict[str, set[str]] = {
+    "site": {"会议室", "巡检对象", "机房", "弱电间", "位置", "site", "sitename"},
+    "deviceName": {"设备名称", "名称", "设备", "devicename", "name"},
+    "deviceType": {"设备类型", "类型", "devicetype", "type"},
+    "brand": {"品牌", "厂商", "brand"},
+    "model": {"型号", "model"},
+    "quantity": {"数量", "quantity", "count"},
+    "notes": {"备注", "说明", "notes", "note"},
 }
 
 
@@ -1757,16 +1826,23 @@ class InspectionService:
                 raise self.api_error(str(exc)) from exc
         raise self.api_error("只支持 .xlsx、.xlsm 或 .csv 文件。")
 
-    def import_sites(self, payload: dict, context: dict, site_type: str = "meeting_room") -> dict:
+    def import_sites(
+        self,
+        payload: dict,
+        context: dict,
+        site_type: str = "meeting_room",
+        allowed_types: set[str] | None = None,
+    ) -> dict:
         """批量导入巡检对象（默认会议室）。
 
-        表头：编码 / 名称 / 位置 / 备注；编码可空（自动生成），按编码匹配已存在的对象，
+        表头：编码 / 名称 / 类型（可选）/ 位置 / 备注；编码可空（自动生成），按编码匹配已存在的对象，
         `dryRun` 只预览不写库，`mode=update` 覆盖已存在记录的名称 / 位置 / 备注。
-        只处理 `site_type` 这一类的对象，不会碰机房与弱电间。
+        类型的取值受 `allowed_types` 限制（会议室入口只导会议室，机房入口可导机房与弱电间）。
         """
         if site_type not in SITE_TYPES:
             raise self.api_error("巡检对象类型无效。")
-        label = SITE_TYPE_LABELS.get(site_type, "巡检对象")
+        allowed = {site_type} if allowed_types is None else allowed_types
+        label = " / ".join(SITE_TYPE_LABELS.get(item, item) for item in sorted(allowed))
         file_name = self.db.text(payload.get("fileName"))[:200]
         content = self.db.text(payload.get("contentBase64"))
         if not content:
@@ -1797,7 +1873,9 @@ class InspectionService:
         if len(data_rows) > MAX_IMPORT_ROWS:
             raise self.api_error(f"一次最多导入 {MAX_IMPORT_ROWS} 行，请拆分文件。")
 
-        existing = self._site_code_lookup(site_type)
+        existing: dict[str, int] = {}
+        for item_type in allowed:
+            existing.update(self._site_code_lookup(item_type))
         summary = {
             "fileName": file_name,
             "sheetHeaders": {
@@ -1825,12 +1903,25 @@ class InspectionService:
             if not name:
                 errors.append({"row": excel_row, "message": "缺少名称"})
                 continue
+            row_type = site_type
+            raw_type = self._import_cell(row, mapping.get("siteType")) if "siteType" in mapping else ""
+            if raw_type:
+                resolved_type = SITE_TYPE_ALIASES.get(self._import_key(raw_type), "")
+                if not resolved_type:
+                    errors.append({"row": excel_row, "message": f"无法识别的类型「{raw_type}」（可用：机房 / 弱电间 / 会议室）"})
+                    continue
+                if resolved_type not in allowed:
+                    errors.append(
+                        {"row": excel_row, "message": f"这个入口只导入{label}，不能导入「{raw_type}」"}
+                    )
+                    continue
+                row_type = resolved_type
             code = self._import_cell(row, mapping.get("code"))[:64]
             if not code:
                 # 编码留空时自动编号，和页面上「新增会议室」的行为一致
                 while True:
                     auto_index += 1
-                    code = f"{SITE_CODE_PREFIX.get(site_type, 'MR')}-{auto_index:03d}"
+                    code = f"{SITE_CODE_PREFIX.get(row_type, 'MR')}-{auto_index:03d}"
                     if code.lower() not in existing and code not in seen:
                         break
             if code in seen:
@@ -1852,6 +1943,7 @@ class InspectionService:
                     "id": site_id,
                     "code": code,
                     "name": name,
+                    "siteType": row_type,
                     "location": location,
                     "remarks": remarks,
                 }
@@ -1866,8 +1958,7 @@ class InspectionService:
         if dry_run:
             return summary
         if not pending:
-            if summary["errorCount"]:
-                raise self.api_error("没有可导入的行，请先修正文件里的问题。")
+            # 全部行都没能通过校验时直接回摘要，页面才能逐行显示原因
             return summary
 
         statements = []
@@ -1877,6 +1968,7 @@ class InspectionService:
                     f"""
                     UPDATE asset_site
                     SET site_name = {self.db.quote(item['name'])},
+                        site_type = {self.db.quote(item['siteType'])},
                         location_desc = {self.db.quote(item['location'])},
                         remarks = {self.db.quote(item['remarks'])}
                     WHERE site_id = {item['id']}
@@ -1889,7 +1981,7 @@ class InspectionService:
                     VALUES (
                       {self.db.quote(item['code'])},
                       {self.db.quote(item['name'])},
-                      {self.db.quote(site_type)},
+                      {self.db.quote(item['siteType'])},
                       {self.db.quote(item['location'])},
                       {self.db.quote(item['remarks'])}
                     )
@@ -1938,6 +2030,509 @@ class InspectionService:
             self.db.text(row.get("code")).lower(): self.db.integer(row.get("id"), 0)
             for row in rows
             if self.db.text(row.get("code"))
+        }
+
+    def import_racks(self, payload: dict, context: dict) -> dict:
+        """批量导入机柜：按机柜编码匹配，归属的机房 / 弱电间写编码或名称。
+
+        `mode=skip` 跳过已存在的机柜，`mode=update` 覆盖名称 / 高度 / 备注（不动机柜内的设备）。
+        """
+        file_name = self.db.text(payload.get("fileName"))[:200]
+        rows = self._read_import_rows_for(payload)
+        header_index = 0
+        mapping: dict[str, int] = {}
+        for index, row in enumerate(rows[:10]):
+            candidate = map_headers(row, RACK_IMPORT_ALIASES)
+            if candidate:
+                header_index, mapping = index, candidate
+                break
+        missing = [label for key, label in (("code", "机柜编码"), ("name", "机柜名称"), ("site", "机房/弱电间")) if key not in mapping]
+        if missing:
+            raise self.api_error(f"表头缺少：{'、'.join(missing)}。")
+        dry_run = parse_bool(payload.get("dryRun"))
+        update_existing = self.db.text(payload.get("mode")) == "update"
+        data_rows = [row for row in rows[header_index + 1 :] if any((cell or "").strip() for cell in row)]
+        summary = self._site_import_summary(file_name, len(data_rows), dry_run, rows, header_index, mapping)
+        errors: list[dict] = summary["errors"]
+        warnings: list[dict] = summary["warnings"]
+        sites = self._site_lookup()
+        existing = self._rack_code_lookup()
+        pending: list[dict] = []
+        seen: set[str] = set()
+        for offset, row in enumerate(data_rows):
+            excel_row = header_index + 2 + offset
+            code = self._import_cell(row, mapping.get("code"))[:64]
+            name = self._import_cell(row, mapping.get("name"))[:128]
+            site_raw = self._import_cell(row, mapping.get("site"))
+            if not code or not name:
+                errors.append({"row": excel_row, "message": "机柜编码与名称必填"})
+                continue
+            if code in seen:
+                errors.append({"row": excel_row, "code": code, "message": f"文件内机柜编码「{code}」重复"})
+                continue
+            seen.add(code)
+            site_id = sites.get(self._import_key(site_raw), 0)
+            if site_id <= 0:
+                errors.append({"row": excel_row, "code": code, "message": f"机房 / 弱电间「{site_raw}」不存在"})
+                continue
+            height_u = self.db.integer(self._import_cell(row, mapping.get("heightU")), 42)
+            if height_u < 1 or height_u > 100:
+                errors.append({"row": excel_row, "code": code, "message": "机柜高度必须在 1-100U 之间"})
+                continue
+            rack_id = existing.get(code.lower(), 0)
+            if rack_id and not update_existing:
+                summary["skipped"] += 1
+                warnings.append({"row": excel_row, "code": code, "message": f"机柜「{name}」已存在，按跳过处理"})
+                continue
+            pending.append(
+                {
+                    "id": rack_id,
+                    "code": code,
+                    "name": name,
+                    "siteId": site_id,
+                    "heightU": height_u,
+                    "remarks": self._import_cell(row, mapping.get("remarks"))[:500],
+                }
+            )
+            if rack_id:
+                summary["updated"] += 1
+            else:
+                summary["created"] += 1
+        summary["errorCount"] = len(errors)
+        summary["warningCount"] = len(warnings)
+        if dry_run or not pending:
+            return summary
+        statements = []
+        for item in pending:
+            if item["id"]:
+                statements.append(
+                    f"""
+                    UPDATE asset_rack
+                    SET rack_name = {self.db.quote(item['name'])},
+                        site_id = {item['siteId']},
+                        height_u = {item['heightU']},
+                        remarks = {self.db.quote(item['remarks'])}
+                    WHERE rack_id = {item['id']}
+                    """
+                )
+            else:
+                statements.append(
+                    f"""
+                    INSERT INTO asset_rack (rack_code, rack_name, site_id, height_u, remarks)
+                    SELECT {self.db.quote(item['code'])}, {self.db.quote(item['name'])},
+                           {item['siteId']}, {item['heightU']}, {self.db.quote(item['remarks'])}
+                    FROM asset_site site
+                    WHERE site.site_id = {item['siteId']}
+                    """
+                )
+        statements.append(
+            self._audit_sql(
+                "inspection_racks_imported",
+                "asset_rack",
+                "'batch'",
+                file_name or "机柜导入",
+                f"批量导入机柜（新增 {summary['created']}，更新 {summary['updated']}，跳过 {summary['skipped']}，错误 {summary['errorCount']}）",
+                context,
+                None,
+                {"fileName": file_name, "created": summary["created"], "updated": summary["updated"]},
+            )
+        )
+        self.db.execute("START TRANSACTION;\n" + ";\n".join(statements) + ";\nCOMMIT;")
+        return summary
+
+    def import_templates(self, payload: dict, context: dict) -> dict:
+        """批量导入巡检模板及明细：同一个模板名的多行合并成一份模板 + 多条检查项。
+
+        表头：模板名称 / 模板编码（可空，自动生成）/ 适用对象 / 检查项分类 / 检查项目 /
+        检查内容（判定标准）/ 取值类型 / 单位 / 正常范围 / 是否必填。
+        `mode=update` 会用文件里的明细**替换**该模板原有的检查项。
+        """
+        file_name = self.db.text(payload.get("fileName"))[:200]
+        rows = self._read_import_rows_for(payload)
+        header_index = 0
+        mapping: dict[str, int] = {}
+        for index, row in enumerate(rows[:10]):
+            candidate = map_headers(row, TEMPLATE_IMPORT_ALIASES)
+            if candidate:
+                header_index, mapping = index, candidate
+                break
+        if "templateName" not in mapping or "title" not in mapping:
+            raise self.api_error("表头必须包含「模板名称」与「检查项目」。")
+        dry_run = parse_bool(payload.get("dryRun"))
+        update_existing = self.db.text(payload.get("mode")) == "update"
+        data_rows = [row for row in rows[header_index + 1 :] if any((cell or "").strip() for cell in row)]
+        summary = self._site_import_summary(file_name, len(data_rows), dry_run, rows, header_index, mapping)
+        errors: list[dict] = summary["errors"]
+        warnings: list[dict] = summary["warnings"]
+
+        templates: dict[str, dict] = {}
+        for offset, row in enumerate(data_rows):
+            excel_row = header_index + 2 + offset
+            name = self._import_cell(row, mapping.get("templateName"))[:128]
+            title = self._import_cell(row, mapping.get("title"))[:200]
+            if not name or not title:
+                errors.append({"row": excel_row, "message": "模板名称与检查项目必填"})
+                continue
+            item = {
+                "row": excel_row,
+                "category": self._import_cell(row, mapping.get("category"))[:64] or "通用",
+                "title": title,
+                "checkMethod": self._import_cell(row, mapping.get("checkMethod"))[:255],
+                "valueType": self._import_cell(row, mapping.get("valueType")) or "ok_fail",
+                "unit": self._import_cell(row, mapping.get("unit"))[:32],
+                "normalRange": self._import_cell(row, mapping.get("normalRange"))[:128],
+                "isRequired": self._import_cell(row, mapping.get("isRequired")) or "1",
+            }
+            entry = templates.setdefault(
+                name,
+                {
+                    "row": excel_row,
+                    "name": name,
+                    "code": "",
+                    "siteType": "",
+                    "items": [],
+                },
+            )
+            if not entry["code"]:
+                entry["code"] = self._import_cell(row, mapping.get("templateCode"))[:64]
+            if not entry["siteType"]:
+                raw_type = self._import_cell(row, mapping.get("siteType")) or "通用"
+                entry["siteType"] = TEMPLATE_SITE_TYPE_ALIASES.get(self._import_key(raw_type), "")
+                if not entry["siteType"]:
+                    errors.append(
+                        {"row": excel_row, "message": f"适用对象「{raw_type}」无法识别（可用：机房 / 弱电间 / 会议室 / 通用）"}
+                    )
+            entry["items"].append(item)
+
+        existing = self._template_lookup()
+        pending: list[dict] = []
+        auto_index = 0
+        for name, entry in templates.items():
+            template_id = existing.get(name, 0)
+            if template_id and not update_existing:
+                summary["skipped"] += len(entry["items"])
+                warnings.append(
+                    {"row": entry["row"], "code": name, "message": f"模板「{name}」已存在，按跳过处理"}
+                )
+                continue
+            code = entry["code"]
+            if not code:
+                while True:
+                    auto_index += 1
+                    code = f"TPL-{auto_index:03d}"
+                    if self._import_key(code) not in existing:
+                        break
+            entry["code"] = code
+            entry["id"] = template_id
+            pending.append(entry)
+            if template_id:
+                summary["updated"] += len(entry["items"])
+            else:
+                summary["created"] += len(entry["items"])
+        summary["errorCount"] = len(errors)
+        summary["warningCount"] = len(warnings)
+        if dry_run or not pending:
+            return summary
+
+        statements = []
+        for entry in pending:
+            items = self._validated_items({"items": entry["items"]})
+            if entry["id"]:
+                statements.append(
+                    f"""
+                    UPDATE inspection_template
+                    SET template_name = {self.db.quote(entry['name'])},
+                        site_type = {self.db.quote(entry['siteType'] or 'both')}
+                    WHERE template_id = {entry['id']}
+                    """
+                )
+                statements.append(f"DELETE FROM inspection_template_item WHERE template_id = {entry['id']}")
+                statements.append(self._template_item_insert_sql(str(entry["id"]), items))
+            else:
+                statements.append(
+                    f"""
+                    INSERT INTO inspection_template (template_code, template_name, site_type, description)
+                    VALUES (
+                      {self.db.quote(entry['code'])},
+                      {self.db.quote(entry['name'])},
+                      {self.db.quote(entry['siteType'] or 'both')},
+                      {self.db.quote(f'由表格导入：{file_name}')}
+                    )
+                    """
+                )
+                statements.append("SET @imported_template_id = LAST_INSERT_ID()")
+                statements.append(self._template_item_insert_sql("@imported_template_id", items))
+        statements.append(
+            self._audit_sql(
+                "inspection_templates_imported",
+                "inspection_template",
+                "'batch'",
+                file_name or "巡检模板导入",
+                f"批量导入巡检模板（新增明细 {summary['created']}，更新明细 {summary['updated']}，跳过 {summary['skipped']}，错误 {summary['errorCount']}）",
+                context,
+                None,
+                {"fileName": file_name, "templates": len(pending)},
+            )
+        )
+        self.db.execute("START TRANSACTION;\n" + ";\n".join(statements) + ";\nCOMMIT;")
+        return summary
+
+    def import_site_devices(self, payload: dict, context: dict) -> dict:
+        """批量导入会议室 / 巡检对象里的设备（自定义登记，不扣 IT 物资库存）。
+
+        表头：会议室（或巡检对象，写编码或名称）/ 设备名称 / 设备类型 / 品牌 / 型号 / 数量 / 备注。
+        按「对象 + 设备名称」匹配，`mode=update` 覆盖类型 / 品牌 / 型号 / 数量 / 备注。
+        """
+        file_name = self.db.text(payload.get("fileName"))[:200]
+        rows = self._read_import_rows_for(payload)
+        header_index = 0
+        mapping: dict[str, int] = {}
+        for index, row in enumerate(rows[:10]):
+            candidate = map_headers(row, SITE_DEVICE_IMPORT_ALIASES)
+            if candidate:
+                header_index, mapping = index, candidate
+                break
+        missing = [label for key, label in (("site", "会议室/巡检对象"), ("deviceName", "设备名称")) if key not in mapping]
+        if missing:
+            raise self.api_error(f"表头缺少：{'、'.join(missing)}。")
+        dry_run = parse_bool(payload.get("dryRun"))
+        update_existing = self.db.text(payload.get("mode")) == "update"
+        data_rows = [row for row in rows[header_index + 1 :] if any((cell or "").strip() for cell in row)]
+        summary = self._site_import_summary(file_name, len(data_rows), dry_run, rows, header_index, mapping)
+        errors: list[dict] = summary["errors"]
+        warnings: list[dict] = summary["warnings"]
+        sites = self._site_lookup()
+        existing = self._site_device_lookup()
+        pending: list[dict] = []
+        seen: set[str] = set()
+        for offset, row in enumerate(data_rows):
+            excel_row = header_index + 2 + offset
+            site_raw = self._import_cell(row, mapping.get("site"))
+            device_name = self._import_cell(row, mapping.get("deviceName"))[:128]
+            if not site_raw or not device_name:
+                errors.append({"row": excel_row, "message": "会议室与设备名称必填"})
+                continue
+            site_id = sites.get(self._import_key(site_raw), 0)
+            if site_id <= 0:
+                errors.append({"row": excel_row, "message": f"会议室 / 巡检对象「{site_raw}」不存在"})
+                continue
+            quantity = self.db.integer(self._import_cell(row, mapping.get("quantity")), 1)
+            if quantity <= 0 or quantity > 999:
+                errors.append({"row": excel_row, "code": device_name, "message": "数量必须在 1-999 之间"})
+                continue
+            key = f"{site_id}|{self._import_key(device_name)}"
+            if key in seen:
+                errors.append({"row": excel_row, "code": device_name, "message": "同一个对象里设备名称重复"})
+                continue
+            seen.add(key)
+            device_id = existing.get(key, 0)
+            if device_id and not update_existing:
+                summary["skipped"] += 1
+                warnings.append({"row": excel_row, "code": device_name, "message": f"设备「{device_name}」已存在，按跳过处理"})
+                continue
+            pending.append(
+                {
+                    "id": device_id,
+                    "siteId": site_id,
+                    "name": device_name,
+                    "deviceType": self._import_cell(row, mapping.get("deviceType"))[:64],
+                    "brand": self._import_cell(row, mapping.get("brand"))[:64],
+                    "model": self._import_cell(row, mapping.get("model"))[:128],
+                    "quantity": quantity,
+                    "notes": self._import_cell(row, mapping.get("notes"))[:500],
+                }
+            )
+            if device_id:
+                summary["updated"] += 1
+            else:
+                summary["created"] += 1
+        summary["errorCount"] = len(errors)
+        summary["warningCount"] = len(warnings)
+        if dry_run or not pending:
+            return summary
+        actor_id = self._actor_id(context)
+        statements = []
+        for item in pending:
+            if item["id"]:
+                statements.append(
+                    f"""
+                    UPDATE site_device
+                    SET device_type = {self.db.quote(item['deviceType'])},
+                        brand = {self.db.quote(item['brand'])},
+                        model = {self.db.quote(item['model'])},
+                        quantity = {item['quantity']},
+                        notes = {self.db.quote(item['notes'])}
+                    WHERE device_id = {item['id']}
+                    """
+                )
+            else:
+                statements.append(
+                    f"""
+                    INSERT INTO site_device (
+                      site_id, source, device_name, device_type, brand, model,
+                      quantity, status, notes, created_by, updated_by
+                    )
+                    VALUES (
+                      {item['siteId']}, 'custom',
+                      {self.db.quote(item['name'])},
+                      {self.db.quote(item['deviceType'])},
+                      {self.db.quote(item['brand'])},
+                      {self.db.quote(item['model'])},
+                      {item['quantity']}, 'in_use',
+                      {self.db.quote(item['notes'])},
+                      {actor_id if actor_id > 0 else 'NULL'},
+                      {actor_id if actor_id > 0 else 'NULL'}
+                    )
+                    """
+                )
+        statements.append(
+            self._audit_sql(
+                "inspection_site_devices_imported",
+                "site_device",
+                "'batch'",
+                file_name or "巡检对象设备导入",
+                f"批量导入巡检对象设备（新增 {summary['created']}，更新 {summary['updated']}，跳过 {summary['skipped']}，错误 {summary['errorCount']}）",
+                context,
+                None,
+                {"fileName": file_name, "created": summary["created"], "updated": summary["updated"]},
+            )
+        )
+        self.db.execute("START TRANSACTION;\n" + ";\n".join(statements) + ";\nCOMMIT;")
+        return summary
+
+    def _read_import_rows_for(self, payload: dict) -> list[list[str]]:
+        """导入共用的取行逻辑（base64 → xlsx/csv 行）。"""
+        file_name = self.db.text(payload.get("fileName"))[:200]
+        content = self.db.text(payload.get("contentBase64"))
+        if not content:
+            raise self.api_error("请上传 .xlsx 或 .csv 文件。")
+        try:
+            data = base64.b64decode(content, validate=True)
+        except (ValueError, TypeError) as exc:
+            raise self.api_error("文件内容不是合法的 base64 编码。") from exc
+        rows = self._read_import_rows(file_name, data)
+        if not rows:
+            raise self.api_error("文件里没有可读取的内容。")
+        return rows
+
+    def _site_import_summary(
+        self,
+        file_name: str,
+        total: int,
+        dry_run: bool,
+        rows: list[list[str]],
+        header_index: int,
+        mapping: dict[str, int],
+    ) -> dict:
+        return {
+            "fileName": file_name,
+            "sheetHeaders": {
+                field: (rows[header_index][index] if index < len(rows[header_index]) else "")
+                for field, index in sorted(mapping.items(), key=lambda item: item[1])
+            },
+            "totalRows": total,
+            "created": 0,
+            "updated": 0,
+            "skipped": 0,
+            "errors": [],
+            "errorCount": 0,
+            "warnings": [],
+            "warningCount": 0,
+            "dryRun": dry_run,
+        }
+
+    def _site_lookup(self) -> dict[str, int]:
+        """机房 / 弱电间 / 会议室：编码与名称都能用来指认（key 做归一化）。"""
+        rows = (
+            self.db.json(
+                """
+                SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
+                  'id', CAST(site_id AS CHAR),
+                  'code', site_code,
+                  'name', site_name
+                )), JSON_ARRAY())
+                FROM asset_site
+                WHERE is_active = 1
+                """,
+                [],
+            )
+            or []
+        )
+        lookup: dict[str, int] = {}
+        for row in rows:
+            site_id = self.db.integer(row.get("id"), 0)
+            for value in (self.db.text(row.get("code")), self.db.text(row.get("name"))):
+                if value:
+                    lookup.setdefault(self._import_key(value), site_id)
+        return lookup
+
+    def _rack_code_lookup(self) -> dict[str, int]:
+        rows = (
+            self.db.json(
+                """
+                SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
+                  'id', CAST(rack_id AS CHAR),
+                  'code', rack_code
+                )), JSON_ARRAY())
+                FROM asset_rack
+                """,
+                [],
+            )
+            or []
+        )
+        return {
+            self.db.text(row.get("code")).lower(): self.db.integer(row.get("id"), 0)
+            for row in rows
+            if self.db.text(row.get("code"))
+        }
+
+    def _template_lookup(self) -> dict[str, int]:
+        rows = (
+            self.db.json(
+                """
+                SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
+                  'id', CAST(template_id AS CHAR),
+                  'code', template_code,
+                  'name', template_name
+                )), JSON_ARRAY())
+                FROM inspection_template
+                """,
+                [],
+            )
+            or []
+        )
+        lookup: dict[str, int] = {}
+        for row in rows:
+            template_id = self.db.integer(row.get("id"), 0)
+            name = self.db.text(row.get("name"))
+            code = self.db.text(row.get("code"))
+            if name:
+                lookup.setdefault(name, template_id)
+            if code:
+                lookup.setdefault(self._import_key(code), template_id)
+        return lookup
+
+    def _site_device_lookup(self) -> dict[str, int]:
+        rows = (
+            self.db.json(
+                """
+                SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
+                  'id', CAST(device_id AS CHAR),
+                  'siteId', CAST(site_id AS CHAR),
+                  'name', device_name
+                )), JSON_ARRAY())
+                FROM site_device
+                WHERE is_active = 1
+                """,
+                [],
+            )
+            or []
+        )
+        return {
+            f"{self.db.integer(row.get('siteId'), 0)}|{self._import_key(self.db.text(row.get('name')))}": self.db.integer(
+                row.get("id"), 0
+            )
+            for row in rows
         }
 
     def import_task(self, payload: dict, context: dict) -> dict:

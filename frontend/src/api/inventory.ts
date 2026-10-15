@@ -1,4 +1,5 @@
 import { api } from "./client";
+import type { ImportSummary } from "./datacenter";
 
 export interface WarehouseRow {
   id: string;
@@ -174,6 +175,16 @@ export async function deleteInventoryBrand(brandId: string): Promise<void> {
 /** 删除（停用）库存型号：仓库还有库存、或还有人挂在名下时后端会拒绝。 */
 export async function deleteInventoryModel(modelId: string): Promise<void> {
   await api(`/api/resources/inventory-model/${modelId}`, { method: "DELETE" });
+}
+
+/** 批量导入 IT 物资目录：类型 / 品牌 / 型号三层，一行可以只写其中一层。 */
+export function importInventoryCatalog(payload: {
+  fileName: string;
+  contentBase64: string;
+  dryRun?: boolean;
+  mode?: "skip" | "update";
+}): Promise<ImportSummary> {
+  return api<ImportSummary>("/api/inventory/catalog/import", { method: "POST", body: payload });
 }
 
 export async function saveInventoryType(
