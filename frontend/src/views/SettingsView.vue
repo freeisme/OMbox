@@ -68,7 +68,14 @@ const roles = ref<AccessRole[]>([]);
 const accessUsers = ref<Array<{ id: string; username: string; displayName: string }>>([]);
 const employees = ref<EmployeeDetailRow[]>([]);
 
-const systemForm = reactive({ app_name: "", session_hours: 8, login_notice: "" });
+const systemForm = reactive({
+  app_name: "",
+  session_hours: 8,
+  login_notice: "",
+  /** 公司 Logo：PNG 的 data URI，存 system_setting.app_logo。 */
+  app_logo: "",
+  export_logo_enabled: false,
+});
 const passwordForm = reactive({ currentPassword: "", newPassword: "", confirmPassword: "" });
 const backupForm = reactive({ backup_enabled: "0", backup_time: "02:00", backup_retention_days: "30" });
 
@@ -260,6 +267,8 @@ async function loadAll(): Promise<void> {
     systemForm.app_name = loaded.app_name ?? "";
     systemForm.session_hours = Number(loaded.session_hours ?? 8) || 8;
     systemForm.login_notice = loaded.login_notice ?? "";
+    systemForm.app_logo = loaded.app_logo ?? "";
+    systemForm.export_logo_enabled = String(loaded.export_logo_enabled ?? "0") === "1";
     backupForm.backup_enabled = loaded.backup_enabled ?? "0";
     backupForm.backup_time = loaded.backup_time ?? "02:00";
     backupForm.backup_retention_days = loaded.backup_retention_days ?? "30";
@@ -336,6 +345,26 @@ function toggleAllPermissions(rows: PermissionRow[], checked: boolean): void {
   });
 }
 
+/** Logo 只收 PNG，读到 data URI 存进设置；后端保存时会再校验一次。 */
+async function onLogoChange(file: { raw?: File }): Promise<void> {
+  const raw = file.raw;
+  if (!raw) return;
+  if (!raw.name.toLowerCase().endsWith(".png") || raw.type !== "image/png") {
+    ElMessage.warning("请选择 PNG 图片。");
+    return;
+  }
+  if (raw.size > 300 * 1024) {
+    ElMessage.warning("图片请控制在 300KB 以内（建议高度 80 像素左右）。");
+    return;
+  }
+  const bytes = new Uint8Array(await raw.arrayBuffer());
+  let binary = "";
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  systemForm.app_logo = `data:image/png;base64,${window.btoa(binary)}`;
+}
+
 async function submitSystemSettings(): Promise<void> {
   if (!canUpdateSettings.value) {
     ElMessage.warning("只有具备系统设置修改权限的账号可以保存。");
@@ -356,8 +385,13 @@ async function submitSystemSettings(): Promise<void> {
       app_name: systemForm.app_name.trim(),
       login_notice: systemForm.login_notice,
       session_hours: String(hours),
+      app_logo: systemForm.app_logo,
+      export_logo_enabled: systemForm.export_logo_enabled ? "1" : "0",
     });
     settings.value = { ...settings.value, ...saved };
+    // 左上角的系统名与图标立刻跟着变，不用重新登录
+    session.appName = String(saved.app_name ?? systemForm.app_name.trim());
+    session.appLogo = String(saved.app_logo ?? systemForm.app_logo);
     ElMessage.success("系统设置已保存。");
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "保存系统设置失败。");
@@ -764,7 +798,47 @@ onMounted(async () => {
         <template v-if="tab.key === 'system'">
           <el-form label-position="top" style="max-width: 620px">
             <el-form-item label="系统名称" required>
-              <el-input v-model="systemForm.app_name" :disabled="!canUpdateSettings" />
+              <el-input
+                v-model="systemForm.app_name"
+                :disabled="!canUpdateSettings"
+                placeholder="显示在登录页、左上角和导出文件里"
+              />
+            </el-form-item>
+            <el-form-item label="公司 Logo">
+              <div class="oa-flex-row">
+                <span class="oa-logo-preview">
+                  <img v-if="systemForm.app_logo" :src="systemForm.app_logo" alt="Logo 预览" />
+                  <span v-else class="oa-muted">未上传</span>
+                </span>
+                <el-upload
+                  :auto-upload="false"
+                  :show-file-list="false"
+                  :disabled="!canUpdateSettings"
+                  accept="image/png"
+                  :on-change="onLogoChange"
+                >
+                  <el-button :disabled="!canUpdateSettings">选择 PNG</el-button>
+                </el-upload>
+                <el-button
+                  v-if="systemForm.app_logo"
+                  :disabled="!canUpdateSettings"
+                  @click="systemForm.app_logo = ''"
+                >
+                  移除
+                </el-button>
+              </div>
+              <div class="oa-hint">
+                只支持 PNG，300KB 以内（建议横向、高度 80 像素左右）。上传后替换左上角的 OM 图标，
+                同时用于登录页。
+              </div>
+            </el-form-item>
+            <el-form-item label="导出时附带 Logo">
+              <el-switch
+                v-model="systemForm.export_logo_enabled"
+                :disabled="!canUpdateSettings || !systemForm.app_logo"
+                active-text="导出的 Excel 左上角带上公司 Logo"
+                inactive-text="导出不带 Logo"
+              />
             </el-form-item>
             <el-form-item label="无操作自动退出（小时）" required>
               <el-input-number

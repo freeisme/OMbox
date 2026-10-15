@@ -14,6 +14,7 @@ merged cells and charts.
 
 from __future__ import annotations
 
+import base64
 import csv
 import io
 import re
@@ -262,33 +263,47 @@ def _sheet_name(value: object) -> str:
     return name or "数据"
 
 
-def _row_xml(row: list[object], row_index: int, style: str) -> str:
+def _row_xml(
+    row: list[object],
+    row_index: int,
+    styles: str | list[str],
+    height: float = 0,
+) -> str:
     cells = []
     for index, value in enumerate(row):
+        style = styles[index] if isinstance(styles, list) and index < len(styles) else styles
         text = "" if value is None else str(value)
         reference = f"{_column_letter(index)}{row_index}"
-        if style == "2" and _NUMBER.match(text):
+        if style == "3" and _NUMBER.match(text):
             cells.append(f'<c r="{reference}" s="{style}"><v>{text}</v></c>')
             continue
         cells.append(
             f'<c r="{reference}" s="{style}" t="inlineStr"><is><t xml:space="preserve">'
             f"{_xml_text(text)}</t></is></c>"
         )
-    return f'<row r="{row_index}">{"".join(cells)}</row>'
+    size = f' ht="{height:g}" customHeight="1"' if height else ""
+    return f'<row r="{row_index}"{size}>{"".join(cells)}</row>'
 
 
 def _styles_xml() -> str:
+    """基础样式表：表头深蓝白字、正文细边框、数字右对齐、标题行加粗。
+
+    样式索引（`_sheet_xml` 里按字符串用）：0 默认、1 表头、2 正文文本、3 正文数字、4 标题、
+    5 说明行。
+    """
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-        '<fonts count="2">'
+        '<fonts count="4">'
         '<font><sz val="11"/><name val="微软雅黑"/></font>'
         '<font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="微软雅黑"/></font>'
+        '<font><b/><sz val="14"/><color rgb="FF1F4E79"/><name val="微软雅黑"/></font>'
+        '<font><sz val="10.5"/><color rgb="FF595959"/><name val="微软雅黑"/></font>'
         "</fonts>"
         '<fills count="3">'
         '<fill><patternFill patternType="none"/></fill>'
         '<fill><patternFill patternType="gray125"/></fill>'
-        '<fill><patternFill patternType="solid"><fgColor rgb="FF4C78A8"/><bgColor indexed="64"/>'
+        '<fill><patternFill patternType="solid"><fgColor rgb="FF1F4E79"/><bgColor indexed="64"/>'
         "</patternFill></fill>"
         "</fills>"
         '<borders count="2">'
@@ -299,21 +314,45 @@ def _styles_xml() -> str:
         '<bottom style="thin"><color rgb="FFD0D7DE"/></bottom><diagonal/></border>'
         "</borders>"
         '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
-        '<cellXfs count="4">'
+        '<cellXfs count="6">'
         '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
         '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" '
         'applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" '
         'wrapText="1"/></xf>'
         '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" '
-        'applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>'
-        '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>'
+        'applyAlignment="1"><alignment horizontal="left" vertical="top" wrapText="1"/></xf>'
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" '
+        'applyAlignment="1"><alignment horizontal="right" vertical="top" wrapText="1"/></xf>'
+        '<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1" '
+        'applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>'
+        '<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1" '
+        'applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>'
         "</cellXfs>"
         '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
         "</styleSheet>"
     )
 
 
-def _sheet_xml(title: list[list[str]], header: list[str], rows: list[list[str]]) -> str:
+def _numeric_columns(rows: list[list[str]], width: int) -> set[int]:
+    """整列都是数字（且至少有一个值）时右对齐，看起来更像台账。"""
+    numeric: set[int] = set()
+    for index in range(width):
+        values = [
+            str(row[index]).strip()
+            for row in rows
+            if index < len(row) and str(row[index]).strip()
+        ]
+        if values and all(_NUMBER.match(value) for value in values):
+            numeric.add(index)
+    return numeric
+
+
+def _sheet_xml(
+    title: list[list[str]],
+    header: list[str],
+    rows: list[list[str]],
+    logo: bytes | None = None,
+) -> str:
     width_count = max(
         [len(header), *(len(row) for row in title), *(len(row) for row in rows)] or [0]
     )
@@ -329,28 +368,110 @@ def _sheet_xml(title: list[list[str]], header: list[str], rows: list[list[str]])
         f'<col min="{index + 1}" max="{index + 1}" width="{width}" customWidth="1"/>'
         for index, width in enumerate(widths)
     )
+    # 有 Logo 时在最上面留两行给它，表头与冻结位置整体下移
+    logo_rows = 2 if logo else 0
     preamble = [
-        _row_xml(row, index + 1, "3" if index == 0 else "0") for index, row in enumerate(title)
+        _row_xml(row, logo_rows + index + 1, "4" if index == 0 else "5", 22 if index == 0 else 18)
+        for index, row in enumerate(title)
     ]
-    header_index = len(title) + 1
-    body = [_row_xml(header, header_index, "1")] + [
-        _row_xml(row, header_index + index + 1, "2") for index, row in enumerate(rows)
+    header_index = logo_rows + len(title) + 1
+    numeric = _numeric_columns(rows, width_count)
+    body = [_row_xml(header, header_index, "1", 26)] + [
+        _row_xml(
+            row,
+            header_index + index + 1,
+            ["3" if column in numeric else "2" for column in range(len(row))],
+        )
+        for index, row in enumerate(rows)
     ]
     last = f"{_column_letter(max(width_count - 1, 0))}{header_index + len(rows)}"
+    drawing = '<drawing r:id="rId1"/>' if logo else ""
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
         f'<dimension ref="A1:{last}"/>'
         '<sheetViews><sheetView workbookViewId="0" tabSelected="1">'
         f'<pane ySplit="{header_index}" topLeftCell="A{header_index + 1}" activePane="bottomLeft" '
         'state="frozen"/>'
         f'<selection pane="bottomLeft" activeCell="A{header_index + 1}" sqref="A{header_index + 1}"/>'
         "</sheetView></sheetViews>"
-        '<sheetFormatPr defaultRowHeight="18"/>'
+        '<sheetFormatPr defaultRowHeight="18" defaultColWidth="10"/>'
         f"<cols>{cols}</cols>"
         f"<sheetData>{''.join(preamble + body)}</sheetData>"
         f'<autoFilter ref="A{header_index}:{last}"/>'
+        f"{drawing}"
         "</worksheet>"
+    )
+
+
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+LOGO_DATA_URI_PREFIX = "data:image/png;base64,"
+MAX_LOGO_BYTES = 300 * 1024
+# 导出时 Logo 的最大显示高度（点）；宽度按原图比例算，最多不超过 240 点。
+LOGO_MAX_HEIGHT_PX = 36
+LOGO_MAX_WIDTH_PX = 240
+# 1 点 = 12700 EMU，1 像素 = 9525 EMU（96 DPI）
+EMU_PER_PIXEL = 9525
+
+
+def png_size(data: bytes) -> tuple[int, int] | None:
+    """读 PNG 的 IHDR 拿宽高；不是 PNG 或数据不完整时返回 None。"""
+    if len(data) < 24 or not data.startswith(PNG_MAGIC) or data[12:16] != b"IHDR":
+        return None
+    width = int.from_bytes(data[16:20], "big")
+    height = int.from_bytes(data[20:24], "big")
+    if width <= 0 or height <= 0:
+        return None
+    return width, height
+
+
+def decode_logo_data_uri(value: object) -> bytes | None:
+    """把设置里存的 `data:image/png;base64,...` 解析成 PNG 字节；空值返回 None。
+
+    不是 PNG、超过 300KB 或 base64 不合法时抛 :class:`WorkbookError`（保存设置时直接提示用户）。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if not text.startswith(LOGO_DATA_URI_PREFIX):
+        raise WorkbookError("Logo 必须是 PNG 图片（上传时会自动转成 data URI）。")
+    try:
+        data = base64.b64decode(text[len(LOGO_DATA_URI_PREFIX) :], validate=True)
+    except (ValueError, TypeError) as exc:
+        raise WorkbookError("Logo 内容不是合法的 base64。") from exc
+    if len(data) > MAX_LOGO_BYTES:
+        raise WorkbookError(f"Logo 图片过大（上限 {MAX_LOGO_BYTES // 1024}KB），请压缩后再上传。")
+    if png_size(data) is None:
+        raise WorkbookError("Logo 不是有效的 PNG 图片。")
+    return data
+
+
+def _logo_drawing_xml(data: bytes) -> str:
+    size = png_size(data) or (LOGO_MAX_WIDTH_PX, LOGO_MAX_HEIGHT_PX)
+    ratio = size[0] / size[1]
+    height = LOGO_MAX_HEIGHT_PX
+    width = min(round(height * ratio), LOGO_MAX_WIDTH_PX)
+    cx = width * EMU_PER_PIXEL
+    cy = height * EMU_PER_PIXEL
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" '
+        'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        "<xdr:oneCellAnchor>"
+        "<xdr:from><xdr:col>0</xdr:col><xdr:colOff>9525</xdr:colOff>"
+        "<xdr:row>0</xdr:row><xdr:rowOff>9525</xdr:rowOff></xdr:from>"
+        f'<xdr:ext cx="{cx}" cy="{cy}"/>'
+        "<xdr:pic><xdr:nvPicPr>"
+        '<xdr:cNvPr id="1" name="logo.png" descr="公司 Logo"/>'
+        '<xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr>'
+        "</xdr:nvPicPr>"
+        '<xdr:blipFill><a:blip r:embed="rId1"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill>'
+        '<xdr:spPr><a:xfrm><a:off x="0" y="0"/>'
+        f'<a:ext cx="{cx}" cy="{cy}"/></a:xfrm>'
+        '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr>'
+        "</xdr:pic><xdr:clientData/></xdr:oneCellAnchor></xdr:wsDr>"
     )
 
 
@@ -360,11 +481,23 @@ def write_sheet(
     header: list[str] | None = None,
     title: list[list[str]] | None = None,
     sheet_name: str = "数据",
+    logo: bytes | None = None,
 ) -> bytes:
-    """把二维表写成 xlsx（基础样式：表头加粗填色、细边框、自适应列宽、冻结首行、自动筛选）。"""
+    """把二维表写成 xlsx（表头深蓝白字、细边框、自适应列宽、冻结首行、自动筛选）。
+
+    `logo` 传 PNG 字节时，图片会贴在左上角，表格整体下移两行。
+    """
     table = [list(row) for row in rows]
     head = [str(cell) for cell in (header or [])]
     preamble = [[str(cell) for cell in row] for row in (title or [])]
+    logo_png = logo if logo and png_size(logo) else None
+    logo_types = (
+        '<Default Extension="png" ContentType="image/png"/>'
+        '<Override PartName="/xl/drawings/drawing1.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>'
+        if logo_png
+        else ""
+    )
     with io.BytesIO() as buffer:
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.writestr(
@@ -373,6 +506,8 @@ def write_sheet(
                 '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
                 '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
                 '<Default Extension="xml" ContentType="application/xml"/>'
+                + logo_types
+                +
                 '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
                 '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
                 '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
@@ -402,12 +537,32 @@ def write_sheet(
                 "</Relationships>",
             )
             archive.writestr("xl/styles.xml", _styles_xml())
-            archive.writestr("xl/worksheets/sheet1.xml", _sheet_xml(preamble, head, table))
+            if logo_png:
+                archive.writestr("xl/media/image1.png", logo_png)
+                archive.writestr("xl/drawings/drawing1.xml", _logo_drawing_xml(logo_png))
+                archive.writestr(
+                    "xl/drawings/_rels/drawing1.xml.rels",
+                    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/>'
+                    "</Relationships>",
+                )
+                archive.writestr(
+                    "xl/worksheets/_rels/sheet1.xml.rels",
+                    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/>'
+                    "</Relationships>",
+                )
+            archive.writestr(
+                "xl/worksheets/sheet1.xml",
+                _sheet_xml(preamble, head, table, logo=logo_png),
+            )
         return buffer.getvalue()
 
 
-def export_xlsx(payload: dict) -> tuple[bytes, str]:
-    """把 `{fileName, sheetName, header, rows}` 渲染成 xlsx，返回 (内容, 下载文件名)。"""
+def export_xlsx(payload: dict, *, logo: bytes | None = None) -> tuple[bytes, str]:
+    """把 `{fileName, sheetName, header, rows, title}` 渲染成 xlsx，返回 (内容, 下载文件名)。"""
     header = [str(cell) for cell in (payload.get("header") or [])]
     # 表头之上的说明行（例如巡检表的「任务编号 / 执行人」几行）
     title = [[str(cell) for cell in (row or [])] for row in (payload.get("title") or [])]
@@ -425,6 +580,12 @@ def export_xlsx(payload: dict) -> tuple[bytes, str]:
     if not name.lower().endswith(".xlsx"):
         name = f"{name or '导出'}.xlsx"
     return (
-        write_sheet(rows, header=header, title=title, sheet_name=payload.get("sheetName") or "数据"),
+        write_sheet(
+            rows,
+            header=header,
+            title=title,
+            sheet_name=payload.get("sheetName") or "数据",
+            logo=logo,
+        ),
         name,
     )

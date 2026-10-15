@@ -13,14 +13,18 @@ const errorMessage = ref("");
 const version = computed(() => session.meta?.version || __APP_VERSION__);
 /** 登录页显示系统设置里的名称与提示语；接口不可用时回落到产品默认名。 */
 const appName = ref("OMbox 运维（O&M）盒子");
+const appLogo = ref("");
 const loginNotice = ref("");
 
 async function loadBranding(): Promise<void> {
   try {
-    const payload = await api<{ settings?: { app_name?: string; login_notice?: string } }>(
+    const payload = await api<{
+      settings?: { app_name?: string; app_logo?: string; login_notice?: string };
+    }>(
       "/api/auth/bootstrap-status",
     );
     if (payload.settings?.app_name) appName.value = payload.settings.app_name;
+    appLogo.value = payload.settings?.app_logo?.trim() || "";
     loginNotice.value = payload.settings?.login_notice?.trim() || "";
   } catch {
     // 保持默认名称，不阻塞登录
@@ -56,7 +60,10 @@ void loadBranding();
     <el-card class="oa-login-card">
       <template #header>
         <div class="oa-flex-between">
-          <strong>{{ appName }}</strong>
+          <span class="oa-login-brand">
+            <img v-if="appLogo" class="oa-brand-logo" :src="appLogo" alt="系统 Logo" />
+            <strong>{{ appName }}</strong>
+          </span>
           <el-tag size="small" effect="plain" type="info">v{{ version }}</el-tag>
         </div>
       </template>

@@ -6,6 +6,7 @@ import {
   deleteInspectionSite,
   fetchInspectionSites,
   fetchSiteDevices,
+  importInspectionSites,
   removeSiteDevice,
   saveInspectionSite,
   type InspectionSite,
@@ -15,6 +16,7 @@ import { loadInventoryData, type InventoryData } from "../api/inventory";
 import { hasPermission } from "../session";
 import { confirmAction } from "../composables/useConfirm";
 import DataPanel from "../components/ui/DataPanel.vue";
+import ImportExcelDialog from "../components/ui/ImportExcelDialog.vue";
 import PageHeader from "../components/ui/PageHeader.vue";
 import ToolbarActions from "../components/ui/ToolbarActions.vue";
 
@@ -26,6 +28,15 @@ const keyword = ref("");
 const roomVisible = ref(false);
 const roomEditingId = ref("");
 const roomForm = reactive({ code: "", name: "", location: "", remarks: "" });
+const importDialog = ref(false);
+
+/** 导入模板：表头与后端 SITE_IMPORT_ALIASES 对应，类型固定为会议室。 */
+const ROOM_IMPORT_FIELDS: Record<string, string> = {
+  code: "编码",
+  name: "名称",
+  location: "位置",
+  remarks: "备注",
+};
 
 const deviceVisible = ref(false);
 const deviceRoom = ref<InspectionSite | null>(null);
@@ -276,6 +287,7 @@ onMounted(load);
       <el-button v-if="canCreate" type="primary" @click="openRoomDialog()">
         ＋ 新增会议室
       </el-button>
+      <el-button v-if="canCreate" @click="importDialog = true">导入 Excel</el-button>
     </ToolbarActions>
 
     <el-table :data="rooms" size="small" border empty-text="暂无会议室">
@@ -323,6 +335,18 @@ onMounted(load);
       </el-form-item>
     </el-form>
   </FormDialog>
+
+  <ImportExcelDialog
+    v-model="importDialog"
+    title="导入会议室"
+    :field-labels="ROOM_IMPORT_FIELDS"
+    :template-header="['编码', '名称', '位置', '备注']"
+    :template-sample="['MR-3F-A', '3 楼大会议室', 'A 栋 3 楼东侧 301', '可坐 20 人']"
+    template-file-name="会议室导入模板.csv"
+    hint="表头需包含「名称」，编码 / 位置 / 备注可选。编码留空会自动编号（MR-001…）；编码已存在时按上面的开关「跳过」或「更新」。导入的都是会议室，不影响机房与弱电间。"
+    :import-fn="importInspectionSites"
+    @imported="load()"
+  />
 
   <FormDialog
     v-model="deviceVisible"

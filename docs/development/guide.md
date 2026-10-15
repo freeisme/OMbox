@@ -586,7 +586,7 @@ non_asset_type
 `topology_node_position`，"移出画布"删掉这一行；画布文字存在 `topology_annotation`，
 删除是软删除。
 
-#### 批量导入（使用人员 / 办公终端 / 机房设备）
+#### 批量导入（使用人员 / 办公终端 / 机房设备 / 会议室）
 
 三处导入共用同一套解析与交互（v3.0.26 起）：
 
@@ -594,7 +594,8 @@ non_asset_type
   CSV 走 UTF-8 BOM 或 GBK，上限 8MB）与 `map_headers(header_row, aliases)`
   （列名忽略大小写、空格与标点）；机房设备导入也改用它，三处只有一份实现；
 - 服务端接口：`POST /api/datacenter-devices/import`、`POST /api/employees/import`
-  （权限 `employees:create`）、`POST /api/computers/import`（权限 `it_assets:create`）；
+  （权限 `employees:create`）、`POST /api/computers/import`（权限 `it_assets:create`）、
+  `POST /api/inspection/sites/import`（会议室，权限 `inspection_management:create`）；
   入参 `{fileName, contentBase64, dryRun, mode}`，`mode` 取 `skip`（默认）或 `update`，
   匹配键分别是 设备编号 / 工号 / 设备名称；
 - 逐行容错：一行出错只记 `errors[{row, code, message}]`，其余照常导入；`dryRun=true` 只统计不写库；
@@ -608,6 +609,14 @@ non_asset_type
 - 前端共用一个弹窗组件 `frontend/src/components/ui/ImportExcelDialog.vue`
   （选文件 → 预览 → 确认导入 → 结果），使用人员与办公终端各接一次
   （机房设备仍保留自己的旧弹窗，逻辑一致）。
+- 会议室：表头 `编码 / 名称 / 位置 / 备注`，类型固定 `meeting_room`，不碰机房与弱电间；
+  编码留空自动编号（`MR-001`…），按编码匹配已有会议室，`mode` 同样是跳过 / 更新；
+  审计 `inspection_sites_imported`。
+
+还没有导入入口、但数据形态适合后续补的模块：
+组织架构（`org_unit`）、IT 物资目录（类型 / 品牌 / 型号）、机柜（`asset_rack`）、
+会议室设备与巡检对象设备（`site_device`）、巡检模板（`inspection_template`）、
+用户账号（`user_account`）、设备类型字典（`device_type_catalog`）。
 
 #### 导出表格（CSV / Excel）
 
@@ -630,6 +639,13 @@ v3.0.31 起所有表格导出都走这套（含巡检表、操作日志、机柜
 导出内容需要"表头之上的说明行"时给 `downloadTable()` 传 `title`（`ExportMenu` 的 `load`
 可以返回 `{ title, header, rows }`）——xlsx 会把说明行放在表头之上（首行用加粗样式），
 冻结行列与自动筛选自动从真正的表头行开始；CSV 与 Excel 的行内容保持一致。
+
+v3.0.37 起：表头换成更「正规」的深蓝（`FF1F4E79`）+ 行高 26，标题行 14 号加粗深蓝、
+说明行灰色小字，整列都是数字的列自动右对齐；「设置 → 系统参数」可以上传公司 Logo
+（PNG，≤300KB，存 `system_setting.app_logo` 的 data URI），打开「导出时附带 Logo」后
+导出接口会给 `write_sheet()` 传 `logo=`，图片贴在 A1、表格整体下移两行
+（`xl/media/image1.png` + `xl/drawings/drawing1.xml`）。同一个 Logo 与 `app_name`
+还会替换左上角侧边栏和登录页的默认品牌（`/api/auth/session` 返回 `appName` / `appLogo`）。
 
 ## 6. 前端扩展方法
 

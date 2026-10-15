@@ -24,7 +24,7 @@ from datetime import datetime
 
 from .scope import OrganizationScopeService
 from .sql import SqlGateway, parse_bool
-from .xlsx import WorkbookError, read_sheet
+from .xlsx import WorkbookError, map_headers, read_sheet
 
 
 SITE_TYPES = {"server_room", "weak_room", "meeting_room"}
@@ -34,6 +34,8 @@ SITE_TYPE_LABELS = {
     "meeting_room": "会议室",
     "both": "通用",
 }
+# 导入时编码留空的自动编号前缀
+SITE_CODE_PREFIX = {"server_room": "SR", "weak_room": "WR", "meeting_room": "MR"}
 TEMPLATE_SITE_TYPES = {"server_room", "weak_room", "meeting_room", "both"}
 # 一次"批量开检"最多选择多少个目标
 MAX_TASK_TARGETS = 30
@@ -90,6 +92,13 @@ IMPORT_COLUMNS = (
 )
 MAX_IMPORT_ROWS = 1000
 MAX_IMPORT_BYTES = 8 * 1024 * 1024
+# 巡检对象（会议室 / 机房 / 弱电间）导入用的表头别名
+SITE_IMPORT_ALIASES: dict[str, set[str]] = {
+    "code": {"编码", "编号", "会议室编码", "机房编码", "弱电间编码", "code"},
+    "name": {"名称", "会议室名称", "机房名称", "弱电间名称", "name"},
+    "location": {"位置", "地点", "楼层", "location"},
+    "remarks": {"备注", "说明", "remarks", "note"},
+}
 
 
 @dataclass
@@ -1747,6 +1756,189 @@ class InspectionService:
             except WorkbookError as exc:
                 raise self.api_error(str(exc)) from exc
         raise self.api_error("只支持 .xlsx、.xlsm 或 .csv 文件。")
+
+    def import_sites(self, payload: dict, context: dict, site_type: str = "meeting_room") -> dict:
+        """批量导入巡检对象（默认会议室）。
+
+        表头：编码 / 名称 / 位置 / 备注；编码可空（自动生成），按编码匹配已存在的对象，
+        `dryRun` 只预览不写库，`mode=update` 覆盖已存在记录的名称 / 位置 / 备注。
+        只处理 `site_type` 这一类的对象，不会碰机房与弱电间。
+        """
+        if site_type not in SITE_TYPES:
+            raise self.api_error("巡检对象类型无效。")
+        label = SITE_TYPE_LABELS.get(site_type, "巡检对象")
+        file_name = self.db.text(payload.get("fileName"))[:200]
+        content = self.db.text(payload.get("contentBase64"))
+        if not content:
+            raise self.api_error("请上传 .xlsx 或 .csv 文件。")
+        try:
+            data = base64.b64decode(content, validate=True)
+        except (ValueError, TypeError) as exc:
+            raise self.api_error("文件内容不是合法的 base64 编码。") from exc
+        rows = self._read_import_rows(file_name, data)
+        if not rows:
+            raise self.api_error("文件里没有可读取的内容。")
+
+        header_index = 0
+        mapping: dict[str, int] = {}
+        for index, row in enumerate(rows[:10]):
+            candidate = self._map_site_headers(row)
+            if candidate:
+                header_index, mapping = index, candidate
+                break
+        if "name" not in mapping:
+            raise self.api_error("表头至少要有「名称」一列（编码 / 位置 / 备注可选）。")
+
+        dry_run = parse_bool(payload.get("dryRun"))
+        update_existing = self.db.text(payload.get("mode")) == "update"
+        data_rows = [row for row in rows[header_index + 1 :] if any((cell or "").strip() for cell in row)]
+        if not data_rows:
+            raise self.api_error("表头下面没有数据行。")
+        if len(data_rows) > MAX_IMPORT_ROWS:
+            raise self.api_error(f"一次最多导入 {MAX_IMPORT_ROWS} 行，请拆分文件。")
+
+        existing = self._site_code_lookup(site_type)
+        summary = {
+            "fileName": file_name,
+            "sheetHeaders": {
+                field: (rows[header_index][index] if index < len(rows[header_index]) else "")
+                for field, index in sorted(mapping.items(), key=lambda item: item[1])
+            },
+            "totalRows": len(data_rows),
+            "created": 0,
+            "updated": 0,
+            "skipped": 0,
+            "errors": [],
+            "errorCount": 0,
+            "warnings": [],
+            "warningCount": 0,
+            "dryRun": dry_run,
+        }
+        errors: list[dict] = summary["errors"]
+        warnings: list[dict] = summary["warnings"]
+        pending: list[dict] = []
+        seen: set[str] = set()
+        auto_index = 0
+        for offset, row in enumerate(data_rows):
+            excel_row = header_index + 2 + offset
+            name = self._import_cell(row, mapping.get("name"))[:128]
+            if not name:
+                errors.append({"row": excel_row, "message": "缺少名称"})
+                continue
+            code = self._import_cell(row, mapping.get("code"))[:64]
+            if not code:
+                # 编码留空时自动编号，和页面上「新增会议室」的行为一致
+                while True:
+                    auto_index += 1
+                    code = f"{SITE_CODE_PREFIX.get(site_type, 'MR')}-{auto_index:03d}"
+                    if code.lower() not in existing and code not in seen:
+                        break
+            if code in seen:
+                errors.append({"row": excel_row, "message": f"文件内编码「{code}」重复"})
+                continue
+            seen.add(code)
+            if not CODE_PATTERN.match(code):
+                errors.append({"row": excel_row, "message": f"编码「{code}」只能使用字母、数字、点、下划线和短横线，长度 2-64"})
+                continue
+            location = self._import_cell(row, mapping.get("location"))[:255]
+            remarks = self._import_cell(row, mapping.get("remarks"))[:500]
+            site_id = existing.get(code.lower())
+            if site_id and not update_existing:
+                summary["skipped"] += 1
+                warnings.append({"row": excel_row, "code": code, "message": f"{label}「{name}」已存在，按跳过处理"})
+                continue
+            pending.append(
+                {
+                    "id": site_id,
+                    "code": code,
+                    "name": name,
+                    "location": location,
+                    "remarks": remarks,
+                }
+            )
+            if site_id:
+                summary["updated"] += 1
+            else:
+                summary["created"] += 1
+
+        summary["errorCount"] = len(errors)
+        summary["warningCount"] = len(warnings)
+        if dry_run:
+            return summary
+        if not pending:
+            if summary["errorCount"]:
+                raise self.api_error("没有可导入的行，请先修正文件里的问题。")
+            return summary
+
+        statements = []
+        for item in pending:
+            if item["id"]:
+                statements.append(
+                    f"""
+                    UPDATE asset_site
+                    SET site_name = {self.db.quote(item['name'])},
+                        location_desc = {self.db.quote(item['location'])},
+                        remarks = {self.db.quote(item['remarks'])}
+                    WHERE site_id = {item['id']}
+                    """
+                )
+            else:
+                statements.append(
+                    f"""
+                    INSERT INTO asset_site (site_code, site_name, site_type, location_desc, remarks)
+                    VALUES (
+                      {self.db.quote(item['code'])},
+                      {self.db.quote(item['name'])},
+                      {self.db.quote(site_type)},
+                      {self.db.quote(item['location'])},
+                      {self.db.quote(item['remarks'])}
+                    )
+                    """
+                )
+        statements.append(
+            self._audit_sql(
+                "inspection_sites_imported",
+                "asset_site",
+                "'batch'",
+                file_name or f"{label}导入",
+                f"批量导入{label}（新增 {summary['created']}，更新 {summary['updated']}，"
+                f"跳过 {summary['skipped']}，错误 {summary['errorCount']}）",
+                context,
+                None,
+                {
+                    "fileName": file_name,
+                    "created": summary["created"],
+                    "updated": summary["updated"],
+                    "skipped": summary["skipped"],
+                },
+            )
+        )
+        self.db.execute("START TRANSACTION;\n" + ";\n".join(statements) + ";\nCOMMIT;")
+        return summary
+
+    def _map_site_headers(self, header_row: list[str]) -> dict[str, int]:
+        return map_headers(header_row, SITE_IMPORT_ALIASES)
+
+    def _site_code_lookup(self, site_type: str) -> dict[str, int]:
+        rows = (
+            self.db.json(
+                f"""
+                SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
+                  'id', CAST(site_id AS CHAR),
+                  'code', site_code
+                )), JSON_ARRAY())
+                FROM asset_site
+                WHERE site_type = {self.db.quote(site_type)}
+                """,
+                [],
+            )
+            or []
+        )
+        return {
+            self.db.text(row.get("code")).lower(): self.db.integer(row.get("id"), 0)
+            for row in rows
+            if self.db.text(row.get("code"))
+        }
 
     def import_task(self, payload: dict, context: dict) -> dict:
         """按模板导入巡检表：一次生成一份"已提交"的巡检记录。

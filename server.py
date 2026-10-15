@@ -26,6 +26,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from office_asset.api_router import ApiDependencies, DomainApiRouter
+from office_asset.xlsx import WorkbookError, decode_logo_data_uri
 from office_asset.jobs import finish_job_execution, job_run_key, run_periodic_job, start_job_execution
 from office_asset.permissions import PermissionService
 from office_asset.sql import SqlGateway, parse_bool
@@ -869,6 +870,27 @@ def settings_payload() -> dict:
         {},
     )
     return value if isinstance(value, dict) else {}
+
+
+def branding_payload() -> dict:
+    """左上角 / 登录页用的品牌信息（系统名 + Logo），供会话与登录页复用。"""
+    settings = settings_payload()
+    return {
+        "app_name": text_value(settings.get("app_name")),
+        "app_logo": text_value(settings.get("app_logo")),
+    }
+
+
+def export_logo_bytes() -> bytes | None:
+    """导出 Excel 时附带的公司 Logo；没开启或 Logo 有问题时返回 None（导出不因此失败）。"""
+    settings = settings_payload()
+    if text_value(settings.get("export_logo_enabled")) != "1":
+        return None
+    try:
+        return decode_logo_data_uri(settings.get("app_logo"))
+    except WorkbookError as exc:
+        print(f"Export logo skipped: {exc}")
+        return None
 
 
 def request_update_service(
@@ -5203,6 +5225,7 @@ DOMAIN_ROUTER = DomainApiRouter(
         require_role=require_role,
         require_permission=require_permission,
         require_csrf=require_csrf,
+        export_logo=export_logo_bytes,
     )
 )
 
@@ -5360,11 +5383,13 @@ class AppHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/auth/bootstrap-status" and self.command == "GET":
             public_settings = settings_payload()
+            branding = branding_payload()
             self.send_json(
                 {
                     "required": auth_user_count() == 0,
                     "settings": {
-                        "app_name": public_settings.get("app_name", "OMbox运维（O&M）盒子"),
+                        "app_name": branding["app_name"] or "OMbox运维（O&M）盒子",
+                        "app_logo": branding["app_logo"],
                         "login_notice": public_settings.get("login_notice", ""),
                     },
                 }
@@ -5376,6 +5401,7 @@ class AppHandler(SimpleHTTPRequestHandler):
             if not context:
                 self.send_json({"authenticated": False}, status=HTTPStatus.UNAUTHORIZED)
                 return
+            branding = branding_payload()
             self.send_json(
                 {
                     "authenticated": True,
@@ -5383,6 +5409,8 @@ class AppHandler(SimpleHTTPRequestHandler):
                     # 无操作多久自动退出（分钟）：前端据此在空闲时停止后台轮询，
                     # 否则定时请求会不断刷新会话，超时永远不会发生。
                     "idleMinutes": configured_session_hours() * 60,
+                    "appName": branding["app_name"],
+                    "appLogo": branding["app_logo"],
                 }
             )
             return
@@ -5697,6 +5725,8 @@ class AppHandler(SimpleHTTPRequestHandler):
             settings = payload.get("settings") or {}
             allowed = {
                 "app_name",
+                "app_logo",
+                "export_logo_enabled",
                 "login_notice",
                 "session_hours",
                 "backup_enabled",
@@ -5704,6 +5734,15 @@ class AppHandler(SimpleHTTPRequestHandler):
                 "backup_retention_days",
             }
             updates = {key: text_value(value) for key, value in settings.items() if key in allowed}
+            if "app_logo" in updates:
+                try:
+                    decode_logo_data_uri(updates["app_logo"])
+                except WorkbookError as exc:
+                    raise ApiError(str(exc))
+            if "export_logo_enabled" in updates:
+                updates["export_logo_enabled"] = (
+                    "1" if parse_bool(updates["export_logo_enabled"], False) else "0"
+                )
             if "session_hours" in updates:
                 hours = sql_int(updates["session_hours"], 0)
                 if hours < 1 or hours > 168:

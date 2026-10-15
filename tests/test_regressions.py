@@ -2495,6 +2495,144 @@ class ComputerInventoryModelFilterTests(TestCase):
         self.assertIn("「从库存登记」只能选「电脑 / 办公终端」类型的型号", service)
 
 
+class MeetingRoomImportTests(TestCase):
+    """会议室支持 xlsx / csv 批量导入（表头：编码 / 名称 / 位置 / 备注）。"""
+
+    def test_router_exposes_meeting_room_import(self):
+        router = (ROOT / "office_asset" / "api_router.py").read_text(encoding="utf-8")
+
+        self.assertIn('if path == "/api/inspection/sites/import" and method == "POST":', router)
+        self.assertIn(
+            'self.inspection.import_sites(self._payload(handler), context, "meeting_room")',
+            router,
+        )
+
+    def test_service_imports_sites_with_dry_run_and_mode(self):
+        service = (ROOT / "office_asset" / "inspection.py").read_text(encoding="utf-8")
+        body = service.split("def import_sites", 1)[1].split("def import_task", 1)[0]
+
+        self.assertIn("SITE_IMPORT_ALIASES", service)
+        aliases = service.split("SITE_IMPORT_ALIASES", 1)[1].split("\n}", 1)[0]
+        for field in ('"code": {', '"name": {', '"location": {', '"remarks": {'):
+            self.assertIn(field, aliases)
+        # 只处理会议室，不动机房 / 弱电间
+        self.assertIn('site_type: str = "meeting_room"', service)
+        self.assertIn("WHERE site_type = {self.db.quote(site_type)}", service)
+        # 预览、跳过/更新开关、自动编号与审计
+        self.assertIn('parse_bool(payload.get("dryRun"))', body)
+        self.assertIn('== "update"', body)
+        self.assertIn("SITE_CODE_PREFIX", body)
+        self.assertIn("inspection_sites_imported", body)
+
+    def test_meeting_room_page_has_import_entry(self):
+        view = (ROOT / "frontend" / "src" / "views" / "MeetingRoomView.vue").read_text(
+            encoding="utf-8"
+        )
+        api_module = (ROOT / "frontend" / "src" / "api" / "governance.ts").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("ImportExcelDialog", view)
+        self.assertIn("导入 Excel", view)
+        self.assertIn("importInspectionSites", view)
+        self.assertIn("export function importInspectionSites", api_module)
+        self.assertIn('"/api/inspection/sites/import"', api_module)
+
+
+class SystemBrandingTests(TestCase):
+    """公司 Logo 与系统名：设置里上传，左上角与导出 Excel 都跟着变。"""
+
+    def test_migration_widens_settings_and_seeds_branding_keys(self):
+        migration = (
+            ROOT / "database" / "migrations" / "20261015_001_system_branding.sql"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("MODIFY COLUMN setting_value MEDIUMTEXT NOT NULL", migration)
+        self.assertIn("'app_logo'", migration)
+        self.assertIn("'export_logo_enabled'", migration)
+
+    def test_settings_api_validates_logo(self):
+        server = (ROOT / "server.py").read_text(encoding="utf-8")
+
+        self.assertIn('"app_logo",', server)
+        self.assertIn('"export_logo_enabled",', server)
+        self.assertIn("decode_logo_data_uri(updates[\"app_logo\"])", server)
+        # 会话与登录页都要带上品牌信息
+        self.assertIn('"appLogo": branding["app_logo"]', server)
+        self.assertIn('"app_logo": branding["app_logo"],', server)
+
+    def test_export_attaches_logo_when_enabled(self):
+        server = (ROOT / "server.py").read_text(encoding="utf-8")
+        router = (ROOT / "office_asset" / "api_router.py").read_text(encoding="utf-8")
+        xlsx = (ROOT / "office_asset" / "xlsx.py").read_text(encoding="utf-8")
+
+        self.assertIn('if text_value(settings.get("export_logo_enabled")) != "1":', server)
+        self.assertIn("logo=self.deps.export_logo()", router)
+        self.assertIn("xl/media/image1.png", xlsx)
+        self.assertIn("xl/drawings/drawing1.xml", xlsx)
+        self.assertIn("def decode_logo_data_uri", xlsx)
+
+    def test_logo_is_embedded_in_the_workbook(self):
+        import zipfile
+
+        from office_asset.xlsx import write_sheet
+
+        data = _tiny_png(120, 40)
+        blob = write_sheet(
+            [["办公室", "3"]],
+            header=["名称", "数量"],
+            title=[["设备清单", ""]],
+            sheet_name="清单",
+            logo=data,
+        )
+        archive = zipfile.ZipFile(io.BytesIO(data and blob))
+        names = set(archive.namelist())
+        self.assertIn("xl/media/image1.png", names)
+        self.assertIn("xl/drawings/drawing1.xml", names)
+        self.assertIn("xl/worksheets/_rels/sheet1.xml.rels", names)
+        self.assertEqual(data, archive.read("xl/media/image1.png"))
+        sheet = archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
+        self.assertIn('<drawing r:id="rId1"/>', sheet)
+        # 有 Logo 时表格整体下移两行：表头在第 3 行
+        self.assertIn('r="3"', sheet)
+        self.assertIn("xl/drawings/_rels/drawing1.xml.rels", names)
+
+    def test_frontend_uses_branding(self):
+        shell = (ROOT / "frontend" / "src" / "layouts" / "AppShell.vue").read_text(
+            encoding="utf-8"
+        )
+        settings_view = (ROOT / "frontend" / "src" / "views" / "SettingsView.vue").read_text(
+            encoding="utf-8"
+        )
+        session = (ROOT / "frontend" / "src" / "session.ts").read_text(encoding="utf-8")
+
+        self.assertIn("session.appLogo", shell)
+        self.assertIn("session.appName", shell)
+        self.assertNotIn("<strong>OMbox</strong>", shell)
+        self.assertIn("appLogo", session)
+        self.assertIn("onLogoChange", settings_view)
+        self.assertIn("export_logo_enabled", settings_view)
+
+
+def _tiny_png(width: int, height: int) -> bytes:
+    """构造一张纯色 PNG（测试用，不依赖 Pillow）。"""
+    import struct
+    import zlib
+
+    raw = b"".join(b"\x00" + b"\xff\x00\x00" * width for _ in range(height))
+
+    def chunk(tag: bytes, payload: bytes) -> bytes:
+        body = tag + payload
+        return struct.pack(">I", len(payload)) + body + struct.pack(">I", zlib.crc32(body))
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
+
+
 class InventoryCatalogDeleteTests(TestCase):
     """IT 物资里建错的品牌 / 型号能删掉（软删除），但有库存或领用记录时必须拒绝。"""
 
