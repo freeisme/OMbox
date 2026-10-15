@@ -1,4 +1,5 @@
 import { api } from "./client";
+import type { ImportSummary } from "./datacenter";
 
 export interface LeftDeviceRow {
   label?: string;
@@ -125,4 +126,14 @@ export async function saveInventoryType(
     return;
   }
   await api("/api/resources/inventory-type", { method: "POST", body: payload });
+}
+
+/** 批量导入组织架构（xlsx / csv，表头：组织编码 / 组织名称 / 上级组织 / 排序 / 启用）。 */
+export function importOrganizations(payload: {
+  fileName: string;
+  contentBase64: string;
+  dryRun?: boolean;
+  mode?: "skip" | "update";
+}): Promise<ImportSummary> {
+  return api<ImportSummary>("/api/organizations/import", { method: "POST", body: payload });
 }

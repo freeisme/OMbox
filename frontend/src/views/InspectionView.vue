@@ -17,6 +17,9 @@ import {
   fetchInspectionTemplate,
   fetchInspectionTemplates,
   importInspectionTask,
+  importInspectionRacks,
+  importInspectionTemplates,
+  importServerRooms,
   INSPECTION_IMPORT_COLUMNS,
   saveInspectionRack,
   saveInspectionSite,
@@ -37,6 +40,7 @@ import { confirmAction } from "../composables/useConfirm";
 import { useRoute, useRouter } from "vue-router";
 import DataPanel from "../components/ui/DataPanel.vue";
 import ExportMenu from "../components/ui/ExportMenu.vue";
+import ImportExcelDialog from "../components/ui/ImportExcelDialog.vue";
 import { downloadTable } from "../api/exports";
 import PageHeader from "../components/ui/PageHeader.vue";
 import ToolbarActions from "../components/ui/ToolbarActions.vue";
@@ -44,6 +48,48 @@ import ToolbarActions from "../components/ui/ToolbarActions.vue";
 const router = useRouter();
 const route = useRoute();
 const loading = ref(true);
+
+/** 巡检对象 / 机柜 / 模板三个导入入口共用一个弹窗，靠 importTarget 切换。 */
+const importDialog = ref(false);
+const importTarget = ref<"rooms" | "racks" | "templates">("rooms");
+const IMPORT_CONFIG = {
+  rooms: {
+    title: "导入机房 / 弱电间",
+    fields: { code: "编码", name: "名称", siteType: "类型", location: "位置", remarks: "备注" },
+    header: ["编码", "名称", "类型", "位置", "备注"],
+    sample: ["SR-1F-A", "1 楼机房", "机房", "A 栋 1 楼", "主干交换"],
+    fileName: "机房导入模板.csv",
+    hint: "表头需包含「名称」；「类型」列写 机房 或 弱电间（留空按机房处理），编码留空自动编号（机房 SR-001 / 弱电间 WR-001）。只导入机房与弱电间，会议室请用会议室模块导入。",
+    importFn: importServerRooms,
+  },
+  racks: {
+    title: "导入机柜",
+    fields: { code: "机柜编码", name: "机柜名称", site: "机房/弱电间", heightU: "高度U", remarks: "备注" },
+    header: ["机柜编码", "机柜名称", "机房/弱电间", "高度U", "备注"],
+    sample: ["RK-1F-A01", "A01 机柜", "1 楼机房", "42", ""],
+    fileName: "机柜导入模板.csv",
+    hint: "表头需包含「机柜编码」「机柜名称」「机房/弱电间」；机房写编码或名称，高度 U 留空按 42U。导入只新增 / 更新机柜本身，不动机柜里的设备。",
+    importFn: importInspectionRacks,
+  },
+  templates: {
+    title: "导入巡检模板",
+    fields: {
+      templateCode: "模板编码",
+      templateName: "模板名称",
+      siteType: "适用对象",
+      category: "检查项分类",
+      title: "检查项目",
+      checkMethod: "检查内容/判定标准",
+      isRequired: "是否必填",
+    },
+    header: ["模板编码", "模板名称", "适用对象", "检查项分类", "检查项目", "检查内容/判定标准", "是否必填"],
+    sample: ["TPL-MR-01", "会议室月度巡检", "会议室", "环境", "空调运行", "运行正常、无异响、无漏水", "1"],
+    fileName: "巡检模板导入模板.csv",
+    hint: "同一个「模板名称」的多行会合并成一份模板 + 多条检查项；模板编码留空自动生成。选「更新已存在的记录」会用文件里的检查项替换该模板原有的明细。",
+    importFn: importInspectionTemplates,
+  },
+} as const;
+const currentImport = computed(() => IMPORT_CONFIG[importTarget.value]);
 const saving = ref(false);
 const activeTab = ref("tasks");
 const tasks = ref<InspectionTask[]>([]);
@@ -1027,6 +1073,18 @@ onMounted(async () => {
         >
           ＋ 新增机柜
         </el-button>
+        <el-button
+          v-if="hasPermission('inspection_management', 'create')"
+          @click="importTarget = 'rooms'; importDialog = true"
+        >
+          导入机房 / 弱电间
+        </el-button>
+        <el-button
+          v-if="hasPermission('inspection_management', 'create')"
+          @click="importTarget = 'racks'; importDialog = true"
+        >
+          导入机柜
+        </el-button>
       </template>
       <el-button
         v-else-if="hasPermission('inspection_management', 'create')"
@@ -1034,6 +1092,12 @@ onMounted(async () => {
         @click="openTemplateDialog()"
       >
         ＋ 新增模板
+      </el-button>
+      <el-button
+        v-if="activeTab === 'templates' && hasPermission('inspection_management', 'create')"
+        @click="importTarget = 'templates'; importDialog = true"
+      >
+        导入模板
       </el-button>
       <ExportMenu
         :file-name="templateExportName"
@@ -1229,6 +1293,19 @@ onMounted(async () => {
       </el-alert>
     </template>
   </DataPanel>
+
+  <ImportExcelDialog
+    v-model="importDialog"
+    :key="importTarget"
+    :title="currentImport.title"
+    :field-labels="currentImport.fields"
+    :template-header="[...currentImport.header]"
+    :template-sample="[...currentImport.sample]"
+    :template-file-name="currentImport.fileName"
+    :hint="currentImport.hint"
+    :import-fn="currentImport.importFn"
+    @imported="load()"
+  />
 
   <FormDialog
     v-model="createVisible"

@@ -24,6 +24,7 @@ import {
   saveSettings,
   saveTargetPermissions,
   saveUser,
+  importUsers,
   UPDATE_SOURCES,
   type AccessModule,
   type AccessRole,
@@ -36,6 +37,7 @@ import {
 } from "../api/settings";
 import { loadMeta, hasPermission, session } from "../session";
 import { confirmAction } from "../composables/useConfirm";
+import ImportExcelDialog from "../components/ui/ImportExcelDialog.vue";
 import {
   applyThemeColor,
   currentThemeColor,
@@ -89,6 +91,18 @@ const userForm = reactive({
   isActive: true,
   password: "",
 });
+
+const userImportDialog = ref(false);
+
+/** 账号导入模板：表头与后端 USER_IMPORT_ALIASES 对应。 */
+const USER_IMPORT_FIELDS: Record<string, string> = {
+  username: "用户名",
+  displayName: "显示名称",
+  role: "角色",
+  password: "初始密码",
+  employeeNo: "绑定人员工号",
+  isActive: "是否启用",
+};
 
 const backupDownloadVisible = ref(false);
 const backupDownloadTarget = ref<BackupRow | null>(null);
@@ -976,7 +990,10 @@ onMounted(async () => {
             <span class="oa-hint">
               共 {{ users.length }} 个账号，创建账号时填写登录账号和显示名称，再分配角色。
             </span>
-            <el-button type="primary" @click="openUserDialog()">＋ 新增账号</el-button>
+            <span class="oa-flex-row">
+              <el-button @click="userImportDialog = true">导入 Excel</el-button>
+              <el-button type="primary" @click="openUserDialog()">＋ 新增账号</el-button>
+            </span>
           </div>
           <el-table :data="users" size="small" border empty-text="暂无账号记录">
             <el-table-column label="账号" min-width="160">
@@ -1241,6 +1258,18 @@ onMounted(async () => {
       </el-tab-pane>
     </el-tabs>
   </DataPanel>
+
+  <ImportExcelDialog
+    v-model="userImportDialog"
+    title="导入用户账号"
+    :field-labels="USER_IMPORT_FIELDS"
+    :template-header="['用户名', '显示名称', '角色', '初始密码', '绑定人员工号', '是否启用']"
+    :template-sample="['zhangsan', '张三', 'operator', 'ChangeMe#2026', 'EMP001', '1']"
+    template-file-name="用户账号导入模板.csv"
+    hint="表头需包含「用户名」。角色写角色编码或名称（admin / operator / viewer / user）；新建账号必须填初始密码（8 位以上），更新已存在账号时留空则不改密码；普通角色必须绑定在职人员工号，超级管理员角色只有超级管理员能分配。"
+    :import-fn="importUsers"
+    @imported="loadAll()"
+  />
 
   <FormDialog
     v-model="userDialogVisible"

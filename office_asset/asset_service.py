@@ -85,11 +85,44 @@ COMPUTER_STATUS_ALIASES: dict[str, str] = {
     "lost": "lost",
 }
 
+# 组织架构导入：上级组织可以写编码或名称
+ORG_IMPORT_ALIASES: dict[str, set[str]] = {
+    "code": {"组织编码", "编码", "组织编号", "编号", "code"},
+    "name": {"组织名称", "名称", "orgname", "name"},
+    "parent": {"上级组织", "上级", "父级组织", "上级编码", "parent", "parentcode"},
+    "sortOrder": {"排序", "顺序", "sortorder", "order", "sort"},
+    "isActive": {"启用", "是否启用", "状态", "isactive", "active"},
+}
+
+# IT 物资目录导入：一行可以同时给出类型 / 品牌 / 型号，缺的层级留空即可
+INVENTORY_IMPORT_ALIASES: dict[str, set[str]] = {
+    "typeName": {"物资类型", "类型", "类型名称", "typename", "type"},
+    "typeCode": {"类型编码", "typenamecode", "typecode"},
+    "unit": {"单位", "unit"},
+    "brandName": {"品牌", "品牌名称", "brandname", "brand"},
+    "modelName": {"型号", "型号名称", "modelname", "model"},
+    "batchKey": {"批次", "批次号", "batch", "batchkey"},
+    "inboundDate": {"入库日期", "采购日期", "inbounddate"},
+    "cpu": {"cpu", "处理器"},
+    "memory": {"内存", "memory", "ram"},
+    "storage": {"硬盘", "存储", "storage", "disk"},
+    "gpu": {"显卡", "gpu"},
+}
+
 
 def _import_cell(row: list[str], index: int | None) -> str:
     if index is None or index >= len(row):
         return ""
     return (row[index] or "").strip()
+
+
+def _catalog_code(name: str) -> str:
+    """物资类型编码留空时自动生成：ASCII 名称转短横线，中文名用 type-<hash>。"""
+    slug = re.sub(r"[^a-z0-9]+", "-", (name or "").strip().lower()).strip("-")
+    if slug:
+        return f"type-{slug}"[:48]
+    digest = hashlib.sha1((name or "").strip().encode("utf-8")).hexdigest()[:8]
+    return f"type-{digest}"
 
 
 def _import_mac(value: str) -> str:
@@ -1093,6 +1126,432 @@ class AssetService:
         if not dry_run:
             self._import_audit("employees_imported", file_name, summary, context)
         return summary
+
+    def import_organizations(self, payload: dict, context: dict) -> dict:
+        """批量导入组织架构：按组织编码匹配，mode=skip 跳过已存在 / mode=update 覆盖。
+
+        上级组织可以写编码或名称；父级写在本文件的上面或下面都行（多轮解析）。
+        只新增 / 更新，不删除组织，也不改人员与资产的归属关系。
+        """
+        file_name, rows = self._read_import_rows(payload)
+        mapping, data_rows, header_index = self._import_table(rows, ORG_IMPORT_ALIASES)
+        missing = [
+            label for key, label in (("code", "组织编码"), ("name", "组织名称")) if key not in mapping
+        ]
+        if missing:
+            raise self.api_error(f"表头缺少：{'、'.join(missing)}。")
+        dry_run = parse_bool(payload.get("dryRun"))
+        mode = "update" if self.db.text(payload.get("mode")) == "update" else "skip"
+        summary = self._import_summary(file_name, len(data_rows), dry_run)
+        summary["sheetHeaders"] = self._import_sheet_headers(rows, header_index, mapping)
+        errors: list[dict] = summary["errors"]
+        warnings: list[dict] = summary["warnings"]
+
+        by_code = self._org_code_lookup()
+        by_name = self._org_name_lookup()
+        file_codes: set[str] = set()
+        pending: list[dict] = []
+        for offset, row in enumerate(data_rows):
+            excel_row = header_index + 2 + offset
+            code = _import_cell(row, mapping.get("code"))[:64]
+            name = _import_cell(row, mapping.get("name"))[:128]
+            if not code or not name:
+                errors.append({"row": excel_row, "code": code, "message": "组织编码与名称必填"})
+                continue
+            key = normalise_header(code)
+            if key in file_codes:
+                errors.append({"row": excel_row, "code": code, "message": f"文件内组织编码「{code}」重复"})
+                continue
+            file_codes.add(key)
+            org_id = by_code.get(key, 0)
+            if org_id and mode == "skip":
+                summary["skipped"] += 1
+                warnings.append(
+                    {"row": excel_row, "code": code, "message": f"组织「{name}」已存在，按跳过处理"}
+                )
+                continue
+            pending.append(
+                {
+                    "row": excel_row,
+                    "id": org_id,
+                    "code": code,
+                    "name": name,
+                    "parent": _import_cell(row, mapping.get("parent"))[:64],
+                    "sortOrder": max(0, self.db.integer(_import_cell(row, mapping.get("sortOrder")), 1000)),
+                    "isActive": 1 if parse_bool(_import_cell(row, mapping.get("isActive")) or "1", True) else 0,
+                }
+            )
+
+        # 父级可能排在本文件的后面，反复扫到没有新进展为止
+        for _ in range(len(pending) + 1):
+            if not pending:
+                break
+            progressed = False
+            still: list[dict] = []
+            for item in pending:
+                parent_key = normalise_header(item["parent"]) if item["parent"] else ""
+                if parent_key:
+                    parent_id = by_code.get(parent_key, 0)
+                    if not parent_id:
+                        still.append(item)
+                        continue
+                else:
+                    parent_id = 0
+                if dry_run:
+                    # 预览时只算数量与父级关系，绝不写库
+                    org_id = item["id"] or -len(by_code) - 1
+                    if item["id"]:
+                        summary["updated"] += 1
+                    else:
+                        summary["created"] += 1
+                elif item["id"]:
+                    self.db.execute(
+                        f"""
+                        UPDATE org_unit
+                        SET org_name = {self.db.quote(item['name'])},
+                            parent_org_unit_id = {parent_id if parent_id else 'NULL'},
+                            sort_order = {item['sortOrder']},
+                            is_active = {item['isActive']}
+                        WHERE org_unit_id = {item['id']}
+                        """
+                    )
+                    summary["updated"] += 1
+                    org_id = item["id"]
+                else:
+                    self.db.execute(
+                        f"""
+                        INSERT INTO org_unit (org_code, org_name, parent_org_unit_id, sort_order, is_active)
+                        VALUES (
+                          {self.db.quote(item['code'])},
+                          {self.db.quote(item['name'])},
+                          {parent_id if parent_id else 'NULL'},
+                          {item['sortOrder']},
+                          {item['isActive']}
+                        )
+                        """
+                    )
+                    org_id = self.db.scalar(
+                        f"SELECT org_unit_id FROM org_unit WHERE org_code = {self.db.quote(item['code'])} LIMIT 1;"
+                    )
+                    if org_id <= 0:
+                        errors.append(
+                            {"row": item["row"], "code": item["code"], "message": "组织创建失败，请检查编码是否重复"}
+                        )
+                        continue
+                    summary["created"] += 1
+                by_code[normalise_header(item["code"])] = org_id
+                by_name.setdefault(item["name"], org_id)
+                progressed = True
+            pending = still
+            if not progressed:
+                break
+        for item in pending:
+            parent_key = normalise_header(item["parent"])
+            message = (
+                f"上级组织「{item['parent']}」形成循环引用"
+                if parent_key in file_codes
+                else f"上级组织「{item['parent']}」不存在"
+            )
+            errors.append({"row": item["row"], "code": item["code"], "message": message})
+
+        summary["errorCount"] = len(errors)
+        summary["warningCount"] = len(warnings)
+        if not dry_run and (summary["created"] or summary["updated"]):
+            self._import_audit("organizations_imported", file_name, summary, context)
+        return summary
+
+    def _org_code_lookup(self) -> dict[str, int]:
+        rows = (
+            self.db.json(
+                """
+                SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
+                  'id', CAST(org_unit_id AS CHAR),
+                  'code', org_code,
+                  'name', org_name
+                )), JSON_ARRAY())
+                FROM org_unit
+                WHERE is_active = 1
+                """,
+                [],
+            )
+            or []
+        )
+        return {
+            normalise_header(self.db.text(row.get("code"))): self.db.integer(row.get("id"), 0)
+            for row in rows
+            if self.db.text(row.get("code"))
+        }
+
+    def _org_name_lookup(self) -> dict[str, int]:
+        rows = (
+            self.db.json(
+                """
+                SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
+                  'id', CAST(org_unit_id AS CHAR),
+                  'name', org_name
+                )), JSON_ARRAY())
+                FROM org_unit
+                WHERE is_active = 1
+                """,
+                [],
+            )
+            or []
+        )
+        lookup: dict[str, int] = {}
+        for row in rows:
+            name = self.db.text(row.get("name"))
+            if name:
+                lookup.setdefault(name, self.db.integer(row.get("id"), 0))
+        return lookup
+
+    def import_inventory_catalog(self, payload: dict, context: dict) -> dict:
+        """批量导入 IT 物资目录：类型 / 品牌 / 型号三层。
+
+        一行可以只写一层（只写类型＝建类型，写类型+品牌＝建品牌，写类型+品牌+型号＝建型号）；
+        型号行的 CPU / 内存 / 存储 / 显卡 / 批次 / 入库日期会被保存，库存数量不动。
+        `mode=skip` 跳过已存在的层级，`mode=update` 覆盖名称与配置。
+        """
+        file_name, rows = self._read_import_rows(payload)
+        mapping, data_rows, header_index = self._import_table(rows, INVENTORY_IMPORT_ALIASES)
+        if "typeName" not in mapping:
+            raise self.api_error("表头必须包含「物资类型」。")
+        if not {"brandName", "modelName"}.intersection(mapping):
+            raise self.api_error("表头至少要包含「品牌」或「型号」中的一列。")
+        dry_run = parse_bool(payload.get("dryRun"))
+        mode = "update" if self.db.text(payload.get("mode")) == "update" else "skip"
+        summary = self._import_summary(file_name, len(data_rows), dry_run)
+        summary["sheetHeaders"] = self._import_sheet_headers(rows, header_index, mapping)
+        errors: list[dict] = summary["errors"]
+        warnings: list[dict] = summary["warnings"]
+
+        types: dict[str, dict] = {}
+        brands: dict[str, dict] = {}
+        models: dict[str, dict] = {}
+        for offset, row in enumerate(data_rows):
+            excel_row = header_index + 2 + offset
+            type_name = _import_cell(row, mapping.get("typeName"))[:128]
+            if not type_name:
+                errors.append({"row": excel_row, "message": "缺少物资类型"})
+                continue
+            type_key = normalise_header(type_name)
+            types.setdefault(
+                type_key,
+                {
+                    "row": excel_row,
+                    "name": type_name,
+                    "code": _import_cell(row, mapping.get("typeCode"))[:64],
+                    "unit": _import_cell(row, mapping.get("unit"))[:32] or "件",
+                },
+            )
+            brand_name = _import_cell(row, mapping.get("brandName"))[:128]
+            model_name = _import_cell(row, mapping.get("modelName"))[:128]
+            if brand_name:
+                brands.setdefault(
+                    f"{type_key}|{normalise_header(brand_name)}",
+                    {"row": excel_row, "type": type_name, "name": brand_name},
+                )
+            elif model_name:
+                errors.append({"row": excel_row, "message": "写型号时必须同时写品牌"})
+                continue
+            if model_name and brand_name:
+                batch_key = _import_cell(row, mapping.get("batchKey"))[:64]
+                models.setdefault(
+                    f"{type_key}|{normalise_header(brand_name)}|{normalise_header(model_name)}|{normalise_header(batch_key)}",
+                    {
+                        "row": excel_row,
+                        "type": type_name,
+                        "brand": brand_name,
+                        "name": model_name,
+                        "batchKey": batch_key,
+                        "inboundDate": _import_cell(row, mapping.get("inboundDate")),
+                        "cpu": _import_cell(row, mapping.get("cpu"))[:128],
+                        "memory": _import_cell(row, mapping.get("memory"))[:64],
+                        "storage": _import_cell(row, mapping.get("storage"))[:128],
+                        "gpu": _import_cell(row, mapping.get("gpu"))[:128],
+                    },
+                )
+
+        type_ids = self._catalog_lookup(
+            "SELECT non_asset_type_id AS id, type_name AS name FROM non_asset_type WHERE is_active = 1",
+            ("name",),
+        )
+        if dry_run:
+            # 预览：新建的层级用占位 id 让下级能算出来，不写库
+            for key in types:
+                type_ids.setdefault(key, -1)
+        for key, item in types.items():
+            type_id = type_ids.get(key, 0)
+            if type_id > 0 and mode == "skip":
+                summary["skipped"] += 1
+                continue
+            if type_id > 0:
+                if not dry_run:
+                    self.db.execute(
+                        f"""
+                        UPDATE non_asset_type
+                        SET type_name = {self.db.quote(item['name'])},
+                            unit_name = {self.db.quote(item['unit'])}
+                        WHERE non_asset_type_id = {type_id}
+                        """
+                    )
+                summary["updated"] += 1
+            else:
+                if not dry_run:
+                    self.db.execute(
+                        f"""
+                        INSERT INTO non_asset_type (type_code, type_name, unit_name)
+                        VALUES (
+                          {self.db.quote(item['code'] or _catalog_code(item['name']))},
+                          {self.db.quote(item['name'])},
+                          {self.db.quote(item['unit'])}
+                        )
+                        """
+                    )
+                summary["created"] += 1
+        if not dry_run:
+            # 新建的类型要重新查一次，后面的品牌行才拿得到 id
+            type_ids = self._catalog_lookup(
+                "SELECT non_asset_type_id AS id, type_name AS name FROM non_asset_type WHERE is_active = 1",
+                ("name",),
+            )
+
+        brand_ids = self._catalog_lookup(
+            """
+            SELECT brand.brand_id AS id, brand.brand_name AS name, type_row.type_name AS type_name
+            FROM it_inventory_brand brand
+            JOIN non_asset_type type_row ON type_row.non_asset_type_id = brand.non_asset_type_id
+            WHERE brand.is_active = 1
+            """,
+            ("type_name", "name"),
+        )
+        if dry_run:
+            for key in brands:
+                brand_ids.setdefault(key, -1)
+        for key, item in brands.items():
+            type_id = type_ids.get(normalise_header(item["type"]), 0)
+            if type_id == 0:
+                errors.append({"row": item["row"], "message": f"物资类型「{item['type']}」无法确认"})
+                continue
+            brand_id = brand_ids.get(key, 0)
+            if brand_id > 0 and mode == "skip":
+                summary["skipped"] += 1
+                continue
+            if brand_id > 0:
+                if not dry_run:
+                    self.db.execute(
+                        f"""
+                        UPDATE it_inventory_brand
+                        SET brand_name = {self.db.quote(item['name'])}
+                        WHERE brand_id = {brand_id}
+                        """
+                    )
+                summary["updated"] += 1
+            else:
+                if not dry_run:
+                    self.db.execute(
+                        f"""
+                        INSERT INTO it_inventory_brand (non_asset_type_id, brand_name)
+                        VALUES ({type_id}, {self.db.quote(item['name'])})
+                        """
+                    )
+                summary["created"] += 1
+        if not dry_run:
+            brand_ids = self._catalog_lookup(
+                """
+                SELECT brand.brand_id AS id, brand.brand_name AS name, type_row.type_name AS type_name
+                FROM it_inventory_brand brand
+                JOIN non_asset_type type_row ON type_row.non_asset_type_id = brand.non_asset_type_id
+                WHERE brand.is_active = 1
+                """,
+                ("type_name", "name"),
+            )
+
+        model_ids = self._catalog_lookup(
+            """
+            SELECT model.model_id AS id, model.model_name AS name, model.batch_key AS batch_key,
+                   brand.brand_name AS brand_name, type_row.type_name AS type_name
+            FROM it_inventory_model model
+            JOIN it_inventory_brand brand ON brand.brand_id = model.brand_id
+            JOIN non_asset_type type_row ON type_row.non_asset_type_id = model.non_asset_type_id
+            WHERE model.is_active = 1
+            """,
+            ("type_name", "brand_name", "name", "batch_key"),
+        )
+        for key, item in models.items():
+            brand_id = brand_ids.get(f"{normalise_header(item['type'])}|{normalise_header(item['brand'])}", 0)
+            if brand_id == 0:
+                errors.append(
+                    {"row": item["row"], "message": f"品牌「{item['brand']}」无法确认（写型号要同时写对品牌）"}
+                )
+                continue
+            model_id = model_ids.get(key, 0)
+            if model_id > 0 and mode == "skip":
+                summary["skipped"] += 1
+                warnings.append(
+                    {"row": item["row"], "code": item["name"], "message": f"型号「{item['name']}」已存在，按跳过处理"}
+                )
+                continue
+            if dry_run:
+                if model_id > 0:
+                    summary["updated"] += 1
+                else:
+                    summary["created"] += 1
+                continue
+            values = {
+                "batch_key": self.db.quote(item["batchKey"]),
+                "inbound_date": self.db.quote(item["inboundDate"]) if item["inboundDate"] else "NULL",
+                "cpu": self.db.quote(item["cpu"]) if item["cpu"] else "NULL",
+                "memory": self.db.quote(item["memory"]) if item["memory"] else "NULL",
+                "storage": self.db.quote(item["storage"]) if item["storage"] else "NULL",
+                "gpu": self.db.quote(item["gpu"]) if item["gpu"] else "NULL",
+            }
+            if model_id > 0:
+                assignments = ", ".join(
+                    [f"model_name = {self.db.quote(item['name'])}"]
+                    + [f"{column} = {value}" for column, value in values.items()]
+                )
+                self.db.execute(
+                    f"UPDATE it_inventory_model SET {assignments} WHERE model_id = {model_id};"
+                )
+                summary["updated"] += 1
+            else:
+                # non_asset_type_id 直接取自品牌的类型，避免漏字段或与品牌类型不一致
+                self.db.execute(
+                    f"""
+                    INSERT INTO it_inventory_model (
+                      non_asset_type_id, brand_id, model_name, quantity, {", ".join(values.keys())}
+                    )
+                    SELECT brand.non_asset_type_id, brand.brand_id,
+                           {self.db.quote(item['name'])}, 0, {", ".join(values.values())}
+                    FROM it_inventory_brand brand
+                    WHERE brand.brand_id = {brand_id}
+                    """
+                )
+                summary["created"] += 1
+
+        summary["errorCount"] = len(errors)
+        summary["warningCount"] = len(warnings)
+        if not dry_run and (summary["created"] or summary["updated"]):
+            self._import_audit("inventory_catalog_imported", file_name, summary, context)
+        return summary
+
+    def _catalog_lookup(self, sql: str, keys: tuple[str, ...]) -> dict[str, int]:
+        """把一行查询结果按 keys 拼成的复合键映射到主键（键都做去空格/标点的归一化）。"""
+        extra = "".join(f", '{key}', sub.{key}" for key in keys)
+        rows = self.db.json(
+            f"""
+            SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
+              'id', sub.id{extra}
+            )), JSON_ARRAY())
+            FROM ({sql}) sub
+            """,
+            [],
+        )
+        lookup: dict[str, int] = {}
+        for row in rows or []:
+            composite = "|".join(normalise_header(self.db.text(row.get(key))) for key in keys)
+            lookup.setdefault(composite, self.db.integer(row.get("id"), 0))
+        return lookup
 
     def import_computers(self, payload: dict, context: dict) -> dict:
         """批量导入办公终端：按设备名称匹配，mode=skip 跳过已存在 / mode=update 覆盖。"""

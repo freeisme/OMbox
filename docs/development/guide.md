@@ -613,10 +613,30 @@ non_asset_type
   编码留空自动编号（`MR-001`…），按编码匹配已有会议室，`mode` 同样是跳过 / 更新；
   审计 `inspection_sites_imported`。
 
-还没有导入入口、但数据形态适合后续补的模块：
-组织架构（`org_unit`）、IT 物资目录（类型 / 品牌 / 型号）、机柜（`asset_rack`）、
-会议室设备与巡检对象设备（`site_device`）、巡检模板（`inspection_template`）、
-用户账号（`user_account`）、设备类型字典（`device_type_catalog`）。
+- 组织架构：`POST /api/organizations/import`（权限 `organizations:create`），表头
+  `组织编码 / 组织名称 / 上级组织 / 排序 / 启用`；上级组织可以写编码或名称、可以排在本文件的
+  任何位置（多轮解析父级），按组织编码匹配，审计 `organizations_imported`。
+- IT 物资目录：`POST /api/inventory/catalog/import`（权限 `inventory_catalog:create`），表头
+  `物资类型 / 类型编码 / 单位 / 品牌 / 型号 / 批次 / 入库日期 / CPU / 内存 / 硬盘 / 显卡`；
+  **一行可以只写一层**（只写类型＝建类型，类型+品牌＝建品牌，类型+品牌+型号＝建型号），
+  类型编码留空自动生成，审计 `inventory_catalog_imported`；导入不动库存数量。
+- 机柜：`POST /api/inspection/racks/import`，表头 `机柜编码 / 机柜名称 / 机房/弱电间 / 高度U / 备注`，
+  机房写编码或名称，审计 `inspection_racks_imported`。
+- 巡检模板及明细：`POST /api/inspection/templates/import`，表头
+  `模板编码 / 模板名称 / 适用对象 / 检查项分类 / 检查项目 / 检查内容/判定标准 / 是否必填`；
+  同一个模板名的多行合并成一份模板 + 多条检查项，`mode=update` 会用文件里的明细**替换**原明细，
+  审计 `inspection_templates_imported`。
+- 用户账号：`POST /api/users/import`（权限 `user_management:create`），表头
+  `用户名 / 显示名称 / 角色 / 初始密码 / 绑定人员工号 / 是否启用`；新建必须给初始密码（≥8 位），
+  普通角色必须绑定在职人员，超管角色只有超管能分配，审计 `users_imported`。
+- 会议室设备 / 巡检对象设备：`POST /api/inspection/site-devices/import`，表头
+  `会议室 / 设备名称 / 设备类型 / 品牌 / 型号 / 数量 / 备注`；只做**自定义登记**
+  （不扣 IT 物资库存），按「对象 + 设备名称」匹配，审计 `inspection_site_devices_imported`。
+- 机房 / 弱电间与会议室共用 `import_sites()`：机房入口的「类型」列只接受 机房 / 弱电间，
+  会议室入口只接受 会议室。
+
+还没有导入入口、需要时再补的：设备类型字典（`device_type_catalog`）、报废原因
+（`scrap_reason`）、机柜内上架记录（`rack_device_placement`）。
 
 #### 导出表格（CSV / Excel）
 

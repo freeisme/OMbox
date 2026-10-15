@@ -7,6 +7,7 @@ import {
   fetchInspectionSites,
   fetchSiteDevices,
   importInspectionSites,
+  importSiteDevices,
   removeSiteDevice,
   saveInspectionSite,
   type InspectionSite,
@@ -36,6 +37,19 @@ const ROOM_IMPORT_FIELDS: Record<string, string> = {
   name: "名称",
   location: "位置",
   remarks: "备注",
+};
+
+const deviceImportDialog = ref(false);
+
+/** 会议室内设备导入模板：自定义登记，不扣 IT 物资库存。 */
+const ROOM_DEVICE_IMPORT_FIELDS: Record<string, string> = {
+  site: "会议室",
+  deviceName: "设备名称",
+  deviceType: "设备类型",
+  brand: "品牌",
+  model: "型号",
+  quantity: "数量",
+  notes: "备注",
 };
 
 const deviceVisible = ref(false);
@@ -288,6 +302,7 @@ onMounted(load);
         ＋ 新增会议室
       </el-button>
       <el-button v-if="canCreate" @click="importDialog = true">导入 Excel</el-button>
+      <el-button v-if="canCreate" @click="deviceImportDialog = true">导入设备</el-button>
     </ToolbarActions>
 
     <el-table :data="rooms" size="small" border empty-text="暂无会议室">
@@ -345,6 +360,18 @@ onMounted(load);
     template-file-name="会议室导入模板.csv"
     hint="表头需包含「名称」，编码 / 位置 / 备注可选。编码留空会自动编号（MR-001…）；编码已存在时按上面的开关「跳过」或「更新」。导入的都是会议室，不影响机房与弱电间。"
     :import-fn="importInspectionSites"
+    @imported="load()"
+  />
+
+  <ImportExcelDialog
+    v-model="deviceImportDialog"
+    title="导入会议室设备"
+    :field-labels="ROOM_DEVICE_IMPORT_FIELDS"
+    :template-header="['会议室', '设备名称', '设备类型', '品牌', '型号', '数量', '备注']"
+    :template-sample="['3 楼大会议室', '投影仪', '投影', '爱普生', 'CB-X06', '1', '吊装在天花板']"
+    template-file-name="会议室设备导入模板.csv"
+    hint="表头需包含「会议室」与「设备名称」；会议室写编码或名称。导入的都是「自定义登记」的设备，不扣 IT 物资库存；按「会议室 + 设备名称」匹配，选「更新已存在的记录」会覆盖类型 / 品牌 / 型号 / 数量 / 备注。"
+    :import-fn="importSiteDevices"
     @imported="load()"
   />
 

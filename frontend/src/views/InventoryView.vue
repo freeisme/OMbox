@@ -7,6 +7,7 @@ import {
   deleteInventoryBrand,
   deleteInventoryModel,
   deleteWarehouse,
+  importInventoryCatalog,
   invalidateInventoryCache,
   loadInventoryData,
   receiveInventory,
@@ -22,6 +23,7 @@ import {
 } from "../api/inventory";
 import { invalidateComputersCache } from "../api/computers";
 import { hasPermission } from "../session";
+import ImportExcelDialog from "../components/ui/ImportExcelDialog.vue";
 import { confirmAction } from "../composables/useConfirm";
 import ExportMenu from "../components/ui/ExportMenu.vue";
 
@@ -91,6 +93,23 @@ const warehouseForm = reactive({
 const typeVisible = ref(false);
 const typeEditingId = ref("");
 const typeForm = reactive({ code: "", name: "", unit: "件" });
+
+const importDialog = ref(false);
+
+/** 目录导入模板：一行可以只写一层，写型号时要把类型与品牌一起写。 */
+const CATALOG_IMPORT_FIELDS: Record<string, string> = {
+  typeName: "物资类型",
+  typeCode: "类型编码",
+  unit: "单位",
+  brandName: "品牌",
+  modelName: "型号",
+  batchKey: "批次",
+  inboundDate: "入库日期",
+  cpu: "CPU",
+  memory: "内存",
+  storage: "硬盘",
+  gpu: "显卡",
+};
 
 const brandVisible = ref(false);
 const brandEditingId = ref("");
@@ -708,6 +727,9 @@ onMounted(() => load(false));
         <el-button v-if="hasPermission('inventory_catalog', 'create')" @click="openTypeDialog()">
           新增类型
         </el-button>
+        <el-button v-if="hasPermission('inventory_catalog', 'create')" @click="importDialog = true">
+          导入 Excel
+        </el-button>
     </template>
     <template #filters>
       <FilterBar
@@ -1064,6 +1086,18 @@ onMounted(() => load(false));
       <el-form-item label="计量单位"><el-input v-model="typeForm.unit" /></el-form-item>
     </el-form>
   </FormDialog>
+
+  <ImportExcelDialog
+    v-model="importDialog"
+    title="导入 IT 物资目录"
+    :field-labels="CATALOG_IMPORT_FIELDS"
+    :template-header="['物资类型', '类型编码', '单位', '品牌', '型号', '批次', '入库日期', 'CPU', '内存', '硬盘', '显卡']"
+    :template-sample="['电脑', 'computer', '台', '联想', 'ThinkPad E14', '2026-01', '2026-08-01', 'i5-13500H', '16G', '512G', '']"
+    template-file-name="IT物资目录导入模板.csv"
+    hint="一行可以只写一层：只写类型＝建类型，写类型+品牌＝建品牌，写类型+品牌+型号＝建型号（型号的 CPU/内存/硬盘/显卡/批次/入库日期会一起保存）。类型编码留空会自动生成；导入不会改变库存数量。"
+    :import-fn="importInventoryCatalog"
+    @imported="refresh()"
+  />
 
   <FormDialog
     v-model="brandVisible"
