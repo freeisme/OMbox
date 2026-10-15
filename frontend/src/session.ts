@@ -33,6 +33,9 @@ interface SessionState {
   meta: AppMeta | null;
   /** 无操作多久自动退出（分钟），来自 /api/auth/session。 */
   idleMinutes: number;
+  /** 系统设置里的系统名与公司 Logo（Logo 为 PNG 的 data URI，没设置时为空）。 */
+  appName: string;
+  appLogo: string;
 }
 
 export const session = reactive<SessionState>({
@@ -42,6 +45,8 @@ export const session = reactive<SessionState>({
   isSuperAdmin: false,
   meta: null,
   idleMinutes: 0,
+  appName: "",
+  appLogo: "",
 });
 
 export function hasPermission(resource: string, action = "view"): boolean {
@@ -78,9 +83,13 @@ export async function refreshSession(): Promise<boolean> {
       authenticated: boolean;
       user: SessionUser;
       idleMinutes?: number;
+      appName?: string;
+      appLogo?: string;
     }>("/api/auth/session");
     session.user = payload.user;
     session.idleMinutes = Number(payload.idleMinutes ?? 0) || 0;
+    session.appName = String(payload.appName ?? "");
+    session.appLogo = String(payload.appLogo ?? "");
     const granted = await api<{ isSuperAdmin: boolean; permissions: Permission[] }>(
       "/api/auth/permissions",
     );

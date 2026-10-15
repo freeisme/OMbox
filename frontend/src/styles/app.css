@@ -185,6 +185,16 @@ body {
   font-size: 12px;
 }
 
+/* 系统设置里上传的公司 Logo 顶掉默认的 OM 图标；限制高度避免撑破侧边栏 */
+.oa-brand-logo {
+  display: block;
+  max-width: 46px;
+  max-height: 34px;
+  border-radius: 6px;
+  object-fit: contain;
+  background: #fff;
+}
+
 .oa-nav {
   flex: 1 1 auto;
 }
@@ -290,6 +300,32 @@ html.dark .oa-topbar {
 .oa-login-card {
   width: 100%;
   max-width: 380px;
+}
+
+/* 登录页标题旁的 Logo（与侧边栏共用 .oa-brand-logo 的尺寸约束） */
+.oa-login-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 设置页的 Logo 预览框：固定高度，避免上传大图把表单撑开 */
+.oa-logo-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 120px;
+  height: 40px;
+  padding: 2px 8px;
+  border: 1px dashed var(--el-border-color);
+  border-radius: 6px;
+}
+
+.oa-logo-preview img {
+  max-width: 160px;
+  max-height: 34px;
+  object-fit: contain;
 }
 
 /* ------------------------------------------------------------------

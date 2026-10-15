@@ -1,4 +1,5 @@
 import { api } from "./client";
+import type { ImportSummary } from "./datacenter";
 
 export interface InspectionSite {
   id: string;
@@ -182,6 +183,16 @@ export async function deleteInspectionRack(rackId: string, reason = ""): Promise
     method: "DELETE",
     body: { reason },
   });
+}
+
+/** 批量导入会议室（xlsx / csv，表头：编码 / 名称 / 位置 / 备注）；dryRun=true 只预览。 */
+export function importInspectionSites(payload: {
+  fileName: string;
+  contentBase64: string;
+  dryRun?: boolean;
+  mode?: "skip" | "update";
+}): Promise<ImportSummary> {
+  return api<ImportSummary>("/api/inspection/sites/import", { method: "POST", body: payload });
 }
 
 export interface InspectionTemplateItemPayload {

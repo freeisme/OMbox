@@ -27,6 +27,8 @@ class ApiDependencies:
     require_role: Callable[..., None]
     require_permission: Callable[[dict, str, str], None]
     require_csrf: Callable[[object, dict], None]
+    # 导出 Excel 时附带的公司 Logo（PNG 字节）；没上传或没开启导出附带时返回 None。
+    export_logo: Callable[[], bytes | None] = lambda: None
 
 
 class DomainApiRouter:
@@ -471,6 +473,14 @@ class DomainApiRouter:
             context = self._write_context(handler, "inspection_management", "create")
             send_json(self.inspection.create_site(self._payload(handler), context), status=201)
             return True
+        # 会议室批量导入（表头：编码 / 名称 / 位置 / 备注）
+        if path == "/api/inspection/sites/import" and method == "POST":
+            context = self._write_context(handler, "inspection_management", "create")
+            send_json(
+                self.inspection.import_sites(self._payload(handler), context, "meeting_room"),
+                status=201,
+            )
+            return True
         if path.startswith("/api/inspection/sites/") and method == "PUT":
             site_id = path.split("/")[-1]
             context = self._write_context(handler, "inspection_management", "update")
@@ -884,7 +894,10 @@ class DomainApiRouter:
             context = self._authenticated(handler)
             self.deps.require_csrf(handler, context)
             try:
-                data, download_name = export_xlsx(self._payload(handler))
+                data, download_name = export_xlsx(
+                    self._payload(handler),
+                    logo=self.deps.export_logo(),
+                )
             except WorkbookError as exc:
                 raise self.deps.api_error(str(exc)) from exc
             handler.send_bytes(data, EXPORT_MIME, download_name)

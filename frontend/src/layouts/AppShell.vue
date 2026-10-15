@@ -16,6 +16,10 @@ let pollTimer: number | undefined;
 const visibleItems = computed(() => NAV_ITEMS.filter((item) => canViewPage(item.page)));
 const currentTitle = computed(() => String(route.meta.title ?? "OMbox 运维（O&M）盒子"));
 const version = computed(() => session.meta?.version || __APP_VERSION__);
+/** 系统名与 Logo 来自「设置 → 系统参数」，没设置时回落到产品默认样式。 */
+const brandName = computed(() => session.appName.trim() || "OMbox");
+const brandSubtitle = computed(() => (session.appName.trim() ? "" : "运维（O&M）盒子"));
+const brandLogo = computed(() => session.appLogo || "");
 
 function setTheme(next: string): void {
   theme.value = next;
@@ -75,10 +79,11 @@ onBeforeUnmount(() => {
   <div class="oa-shell">
     <aside class="oa-rail">
       <div class="oa-brand">
-        <span class="oa-brand-mark">OM</span>
+        <img v-if="brandLogo" class="oa-brand-logo" :src="brandLogo" alt="系统 Logo" />
+        <span v-else class="oa-brand-mark">OM</span>
         <span class="oa-brand-text">
-          <strong>OMbox</strong>
-          <small>运维（O&amp;M）盒子</small>
+          <strong>{{ brandName }}</strong>
+          <small v-if="brandSubtitle">{{ brandSubtitle }}</small>
         </span>
       </div>
 
