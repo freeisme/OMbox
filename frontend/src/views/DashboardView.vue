@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { fetchWorkbench, markNotificationRead, type WorkbenchSummary } from "../api/workbench";
@@ -198,6 +198,18 @@ const ticketStatusSummary = computed(() =>
   Object.entries(service.value.ticketStatus ?? {}).map(([status, count]) => ({ status, count })),
 );
 
+const ticketTotal = computed(() =>
+  ticketStatusSummary.value.reduce((total, item) => total + Number(item.count || 0), 0),
+);
+const ticketCompleted = computed(() =>
+  ticketStatusSummary.value
+    .filter((item) => item.status === "resolved" || item.status === "closed")
+    .reduce((total, item) => total + Number(item.count || 0), 0),
+);
+const ticketCompletionRate = computed(() =>
+  ticketTotal.value ? Math.round((ticketCompleted.value / ticketTotal.value) * 100) : 0,
+);
+
 const inspectionRate = computed(() => {
   const total = runningInspections.value + submittedInspections.value;
   return total ? Math.round((submittedInspections.value / total) * 100) : 0;
@@ -207,6 +219,31 @@ const myAssets = computed(() => summary.value.myAssets);
 const recentComputers = computed(() => summary.value.recentComputers);
 const recentInbound = computed(() => summary.value.recentInbound);
 const qualityTop = computed(() => summary.value.quality?.top ?? []);
+const visibleModuleKeys = computed(() => new Set(modules.value.map((item) => item.key)));
+const showTodos = computed(() => visibleModuleKeys.value.has("todos"));
+const showProgress = computed(() => visibleModuleKeys.value.has("progress"));
+const showAssets = computed(() => visibleModuleKeys.value.has("assets"));
+const showQuickActions = computed(() => visibleModuleKeys.value.has("quickActions"));
+const showNotifications = computed(() => visibleModuleKeys.value.has("notifications"));
+const showQuality = computed(() => visibleModuleKeys.value.has("quality"));
+const activityModuleOrder = ["recentAssets", "myAssets", "recentInbound"];
+const activityModules = computed(() =>
+  modules.value.filter((module) => activityModuleOrder.includes(module.key)),
+);
+const activeActivityTab = ref("recentAssets");
+const qualityExpanded = ref<string[]>(["issues"]);
+
+watch(
+  () => activityModules.value.map((module) => module.key),
+  (keys) => {
+    if (!keys.includes(activeActivityTab.value)) activeActivityTab.value = keys[0] || "";
+  },
+  { immediate: true },
+);
+
+function moduleTitle(key: string, fallback: string): string {
+  return modules.value.find((module) => module.key === key)?.title || fallback;
+}
 
 function hardwareSummary(row: { deviceType: string; brand: string; model: string }): string {
   return [deviceTypeLabel(row.deviceType), [row.brand, row.model].filter(Boolean).join(" ")]
@@ -294,41 +331,184 @@ onMounted(async () => {
 </script>
 
 <template>
-  <PageHeader
-    :title="`${greeting}，${session.user?.displayName || session.user?.username || '同事'}`"
-    :description="`${today} · 待办 ${todos.length} 项 · 未读通知 ${unreadNotifications} 条`"
-    v-loading="loading"
-  >
-    <template #actions>
-      <el-button :loading="refreshing" @click="refresh">刷新数据</el-button>
-      <el-button @click="openCustomize">自定义工作台</el-button>
-    </template>
-  </PageHeader>
-
-  <el-row :gutter="12" class="oa-panel-gap">
-    <el-col
-      v-for="module in modules"
-      :key="module.key"
-      :xs="24"
-      :sm="module.span === 12 ? 24 : 12"
-      :md="module.span"
-      class="oa-module-col"
-    >
-      <DataPanel :title="module.title" :hint="module.hint">
+  <div class="oa-dashboard" v-loading="loading">
+    <section class="oa-dashboard-grid oa-dashboard-top">
+      <PageHeader
+        class="oa-dashboard-top__main"
+        :title="`${greeting}，${session.user?.displayName || session.user?.username || '同事'}`"
+        :description="`${today} · 待办 ${todos.length} 项 · 未读通知 ${unreadNotifications} 条`"
+      >
         <template #actions>
-          <el-tag
-            v-if="module.key === 'notifications' && unreadNotifications"
-            size="small"
-            type="danger"
-          >
+          <el-button :loading="refreshing" @click="refresh">刷新数据</el-button>
+          <el-button @click="openCustomize">自定义工作台</el-button>
+        </template>
+      </PageHeader>
+
+      <DataPanel
+        v-if="showNotifications"
+        class="oa-dashboard-top__notifications"
+        title="系统通知"
+        hint="与你相关的最近消息"
+      >
+        <template #actions>
+          <el-tag v-if="unreadNotifications" size="small" type="danger" effect="plain">
             未读 {{ unreadNotifications }}
           </el-tag>
-          <el-tag v-else-if="module.key === 'todos' && todos.length" size="small" type="warning">
-            {{ todos.length }} 项
+        </template>
+        <div v-if="recentNotifications.length" class="oa-note-list">
+          <div
+            v-for="item in recentNotifications.slice(0, 3)"
+            :key="item.id"
+            class="oa-note-item"
+            :class="{ 'is-unread': !item.isRead }"
+          >
+            <span class="oa-note-dot" />
+            <span class="oa-note-main">
+              <span class="oa-note-title">{{ item.title }}</span>
+              <span class="oa-cell-sub">
+                {{ notificationTypeLabel(item.type) }} · {{ formatDateTimeText(item.createdAt) }}
+              </span>
+            </span>
+            <button
+              v-if="!item.isRead"
+              type="button"
+              class="oa-note-action"
+              @click="readNotification(item.id)"
+            >
+              标记已读
+            </button>
+          </div>
+        </div>
+        <EmptyHint v-else description="暂无通知" :size="52" />
+      </DataPanel>
+    </section>
+
+    <section
+      v-if="showAssets || showQuickActions"
+      class="oa-dashboard-grid oa-dashboard-core"
+    >
+      <div v-if="showAssets" class="oa-dashboard-core__metrics">
+        <MetricCard
+          label="办公终端资产"
+          :value="metrics.total"
+          :hint="`${metrics.active} 名使用人员 · ${metrics.rootOrgs} 个根组织`"
+          clickable
+          @click="router.push('/computers')"
+        />
+        <MetricCard
+          label="在用设备"
+          :value="metrics.inUse"
+          :hint="`在用率 ${metrics.inUseRate}%`"
+          tone="success"
+          clickable
+          @click="router.push('/computers')"
+        />
+        <MetricCard
+          label="闲置可用"
+          :value="metrics.idle"
+          hint="可用于新人员配置"
+          clickable
+          @click="router.push('/computers')"
+        />
+        <MetricCard
+          label="待关注"
+          :value="metrics.attention"
+          tone="warning"
+          :hint="`${metrics.nonAsset} 件非资产设备在账`"
+          clickable
+          @click="router.push('/computers')"
+        />
+      </div>
+
+      <DataPanel
+        v-if="showQuickActions"
+        class="oa-dashboard-core__quick"
+        :title="moduleTitle('quickActions', '快捷入口')"
+        hint="按权限提供的常用操作"
+      >
+        <div v-if="quickActions.length" class="oa-quick-grid">
+          <el-button
+            v-for="action in quickActions"
+            :key="action.key"
+            class="oa-quick-action"
+            @click="router.push(action.path)"
+          >
+            {{ action.label }}
+          </el-button>
+        </div>
+        <EmptyHint v-else description="当前账号没有可用的快捷操作" :size="52" />
+      </DataPanel>
+    </section>
+
+    <section
+      v-if="showTodos || showProgress || activityModules.length"
+      class="oa-dashboard-grid oa-dashboard-workspace"
+    >
+      <DataPanel
+        v-if="showTodos || showProgress"
+        class="oa-dashboard-workspace__tasks"
+        :title="showTodos ? '待办与进度' : moduleTitle('progress', '处理进度')"
+        hint="工单、巡检与待处理事项"
+      >
+        <template #actions>
+          <el-tag v-if="showTodos && todos.length" size="small" type="warning" effect="plain">
+            {{ todos.length }} 项待办
           </el-tag>
         </template>
 
-        <template v-if="module.key === 'todos'">
+        <div v-if="showProgress" class="oa-progress-summary">
+          <div v-if="hasPermission('tickets')" class="oa-progress-card">
+            <div class="oa-progress-card__head">
+              <span>工单完成率</span>
+              <strong class="oa-tabular">{{ ticketCompletionRate }}%</strong>
+            </div>
+            <el-progress
+              :percentage="ticketCompletionRate"
+              :stroke-width="8"
+              :show-text="false"
+            />
+            <div class="oa-progress-card__meta">
+              <span>{{ ticketCompleted }} / {{ ticketTotal }} 已解决或关闭</span>
+              <span v-if="slaBreached" class="oa-danger-text">SLA 超时 {{ slaBreached }}</span>
+            </div>
+          </div>
+
+          <div v-if="hasPermission('inspection_management')" class="oa-progress-card">
+            <div class="oa-progress-card__head">
+              <span>巡检完成率</span>
+              <strong class="oa-tabular">{{ inspectionRate }}%</strong>
+            </div>
+            <el-progress :percentage="inspectionRate" :stroke-width="8" :show-text="false" />
+            <div class="oa-progress-card__meta">
+              <span>{{ submittedInspections }} / {{ runningInspections + submittedInspections }}</span>
+              <span>进行中 {{ runningInspections }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="showProgress && hasPermission('tickets')" class="oa-ticket-status">
+          <span class="oa-section-label">工单状态</span>
+          <div class="oa-tag-row">
+            <StatusTag
+              v-for="item in ticketStatusSummary"
+              :key="item.status"
+              :value="item.status"
+              kind="ticket"
+            />
+            <span v-if="!ticketStatusSummary.length" class="oa-cell-sub">暂无工单</span>
+          </div>
+        </div>
+
+        <div v-if="showProgress && hasPermission('approvals')" class="oa-inline-summary">
+          <span>待审批事项</span>
+          <strong class="oa-tabular">{{ pendingApprovals }}</strong>
+        </div>
+
+        <div v-if="showTodos" class="oa-task-section">
+          <div class="oa-task-section__head">
+            <span class="oa-section-label">待办事项</span>
+            <span class="oa-cell-sub">按紧急程度排序</span>
+          </div>
           <div v-if="todos.length" class="oa-todo-list">
             <div
               v-for="item in todos"
@@ -337,8 +517,8 @@ onMounted(async () => {
               role="button"
               tabindex="0"
               @click="router.push(item.path)"
-              @keyup.enter="router.push(item.path)"
-              @keyup.space="router.push(item.path)"
+              @keydown.enter="router.push(item.path)"
+              @keydown.space.prevent="router.push(item.path)"
             >
               <span class="oa-todo-dot" :class="item.urgent ? 'is-urgent' : ''" />
               <div class="oa-todo-main">
@@ -350,224 +530,327 @@ onMounted(async () => {
               </strong>
             </div>
           </div>
-          <EmptyHint v-else description="当前没有待办事项" />
-        </template>
+          <EmptyHint v-else description="当前没有待办事项" :size="52" />
+        </div>
 
-        <template v-else-if="module.key === 'quickActions'">
-          <div v-if="quickActions.length" class="oa-button-row">
-            <el-button v-for="action in quickActions" :key="action.key" @click="router.push(action.path)">
-              {{ action.label }}
-            </el-button>
-          </div>
-          <EmptyHint v-else description="当前账号没有可用的快捷操作" :size="60" />
-        </template>
+        <EmptyHint
+          v-if="
+            showProgress &&
+            !hasPermission('tickets') &&
+            !hasPermission('approvals') &&
+            !hasPermission('inspection_management')
+          "
+          description="当前账号没有可查看的进度数据"
+          :size="52"
+        />
+      </DataPanel>
 
-        <template v-else-if="module.key === 'assets'">
-          <el-row :gutter="12">
-            <el-col :xs="12" :md="6">
-              <MetricCard
-                label="办公终端资产"
-                :value="metrics.total"
-                :hint="`在用 ${metrics.inUseRate}% · ${metrics.inUse} 台在用`"
-              />
-            </el-col>
-            <el-col :xs="12" :md="6">
-              <MetricCard
-                label="使用人员"
-                :value="metrics.active"
-                :hint="`${metrics.rootOrgs} 个根组织`"
-              />
-            </el-col>
-            <el-col :xs="12" :md="6">
-              <MetricCard label="闲置可用" :value="metrics.idle" hint="可用于新人员配置" />
-            </el-col>
-            <el-col :xs="12" :md="6">
-              <MetricCard
-                label="待关注"
-                :value="metrics.attention"
-                tone="warning"
-                :hint="`${metrics.nonAsset} 件非资产设备在账`"
-              />
-            </el-col>
-          </el-row>
-        </template>
+      <DataPanel
+        v-if="activityModules.length"
+        class="oa-dashboard-workspace__activity"
+        title="最近动态"
+        hint="资产登记、名下设备与物资入库"
+      >
+        <el-tabs v-model="activeActivityTab" class="oa-activity-tabs">
+          <el-tab-pane
+            v-for="module in activityModules"
+            :key="module.key"
+            :label="module.title"
+            :name="module.key"
+          >
+            <el-table
+              v-if="module.key === 'recentAssets'"
+              :data="recentComputers"
+              size="small"
+              empty-text="暂无办公终端记录"
+            >
+              <el-table-column prop="deviceName" label="设备名" min-width="150" />
+              <el-table-column label="组织 / 使用人" min-width="150">
+                <template #default="{ row }">
+                  {{ row.orgName || "—" }} / {{ row.userName || "未分配" }}
+                </template>
+              </el-table-column>
+              <el-table-column label="类型 / 品牌型号" min-width="170">
+                <template #default="{ row }">{{ hardwareSummary(row) || "—" }}</template>
+              </el-table-column>
+              <el-table-column label="状态" width="90">
+                <template #default="{ row }">
+                  <StatusTag :value="row.status" kind="computer" />
+                </template>
+              </el-table-column>
+            </el-table>
 
-        <template v-else-if="module.key === 'notifications'">
-          <div v-if="recentNotifications.length" class="oa-note-list">
-            <div v-for="item in recentNotifications" :key="item.id" class="oa-note-item">
-              <el-tag size="small" :type="item.isRead ? 'info' : 'danger'" effect="plain">
-                {{ notificationTypeLabel(item.type) }}
-              </el-tag>
-              <div class="oa-note-main">
-                <div :class="item.isRead ? '' : 'oa-note-unread'">{{ item.title }}</div>
-                <div class="oa-cell-sub">
-                  {{ item.content || "—" }} · {{ formatDateTimeText(item.createdAt) }}
-                </div>
+            <template v-else-if="module.key === 'myAssets'">
+              <div v-if="!session.user?.employeeId" class="oa-cell-sub">
+                当前账号未绑定人员档案，暂不显示名下设备。
               </div>
-              <el-button v-if="!item.isRead" link type="primary" @click="readNotification(item.id)">
-                标记已读
+              <el-table v-else :data="myAssets" size="small" empty-text="名下暂无办公终端">
+                <el-table-column prop="deviceName" label="设备名" min-width="150" />
+                <el-table-column label="品牌型号" min-width="150">
+                  <template #default="{ row }">
+                    {{ [row.brand, row.model].filter(Boolean).join(" ") || "—" }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="位置" min-width="110">
+                  <template #default="{ row }">{{ row.location || "—" }}</template>
+                </el-table-column>
+                <el-table-column label="状态" width="90">
+                  <template #default="{ row }">
+                    <StatusTag :value="row.status" kind="computer" />
+                  </template>
+                </el-table-column>
+              </el-table>
+            </template>
+
+            <el-table
+              v-else
+              :data="recentInbound"
+              size="small"
+              empty-text="暂无物资入库记录"
+            >
+              <el-table-column label="物资类型" min-width="110">
+                <template #default="{ row }">{{ row.typeName || "未分类物资" }}</template>
+              </el-table-column>
+              <el-table-column label="品牌型号" min-width="160">
+                <template #default="{ row }">
+                  {{ [row.brandName, row.modelName].filter(Boolean).join(" / ") || "—" }}
+                </template>
+              </el-table-column>
+              <el-table-column label="数量" width="72" align="right">
+                <template #default="{ row }">
+                  <strong class="oa-success-text">+{{ Math.max(1, Number(row.quantity || 1)) }}</strong>
+                </template>
+              </el-table-column>
+              <el-table-column label="入库时间" min-width="150">
+                <template #default="{ row }">{{ formatDateTimeText(row.occurredAt) }}</template>
+              </el-table-column>
+            </el-table>
+
+            <div class="oa-panel-footer">
+              <el-button
+                v-if="module.key === 'recentAssets'"
+                link
+                type="primary"
+                @click="router.push('/computers')"
+              >
+                查看全部资产 ›
+              </el-button>
+              <el-button
+                v-else-if="module.key === 'myAssets'"
+                link
+                type="primary"
+                @click="router.push('/employees')"
+              >
+                查看人员与设备 ›
+              </el-button>
+              <el-button v-else link type="primary" @click="router.push('/inventory')">
+                查看物资台账 ›
               </el-button>
             </div>
-          </div>
-          <EmptyHint v-else description="暂无通知" />
-        </template>
+          </el-tab-pane>
+        </el-tabs>
+      </DataPanel>
+    </section>
 
-        <template v-else-if="module.key === 'progress'">
-          <template v-if="hasPermission('tickets')">
-            <div class="oa-progress-row">
-              <span>工单状态分布</span>
-              <span v-if="slaBreached" class="oa-danger-text">SLA 超时 {{ slaBreached }}</span>
-            </div>
-            <div class="oa-tag-row">
-              <StatusTag
-                v-for="item in ticketStatusSummary"
-                :key="item.status"
-                :value="item.status"
-                kind="ticket"
-              />
-              <span v-if="!ticketStatusSummary.length" class="oa-cell-sub">暂无工单</span>
-            </div>
-          </template>
-          <div v-if="hasPermission('approvals')" class="oa-progress-row">
-            <span>待审批事项</span><strong>{{ pendingApprovals }}</strong>
-          </div>
-          <div v-if="hasPermission('inspection_management')" class="oa-progress-row-block">
-            <div class="oa-progress-row">
-              <span>巡检完成率</span>
-              <span>{{ submittedInspections }} / {{ runningInspections + submittedInspections }}</span>
-            </div>
-            <el-progress :percentage="inspectionRate" :stroke-width="10" />
-          </div>
-          <div v-if="hasPermission('quality')" class="oa-progress-row">
-            <span>数据质量问题</span>
-            <strong :class="summary.quality?.open ? 'oa-warning-text' : ''">
-              {{ summary.quality?.open ?? 0 }}
-            </strong>
-          </div>
-          <EmptyHint
-            v-if="
-              !hasPermission('tickets') &&
-              !hasPermission('approvals') &&
-              !hasPermission('inspection_management') &&
-              !hasPermission('quality')
-            "
-            description="当前账号没有可查看的进度数据"
-            :size="60"
-          />
-        </template>
-
-        <template v-else-if="module.key === 'recentAssets'">
-          <el-table :data="recentComputers" size="small" empty-text="暂无办公终端记录">
-            <el-table-column prop="deviceName" label="设备名" min-width="140" />
-            <el-table-column label="所属组织" min-width="120">
-              <template #default="{ row }">{{ row.orgName || "—" }}</template>
-            </el-table-column>
-            <el-table-column label="设备类型 / 品牌型号" min-width="160">
-              <template #default="{ row }">{{ hardwareSummary(row) || "—" }}</template>
-            </el-table-column>
-            <el-table-column label="使用用户" width="100">
-              <template #default="{ row }">{{ row.userName || "未分配" }}</template>
-            </el-table-column>
-            <el-table-column label="状态" width="90">
-              <template #default="{ row }">
-                <StatusTag :value="row.status" kind="computer" />
-              </template>
-            </el-table-column>
-          </el-table>
-          <div class="oa-panel-footer">
-            <el-button link type="primary" @click="router.push('/computers')">全部资产 ›</el-button>
-          </div>
-        </template>
-
-        <template v-else-if="module.key === 'myAssets'">
-          <div v-if="!session.user?.employeeId" class="oa-cell-sub">
-            当前账号未绑定人员档案，暂不显示名下设备。
-          </div>
-          <el-table v-else :data="myAssets" size="small" empty-text="名下暂无办公终端">
-            <el-table-column prop="deviceName" label="设备名" min-width="140" />
-            <el-table-column label="品牌型号" min-width="140">
-              <template #default="{ row }">
-                {{ [row.brand, row.model].filter(Boolean).join(" ") || "—" }}
-              </template>
-            </el-table-column>
-            <el-table-column prop="location" label="位置" min-width="110" />
-            <el-table-column label="状态" width="90">
-              <template #default="{ row }">
-                <StatusTag :value="row.status" kind="computer" />
-              </template>
-            </el-table-column>
-          </el-table>
-        </template>
-
-        <template v-else-if="module.key === 'recentInbound'">
-          <div v-if="recentInbound.length" class="oa-inbound-list">
-            <div v-for="item in recentInbound" :key="item.id" class="oa-inbound-row">
-              <div>
-                <div>{{ item.typeName || "未分类物资" }}</div>
+    <DataPanel
+      v-if="showQuality"
+      class="oa-dashboard-quality"
+      :title="moduleTitle('quality', '数据质量待办')"
+      hint="待处理的数据问题"
+    >
+      <template #actions>
+        <el-button link type="primary" @click="router.push('/governance')">
+          前往同步与质量 ›
+        </el-button>
+      </template>
+      <div v-if="qualityTop.length" class="oa-quality-summary">
+        <div>
+          <strong class="oa-tabular">{{ summary.quality?.open ?? qualityTop.length }}</strong>
+          <span>项数据质量问题待处理</span>
+        </div>
+        <el-tag size="small" type="warning" effect="plain">
+          展示最近 {{ qualityTop.length }} 项
+        </el-tag>
+      </div>
+      <el-collapse v-if="qualityTop.length" v-model="qualityExpanded" class="oa-quality-collapse">
+        <el-collapse-item title="展开查看待处理问题" name="issues">
+          <div class="oa-quality-list">
+            <div v-for="issue in qualityTop" :key="issue.id" class="oa-quality-item">
+              <span class="oa-quality-dot" />
+              <div class="oa-quality-main">
+                <div>{{ issue.title }}</div>
                 <div class="oa-cell-sub">
-                  {{ [item.brandName, item.modelName].filter(Boolean).join(" / ") || "未填写品牌型号" }}
-                  · {{ formatDateTimeText(item.occurredAt) }} · {{ item.sourceLabel || "未标注来源" }}
+                  {{ issue.severityLabel }} · {{ issue.ruleLabel }} ·
+                  {{ issue.entityTypeLabel }} · {{ formatDateTimeText(issue.firstDetectedAt) }}
                 </div>
               </div>
-              <strong class="oa-success-text">+{{ Math.max(1, Number(item.quantity || 1)) }}</strong>
             </div>
           </div>
-          <EmptyHint v-else description="暂无物资入库记录" />
-        </template>
+        </el-collapse-item>
+      </el-collapse>
+      <EmptyHint v-else description="数据质量良好，暂无待处理问题" :size="52" />
+    </DataPanel>
 
-        <template v-else-if="module.key === 'quality'">
-          <div v-if="qualityTop.length" class="oa-quality-list">
-            <div v-for="issue in qualityTop" :key="issue.id">
-              <div>{{ issue.title }}</div>
-              <div class="oa-cell-sub">
-                {{ issue.severityLabel }} · {{ issue.ruleLabel }} · {{ issue.entityTypeLabel }} ·
-                {{ formatDateTimeText(issue.firstDetectedAt) }}
-              </div>
-            </div>
-          </div>
-          <EmptyHint v-else description="数据质量良好，暂无待处理问题" />
-          <div v-if="qualityTop.length" class="oa-panel-footer">
-            <el-button link type="primary" @click="router.push('/governance')">
-              前往同步与质量 ›
-            </el-button>
-          </div>
-        </template>
-      </DataPanel>
-    </el-col>
-  </el-row>
-
-  <DetailDrawer v-model="customizing" title="自定义工作台" size="md">
-    <p class="oa-cell-sub">
-      模块会按你的角色权限过滤，顺序与显隐只影响当前账号，保存在本机浏览器。
-    </p>
-    <div class="oa-customize-list">
-      <div v-for="(item, index) in draft" :key="item.key" class="oa-customize-item">
-        <el-switch v-model="item.visible" />
-        <span class="oa-customize-title">{{ item.title }}</span>
-        <el-button link :disabled="index === 0" @click="moveModule(index, -1)">上移</el-button>
-        <el-button link :disabled="index === draft.length - 1" @click="moveModule(index, 1)">下移</el-button>
-      </div>
-    </div>
-    <template #footer>
-      <div class="oa-drawer-footer">
-        <el-button @click="restoreDefault">恢复默认</el-button>
-        <div class="oa-button-row">
-          <el-button @click="customizing = false">取消</el-button>
-          <el-button type="primary" @click="applyCustomize">保存</el-button>
+    <DetailDrawer v-model="customizing" title="自定义工作台" size="md">
+      <p class="oa-cell-sub">
+        模块会按你的角色权限过滤，显隐立即生效；最近动态页签按你设置的顺序排列，配置仅保存在本机浏览器。
+      </p>
+      <div class="oa-customize-list">
+        <div v-for="(item, index) in draft" :key="item.key" class="oa-customize-item">
+          <el-switch v-model="item.visible" />
+          <span class="oa-customize-title">{{ item.title }}</span>
+          <el-button link :disabled="index === 0" @click="moveModule(index, -1)">上移</el-button>
+          <el-button
+            link
+            :disabled="index === draft.length - 1"
+            @click="moveModule(index, 1)"
+          >
+            下移
+          </el-button>
         </div>
       </div>
-    </template>
-  </DetailDrawer>
+      <template #footer>
+        <div class="oa-drawer-footer">
+          <el-button @click="restoreDefault">恢复默认</el-button>
+          <div class="oa-button-row">
+            <el-button @click="customizing = false">取消</el-button>
+            <el-button type="primary" @click="applyCustomize">保存</el-button>
+          </div>
+        </div>
+      </template>
+    </DetailDrawer>
+  </div>
 </template>
 
 <style scoped>
-.oa-module-col {
-  margin-bottom: var(--oa-gap);
+.oa-dashboard {
+  --oa-dashboard-gap: var(--oa-space-4);
+  --oa-dashboard-padding: var(--oa-space-5);
+  --oa-dashboard-radius: var(--oa-radius-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--oa-dashboard-gap);
+  min-width: 0;
+}
+
+.oa-dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: var(--oa-dashboard-gap);
+  align-items: stretch;
+}
+
+.oa-dashboard :deep(.el-card) {
+  border-radius: var(--oa-dashboard-radius);
+  box-shadow: 0 2px 10px rgba(31, 45, 61, 0.06);
+}
+
+.oa-dashboard :deep(.el-card__body) {
+  padding: var(--oa-dashboard-padding);
+}
+
+.oa-dashboard :deep(.el-card__header) {
+  padding: var(--oa-dashboard-padding) var(--oa-dashboard-padding) 0;
+  border-bottom: 0;
+}
+
+.oa-dashboard :deep(.oa-panel) {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.oa-dashboard :deep(.oa-panel > .el-card__body) {
+  flex: 1 1 auto;
+}
+
+.oa-dashboard :deep(.oa-panel__title strong) {
+  font-size: var(--oa-font-lg);
+  font-weight: 700;
+}
+
+.oa-dashboard :deep(.el-empty) {
+  padding: var(--oa-space-3) 0;
+}
+
+.oa-dashboard :deep(.el-empty__description) {
+  margin-top: var(--oa-space-2);
+}
+
+.oa-dashboard-top__main {
+  grid-column: span 8;
+  height: 100%;
+}
+
+.oa-dashboard-top__main :deep(.el-card__body) {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  height: 100%;
+}
+
+.oa-dashboard-top__notifications {
+  grid-column: span 4;
+}
+
+.oa-dashboard-core__metrics {
+  grid-column: span 8;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--oa-dashboard-gap);
+}
+
+.oa-dashboard-core__metrics :deep(.oa-metric) {
+  height: 100%;
+}
+
+.oa-dashboard-core__metrics :deep(.oa-metric .el-card__body) {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.oa-dashboard-core__metrics :deep(.oa-metric__hint) {
+  margin-top: auto;
+}
+
+.oa-dashboard-core__quick {
+  grid-column: span 4;
+}
+
+.oa-dashboard-workspace__tasks,
+.oa-dashboard-workspace__activity {
+  grid-column: span 6;
+}
+
+.oa-dashboard-workspace__activity :deep(.oa-panel > .el-card__body) {
+  display: flex;
+  flex-direction: column;
+}
+
+.oa-dashboard-quality {
+  grid-column: span 12;
+}
+
+.oa-quick-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--oa-space-2);
+}
+
+.oa-quick-action {
+  width: 100%;
+  height: 36px;
+  margin: 0;
+  padding: 0 var(--oa-space-2);
+  justify-content: center;
+  border-radius: var(--oa-radius-md);
+  font-size: var(--oa-font-sm);
 }
 
 .oa-todo-list,
 .oa-note-list,
-.oa-inbound-list,
 .oa-quality-list,
 .oa-customize-list {
   display: flex;
@@ -581,17 +864,80 @@ onMounted(async () => {
   display: flex;
   gap: var(--oa-space-3);
   align-items: center;
-  padding: var(--oa-space-2) var(--oa-space-3);
   border: var(--oa-border);
   border-radius: var(--oa-radius-md);
 }
 
+.oa-todo-item,
+.oa-note-item {
+  padding: var(--oa-space-2) var(--oa-space-3);
+}
+
+.oa-customize-item {
+  padding: var(--oa-space-2) var(--oa-space-3);
+}
+
 .oa-todo-item {
   cursor: pointer;
+  transition:
+    border-color 150ms ease,
+    background 150ms ease;
 }
 
 .oa-todo-item:hover {
   border-color: var(--el-color-primary-light-5);
+  background: var(--el-fill-color-lighter);
+}
+
+.oa-note-item {
+  width: 100%;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  background: transparent;
+  cursor: default;
+}
+
+.oa-note-item.is-unread {
+  background: var(--el-color-danger-light-9);
+  border-color: var(--el-color-danger-light-7);
+}
+
+.oa-note-dot {
+  flex: none;
+  width: var(--oa-space-2);
+  height: var(--oa-space-2);
+  border-radius: 50%;
+  background: var(--el-color-info-light-5);
+}
+
+.oa-note-item.is-unread .oa-note-dot {
+  background: var(--el-color-danger);
+}
+
+.oa-note-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.oa-note-title {
+  overflow: hidden;
+  font-size: var(--oa-font-sm);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oa-note-action {
+  flex: none;
+  padding: 0;
+  color: var(--el-color-primary);
+  font-size: var(--oa-font-xs);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
 }
 
 .oa-todo-dot {
@@ -625,40 +971,140 @@ onMounted(async () => {
   color: var(--el-color-success);
 }
 
-.oa-note-unread {
-  font-weight: 600;
+.oa-progress-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--oa-dashboard-gap);
 }
 
-.oa-progress-row {
+.oa-progress-card {
+  padding: var(--oa-space-4);
+  background: var(--el-fill-color-lighter);
+  border: var(--oa-border);
+  border-radius: var(--oa-radius-lg);
+}
+
+.oa-progress-card__head,
+.oa-progress-card__meta,
+.oa-inline-summary,
+.oa-task-section__head,
+.oa-quality-summary {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  gap: var(--oa-space-2);
-  margin-bottom: var(--oa-space-2);
+  gap: var(--oa-space-3);
+}
+
+.oa-progress-card__head {
+  margin-bottom: var(--oa-space-3);
   font-size: var(--oa-font-sm);
 }
 
-.oa-progress-row-block {
-  margin-bottom: var(--oa-space-3);
+.oa-progress-card__head strong {
+  font-size: var(--oa-font-lg);
+}
+
+.oa-progress-card__meta {
+  margin-top: var(--oa-space-2);
+  color: var(--oa-text-secondary);
+  font-size: var(--oa-font-xs);
+}
+
+.oa-ticket-status {
+  margin-top: var(--oa-space-4);
+}
+
+.oa-section-label {
+  color: var(--oa-text-primary);
+  font-size: var(--oa-font-sm);
+  font-weight: 600;
 }
 
 .oa-tag-row {
   display: flex;
   flex-wrap: wrap;
   gap: var(--oa-space-1);
+}
+
+.oa-ticket-status .oa-tag-row {
+  margin-top: var(--oa-space-2);
+}
+
+.oa-inline-summary {
+  margin-top: var(--oa-space-3);
+  padding: var(--oa-space-3) var(--oa-space-4);
+  background: var(--el-fill-color-lighter);
+  border-radius: var(--oa-radius-md);
+  font-size: var(--oa-font-sm);
+}
+
+.oa-task-section {
+  margin-top: var(--oa-space-5);
+  padding-top: var(--oa-space-5);
+  border-top: var(--oa-border);
+}
+
+.oa-task-section__head {
   margin-bottom: var(--oa-space-3);
 }
 
-.oa-inbound-row {
-  display: flex;
-  gap: var(--oa-space-3);
-  align-items: center;
-  justify-content: space-between;
+.oa-activity-tabs :deep(.el-tabs__header) {
+  margin-bottom: var(--oa-space-4);
 }
 
 .oa-panel-footer {
   display: flex;
   justify-content: flex-end;
+  margin-top: var(--oa-space-3);
+}
+
+.oa-quality-summary {
+  padding: var(--oa-space-3) var(--oa-space-4);
+  background: var(--el-color-warning-light-9);
+  border: 1px solid var(--el-color-warning-light-7);
+  border-radius: var(--oa-radius-md);
+}
+
+.oa-quality-summary > div {
+  display: flex;
+  align-items: baseline;
+  gap: var(--oa-space-2);
+}
+
+.oa-quality-summary strong {
+  color: var(--el-color-warning-dark-2);
+  font-size: var(--oa-font-xl);
+}
+
+.oa-quality-summary span {
+  color: var(--oa-text-secondary);
+  font-size: var(--oa-font-sm);
+}
+
+.oa-quality-collapse {
+  margin-top: var(--oa-space-3);
+  border-top: 0;
+  border-bottom: 0;
+}
+
+.oa-quality-item {
+  display: flex;
+  gap: var(--oa-space-3);
+  align-items: flex-start;
+  padding: var(--oa-space-2) 0;
+}
+
+.oa-quality-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: var(--el-color-warning);
+}
+
+.oa-quality-main {
+  min-width: 0;
 }
 
 .oa-customize-title {
@@ -668,5 +1114,60 @@ onMounted(async () => {
 .oa-drawer-footer {
   display: flex;
   justify-content: space-between;
+}
+
+@media (max-width: 1199px) {
+  .oa-dashboard-top__main,
+  .oa-dashboard-top__notifications,
+  .oa-dashboard-core__metrics,
+  .oa-dashboard-core__quick {
+    grid-column: span 12;
+  }
+
+  .oa-quick-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 991px) {
+  .oa-dashboard-core__metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .oa-dashboard-workspace__tasks,
+  .oa-dashboard-workspace__activity {
+    grid-column: span 12;
+  }
+
+  .oa-quick-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 767px) {
+  .oa-dashboard {
+    --oa-dashboard-gap: var(--oa-space-4);
+    --oa-dashboard-padding: var(--oa-space-5);
+  }
+
+  .oa-progress-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .oa-quality-summary {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 479px) {
+  .oa-dashboard-core__metrics,
+  .oa-quick-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .oa-note-action {
+    display: none;
+  }
 }
 </style>

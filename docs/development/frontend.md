@@ -92,6 +92,10 @@ const VIEW_LOADERS: Record<string, () => Promise<unknown>> = {
 - 按模块判权限后再取数，无权限模块不出现；单模块失败按空值降级，不影响其它模块；
 - 结果按账号缓存 15 秒（`WORKBENCH_CACHE_TTL_SECONDS`），`?refresh=1` 强制刷新。
 
+布局使用固定 12 列 CSS Grid：顶部问候与系统通知为 8/4，KPI 与快捷入口为 8/4，
+待办进度与最近动态为 6/6，数据质量通栏 12 列。最近登记资产、我的设备、最近入库物资
+共用“最近动态”页签和统一紧凑表格；角色权限和模块显隐继续生效，页签顺序遵循账号偏好。
+
 ### 状态快照裁剪与服务端分页
 
 - `GET /api/state?include=orgs,employees,warehouses,inventoryModels`：按需裁剪状态快照的

@@ -1966,6 +1966,23 @@ class FrontendSpaMigrationTests(TestCase):
             self.assertIn(text, registry)
         for text in ("自定义工作台", "恢复默认", "刷新数据"):
             self.assertIn(text, view)
+        # 工作台按 12 列栅格组织：顶部与核心区 8/4，工作区 6/6，质量区通栏。
+        for text in (
+            "oa-dashboard-grid",
+            "grid-template-columns: repeat(12, minmax(0, 1fr))",
+            "oa-dashboard-top__notifications",
+            "oa-dashboard-core__metrics",
+            "oa-dashboard-workspace__tasks",
+            "oa-dashboard-workspace__activity",
+            "oa-dashboard-quality",
+            "grid-column: span 8",
+            "grid-column: span 4",
+            "grid-column: span 6",
+            "--oa-dashboard-padding: var(--oa-space-5)",
+            "--oa-dashboard-radius: var(--oa-radius-lg)",
+        ):
+            self.assertIn(text, view)
+        self.assertIn("系统通知", view)
 
         # 数据接口按权限请求，失败降级为模块空值
         self.assertIn("fetchWorkbench", api)
