@@ -1930,6 +1930,13 @@ class OrgEmployeeCountRuleTests(TestCase):
         self.assertIn('if (row.status !== "active") return;', view)
         self.assertIn("orgEmployeeCounts", view)
 
+    def test_left_employees_order_recent_first(self):
+        server = (ROOT / "server.py").read_text(encoding="utf-8")
+        self.assertIn(
+            "ORDER BY COALESCE(leave_date, DATE(archived_at)) DESC, archived_at DESC, archive_id DESC",
+            server,
+        )
+
 
 class TemplateDeletionPermissionTests(TestCase):
     """已被巡检任务使用的模板，删除只放给超级管理员；审计里留痕。"""
