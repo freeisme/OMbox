@@ -1382,6 +1382,9 @@ class InspectionService:
             ),
             0,
         )
+        # 已被巡检任务用过的模板保留历史快照，但删除动作只放给超级管理员，避免误删。
+        if task_count > 0 and not parse_bool(context.get("isSuperAdmin")):
+            raise self.forbidden_error("该模板已被巡检任务使用，只有超级管理员可以删除。")
         reason = self.db.text(payload.get("reason"))[:200]
         self.db.execute(
             f"""

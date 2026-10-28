@@ -188,6 +188,8 @@ const paged = computed(() => {
 const orgEmployeeCounts = computed(() => {
   const counts = new Map<string, number>();
   employees.value.forEach((row) => {
+    // 组织人数只统计「在职」人员：停用、公用（虚拟使用人）、离职不计入。
+    if (row.status !== "active") return;
     const ids = collectOrgIds(row.orgId);
     ids.forEach((id) => counts.set(id, (counts.get(id) ?? 0) + 1));
   });
