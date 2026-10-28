@@ -3918,7 +3918,7 @@ def build_state_payload(include_audit_logs: bool = True) -> dict:
                  org_path, department, position_name, email, mobile,
                  leave_date, leave_info, leave_remark, archived_at, device_snapshot
           FROM left_employee_archive
-          ORDER BY archived_at DESC, archive_id DESC
+          ORDER BY COALESCE(leave_date, DATE(archived_at)) DESC, archived_at DESC, archive_id DESC
         ) AS ordered_left_employees
         """,
         """
