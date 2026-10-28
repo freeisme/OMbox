@@ -70,7 +70,7 @@ export const NAV_ITEMS: NavItem[] = [
     modules: ["scrap_management"],
   },
   { page: "dictionary", path: "/dictionary", title: "基础字典", group: "资源与审计", modules: ["organizations"] },
-  { page: "audit", path: "/audit", title: "操作日志", group: "资源与审计", modules: ["audit_logs"] },
+  { page: "audit", path: "/audit", title: "操作日志", group: "服务管理", modules: ["audit_logs"] },
   { page: "tickets", path: "/tickets", title: "工单", group: "系统", modules: ["tickets"] },
   {
     page: "serviceManagement",

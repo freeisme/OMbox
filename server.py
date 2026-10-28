@@ -146,6 +146,7 @@ AUDIT_CATEGORY_ENTITY_TYPES = {
     "employee": ("employee", "monitor", "non_asset"),
     "computer": ("computer",),
     "organization": ("org_unit",),
+    "inspection": ("asset_site", "asset_rack", "inspection_template", "inspection_task"),
 }
 
 AUDIT_CATEGORY_LABELS = {
@@ -153,6 +154,7 @@ AUDIT_CATEGORY_LABELS = {
     "employee": "人员变动",
     "computer": "办公终端信息变动",
     "organization": "组织架构变动",
+    "inspection": "巡检变动",
     "other": "其他变动",
 }
 
@@ -186,6 +188,24 @@ AUDIT_CHANGE_LABELS = {
     "database_backup_scheduled": "定时创建数据库备份",
     "database_backup_schedule_changed": "数据库自动备份设置变更",
     "database_backup_downloaded": "下载数据库备份",
+    "inspection_started": "发起巡检",
+    "inspection_submitted": "提交巡检",
+    "inspection_voided": "作废巡检",
+    "inspection_task_deleted": "删除巡检任务",
+    "inspection_imported": "导入巡检表",
+    "inspection_site_created": "新增巡检对象",
+    "inspection_site_updated": "更新巡检对象",
+    "inspection_site_deleted": "删除巡检对象",
+    "inspection_rack_created": "新增机柜",
+    "inspection_rack_updated": "更新机柜",
+    "inspection_rack_deleted": "删除机柜",
+    "inspection_template_created": "新增巡检模板",
+    "inspection_template_updated": "更新巡检模板",
+    "inspection_template_deleted": "删除巡检模板",
+    "inspection_sites_imported": "导入巡检对象",
+    "inspection_racks_imported": "导入机柜",
+    "inspection_templates_imported": "导入巡检模板",
+    "inspection_site_devices_imported": "导入巡检对象设备",
 }
 
 

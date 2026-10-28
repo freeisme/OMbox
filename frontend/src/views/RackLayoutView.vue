@@ -49,6 +49,7 @@ const sideRacks = ref<RackDetail[]>([]);
 const racks = ref<RackSummary[]>([]);
 const rack = ref<RackDetail | null>(null);
 const selectedId = ref("");
+const siteId = ref("");
 const face = ref<"front" | "rear">("front");
 const showLabels = ref(true);
 const rowHeight = ref(22);
@@ -65,6 +66,19 @@ const height = computed(() => Number(rack.value?.heightU ?? 42));
 const placements = computed<Placement[]>(() => rack.value?.placements ?? []);
 const selected = computed<Placement | null>(
   () => placements.value.find((item) => item.id === selectedId.value) ?? null,
+);
+/** 机房下拉：按 racks 里的 siteId 去重；没有机房的机柜归到「未分配机房」。 */
+const siteOptions = computed(() => {
+  const map = new Map<string, string>();
+  racks.value.forEach((item) => {
+    const key = item.siteId || "";
+    if (!map.has(key)) map.set(key, item.siteName || "未分配机房");
+  });
+  return Array.from(map, ([value, label]) => ({ value, label }));
+});
+/** 机柜下拉：只列当前选中机房的机柜。 */
+const rackOptions = computed(() =>
+  racks.value.filter((item) => (item.siteId || "") === siteId.value),
 );
 const occupiedUnits = computed(() => {
   const map = new Map<number, Placement>();
@@ -110,9 +124,9 @@ function unitRowsOf(rackHeight: number): number[] {
 }
 
 /** 并排视图：同机房的机柜各占一列，只读显示，点设备回到单柜编辑。 */
-async function loadSideBySide(): Promise<void> {
-  const siteId = rack.value?.siteId ?? "";
-  const list = racks.value.filter((item) => !siteId || item.siteId === siteId);
+async function loadSideBySide(targetSite = ""): Promise<void> {
+  const site = targetSite || siteId.value;
+  const list = racks.value.filter((item) => (item.siteId || "") === site);
   loading.value = true;
   try {
     sideRacks.value = await Promise.all(
@@ -122,6 +136,32 @@ async function loadSideBySide(): Promise<void> {
     ElMessage.error(`并排视图加载失败：${(error as Error).message}`);
   } finally {
     loading.value = false;
+  }
+}
+
+/** 选机房：默认并排展示该机房的全部机柜。 */
+function selectSite(nextSite: string): void {
+  siteId.value = nextSite;
+  viewMode.value = "side";
+  void loadSideBySide(nextSite);
+}
+
+/** 选机柜：切换到单柜视图。 */
+function selectRack(rackId: string): void {
+  selectedId.value = rackId;
+  viewMode.value = "single";
+  void loadRack(rackId);
+}
+
+/** 手动切「单柜 / 并排」：切到单柜但没有选中的机柜时，回落到当前机房的第一台。 */
+function onViewModeChange(): void {
+  if (viewMode.value === "side") {
+    void loadSideBySide();
+    return;
+  }
+  if (!rack.value) {
+    const first = rackOptions.value[0];
+    if (first) selectRack(first.id);
   }
 }
 
@@ -149,13 +189,10 @@ async function loadRacks(): Promise<void> {
   try {
     const payload = await listRacks();
     racks.value = payload.racks;
-    const current = racks.value.find((item) => item.id === selectedId.value) ?? racks.value[0];
-    if (current) {
-      selectedId.value = current.id;
-      await loadRack(current.id);
-    } else {
-      rack.value = null;
-    }
+    const firstSite = siteOptions.value[0]?.value ?? "";
+    siteId.value = firstSite;
+    viewMode.value = "side";
+    await loadSideBySide(firstSite);
   } catch (error) {
     ElMessage.error(`机柜列表加载失败：${(error as Error).message}`);
   } finally {
@@ -542,19 +579,28 @@ onMounted(async () => {
   <el-card shadow="never" v-loading="loading">
     <template #header>
       <div class="rack-toolbar">
-        <el-select v-model="selectedId" style="width: 320px" @change="loadRack">
+        <el-select v-model="siteId" style="width: 180px" placeholder="选择机房" @change="selectSite">
+          <el-option v-for="item in siteOptions" :key="item.value" :value="item.value" :label="item.label" />
+        </el-select>
+        <el-select
+          v-model="selectedId"
+          style="width: 220px"
+          placeholder="选择机柜"
+          :disabled="!rackOptions.length"
+          @change="selectRack"
+        >
           <el-option
-            v-for="item in racks"
+            v-for="item in rackOptions"
             :key="item.id"
             :value="item.id"
-            :label="`${item.siteName} / ${item.name}（${item.heightU}U，已用 ${item.usedUnits}U）`"
+            :label="`${item.name}（${item.heightU}U，已用 ${item.usedUnits}U）`"
           />
         </el-select>
         <el-radio-group v-model="face" size="small">
           <el-radio-button value="front">前面板</el-radio-button>
           <el-radio-button value="rear">后面板</el-radio-button>
         </el-radio-group>
-        <el-radio-group v-model="viewMode" size="small" @change="viewMode === 'side' && loadSideBySide()">
+        <el-radio-group v-model="viewMode" size="small" @change="onViewModeChange">
           <el-radio-button value="single">单柜</el-radio-button>
           <el-radio-button value="side">并排</el-radio-button>
         </el-radio-group>

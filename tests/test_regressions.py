@@ -1907,6 +1907,55 @@ class FrontendSpaMigrationTests(TestCase):
         for label in ("离职归档", "办公终端分配变更", "库存数量变更"):
             self.assertIn(label, api)
 
+    def test_audit_placed_under_service_management(self):
+        navigation = (ROOT / "frontend" / "src" / "navigation.ts").read_text(encoding="utf-8")
+        self.assertIn('page: "audit", path: "/audit", title: "操作日志", group: "服务管理"', navigation)
+
+    def test_inspection_audit_actions_have_labels(self):
+        api = (ROOT / "frontend" / "src" / "api" / "audit.ts").read_text(encoding="utf-8")
+        server = (ROOT / "server.py").read_text(encoding="utf-8")
+
+        for label in ("删除巡检模板", "新增巡检对象", "发起巡检"):
+            self.assertIn(label, api)
+            self.assertIn(label, server)
+
+
+class OrgEmployeeCountRuleTests(TestCase):
+    """组织树的人员数量只统计在职人员：停用、公用、离职不计入。"""
+
+    def test_org_count_counts_active_only(self):
+        view = (ROOT / "frontend" / "src" / "views" / "EmployeesView.vue").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('if (row.status !== "active") return;', view)
+        self.assertIn("orgEmployeeCounts", view)
+
+
+class TemplateDeletionPermissionTests(TestCase):
+    """已被巡检任务使用的模板，删除只放给超级管理员；审计里留痕。"""
+
+    def test_used_template_delete_requires_super_admin(self):
+        service = (ROOT / "office_asset" / "inspection.py").read_text(encoding="utf-8")
+        block = service.split("def delete_template", 1)[1].split("def _next_task_no", 1)[0]
+        self.assertIn('parse_bool(context.get("isSuperAdmin"))', block)
+        self.assertIn("只有超级管理员可以删除", block)
+        self.assertIn("inspection_template_deleted", block)
+
+
+class RackViewSiteAndRackSelectorsTests(TestCase):
+    """机柜视图：机房 + 机柜两个下拉，先选机房默认并排，点机柜 / 选机柜切单柜。"""
+
+    def test_two_selectors_and_default_side_by_side(self):
+        view = (ROOT / "frontend" / "src" / "views" / "RackLayoutView.vue").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("选择机房", view)
+        self.assertIn("选择机柜", view)
+        self.assertIn("function selectSite", view)
+        self.assertIn("function selectRack", view)
+        self.assertIn('viewMode.value = "side"', view)
+        self.assertIn('viewMode.value = "single"', view)
+
     def test_theme_color_support(self):
         theme = (ROOT / "frontend" / "src" / "theme.ts").read_text(encoding="utf-8")
         settings = (ROOT / "frontend" / "src" / "views" / "SettingsView.vue").read_text(encoding="utf-8")
