@@ -49,6 +49,7 @@ const sideRacks = ref<RackDetail[]>([]);
 const racks = ref<RackSummary[]>([]);
 const rack = ref<RackDetail | null>(null);
 const selectedId = ref("");
+const currentRackId = ref("");
 const siteId = ref("");
 const face = ref<"front" | "rear">("front");
 const showLabels = ref(true);
@@ -148,7 +149,8 @@ function selectSite(nextSite: string): void {
 
 /** 选机柜：切换到单柜视图。 */
 function selectRack(rackId: string): void {
-  selectedId.value = rackId;
+  currentRackId.value = rackId;
+  selectedId.value = "";
   viewMode.value = "single";
   void loadRack(rackId);
 }
@@ -167,6 +169,7 @@ function onViewModeChange(): void {
 
 function openInSingleView(rackId: string, placementId: string): void {
   viewMode.value = "single";
+  currentRackId.value = rackId;
   selectedId.value = placementId;
   void loadRack(rackId);
 }
@@ -583,7 +586,7 @@ onMounted(async () => {
           <el-option v-for="item in siteOptions" :key="item.value" :value="item.value" :label="item.label" />
         </el-select>
         <el-select
-          v-model="selectedId"
+          v-model="currentRackId"
           style="width: 220px"
           placeholder="选择机柜"
           :disabled="!rackOptions.length"
