@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   DATACENTER_STATUS_LABELS as STATUS_LABELS,
@@ -20,6 +20,7 @@ import {
 } from "../api/datacenter";
 import ExportMenu from "../components/ui/ExportMenu.vue";
 import { hasPermission } from "../session";
+import { loadOrgTree, transferAsset, type Company } from "../api/company";
 
 
 const loading = ref(false);
@@ -28,6 +29,65 @@ const deviceTypes = ref<DeviceTypeSummary[]>([]);
 const statusFilter = ref("");
 const keyword = ref("");
 const dialog = ref(false);
+const transferDialog = reactive({
+  visible: false,
+  assetId: "",
+  deviceName: "",
+  targetCompanyId: "",
+  targetOrgUnitId: "",
+  note: "",
+});
+const transferCompanies = ref<Company[]>([]);
+const transferOrgs = ref<Array<{ id: string; name: string; companyId: string }>>([]);
+const transferring = ref(false);
+
+async function openTransfer(row: DatacenterDeviceSummary): Promise<void> {
+  transferDialog.assetId = row.id;
+  transferDialog.deviceName = row.name;
+  transferDialog.targetCompanyId = "";
+  transferDialog.targetOrgUnitId = "";
+  transferDialog.note = "";
+  transferDialog.visible = true;
+  try {
+    const tree = await loadOrgTree();
+    transferCompanies.value = tree.companies;
+    transferOrgs.value = tree.organizations.map((org) => ({
+      id: org.id,
+      name: org.name,
+      companyId: org.companyId,
+    }));
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "加载公司失败。");
+  }
+}
+
+function transferOrgOptions(companyId: string): Array<{ id: string; name: string }> {
+  return transferOrgs.value.filter((org) => org.companyId === companyId);
+}
+
+async function submitTransfer(): Promise<void> {
+  if (!transferDialog.targetCompanyId) {
+    ElMessage.warning("请选择目标公司。");
+    return;
+  }
+  transferring.value = true;
+  try {
+    await transferAsset({
+      assetKind: "datacenter_device",
+      assetId: transferDialog.assetId,
+      targetCompanyId: transferDialog.targetCompanyId,
+      targetOrgUnitId: transferDialog.targetOrgUnitId || undefined,
+      note: transferDialog.note,
+    });
+    ElMessage.success("已调拨（设备已下架到目标公司）。");
+    transferDialog.visible = false;
+    await loadDevices();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "调拨失败。");
+  } finally {
+    transferring.value = false;
+  }
+}
 const editingId = ref("");
 /** 复制来源名称：非空时对话框标题显示"复制自…"，并提示补录唯一字段。 */
 const copyFromName = ref("");
@@ -494,6 +554,9 @@ onMounted(async () => {
       </el-table-column>
       <el-table-column label="操作" width="280" fixed="right">
         <template #default="{ row }">
+          <el-button v-if="hasPermission('asset_transfer', 'create')" link size="small" @click="openTransfer(row)">
+            调拨
+          </el-button>
           <el-button v-if="canUpdate" link size="small" @click="openDialog(row)">编辑</el-button>
           <el-button v-if="canCreate" link size="small" @click="copyDevice(row)">复制</el-button>
           <el-dropdown v-if="canUpdate" @command="(command: string) => changeStatus(row, command)">
@@ -708,6 +771,29 @@ onMounted(async () => {
       <div v-else class="hint">选择文件后会先解析并显示将要新增/更新/跳过的数量，确认无误再导入。</div>
 
     </FormDialog>
+
+    <el-dialog v-model="transferDialog.visible" title="机房设备调拨" width="460px" :close-on-click-modal="false">
+      <p class="hint">将「{{ transferDialog.deviceName }}」调拨到目标公司/组织；已上架设备会先下架再转移。</p>
+      <el-form label-position="top">
+        <el-form-item label="目标公司" required>
+          <el-select v-model="transferDialog.targetCompanyId" placeholder="选择公司" class="oa-full-width" @change="transferDialog.targetOrgUnitId = ''">
+            <el-option v-for="c in transferCompanies" :key="c.id" :label="c.name" :value="c.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="目标组织">
+          <el-select v-model="transferDialog.targetOrgUnitId" placeholder="可选" clearable class="oa-full-width">
+            <el-option v-for="o in transferOrgOptions(transferDialog.targetCompanyId)" :key="o.id" :label="o.name" :value="o.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="transferDialog.note" placeholder="可留空" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="transferDialog.visible = false">取消</el-button>
+        <el-button type="primary" :loading="transferring" @click="submitTransfer">调拨</el-button>
+      </template>
+    </el-dialog>
   </el-card>
 </template>
 

@@ -7,7 +7,7 @@ from .sql import SqlGateway, parse_bool
 
 
 ACTION_CODES = ("view", "create", "update", "delete", "approve", "export")
-DATA_SCOPES = ("all", "organization", "own", "submitted", "assigned", "none")
+DATA_SCOPES = ("all", "company", "organization", "own", "submitted", "assigned", "none")
 ACTION_LABELS = {
     "view": "查看",
     "create": "新增",
@@ -18,6 +18,7 @@ ACTION_LABELS = {
 }
 DATA_SCOPE_LABELS = {
     "all": "全部数据",
+    "company": "本公司",
     "organization": "所属部门及下属部门",
     "own": "本人数据",
     "submitted": "本人提交",

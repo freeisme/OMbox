@@ -23,6 +23,7 @@ export const NAV_ITEMS: NavItem[] = [
   { page: "computers", path: "/computers", title: "办公终端", group: "资产台账", modules: ["it_assets"] },
   { page: "employees", path: "/employees", title: "使用人员", group: "资产台账", modules: ["employees"] },
   { page: "leftEmployees", path: "/left-employees", title: "离职人员", group: "资产台账", modules: ["employees"] },
+  { page: "organizations", path: "/organizations", title: "组织架构", group: "资产台账", modules: ["organizations"] },
   {
     page: "datacenterDevices",
     path: "/datacenter-devices",

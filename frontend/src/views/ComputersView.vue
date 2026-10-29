@@ -31,10 +31,71 @@ import PageHeader from "../components/ui/PageHeader.vue";
 import { confirmAction } from "../composables/useConfirm";
 import { deviceTypeLabel, statusLabel, statusTagType } from "../labels";
 import { hasPermission } from "../session";
+import { loadOrgTree, transferAsset, type Company } from "../api/company";
 
 const loading = ref(true);
 const saving = ref(false);
 const scrapping = ref(false);
+const transferDialog = reactive({
+  visible: false,
+  assetId: "",
+  deviceName: "",
+  targetCompanyId: "",
+  targetOrgUnitId: "",
+  note: "",
+});
+const transferCompanies = ref<Company[]>([]);
+const transferOrgs = ref<Array<{ id: string; name: string; companyId: string }>>([]);
+const transferring = ref(false);
+
+async function openTransfer(row: ComputerRow): Promise<void> {
+  transferDialog.assetId = row.id;
+  transferDialog.deviceName = row.deviceName;
+  transferDialog.targetCompanyId = "";
+  transferDialog.targetOrgUnitId = "";
+  transferDialog.note = "";
+  transferDialog.visible = true;
+  try {
+    const tree = await loadOrgTree();
+    transferCompanies.value = tree.companies;
+    transferOrgs.value = tree.organizations.map((org) => ({
+      id: org.id,
+      name: org.name,
+      companyId: org.companyId,
+    }));
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "加载公司失败。");
+  }
+}
+
+function transferOrgOptions(companyId: string): Array<{ id: string; name: string }> {
+  return transferOrgs.value.filter((org) => org.companyId === companyId);
+}
+
+async function submitTransfer(): Promise<void> {
+  if (!transferDialog.targetCompanyId) {
+    ElMessage.warning("请选择目标公司。");
+    return;
+  }
+  transferring.value = true;
+  try {
+    await transferAsset({
+      assetKind: "computer",
+      assetId: transferDialog.assetId,
+      targetCompanyId: transferDialog.targetCompanyId,
+      targetOrgUnitId: transferDialog.targetOrgUnitId || undefined,
+      note: transferDialog.note,
+    });
+    ElMessage.success("已调拨。");
+    transferDialog.visible = false;
+    invalidateComputersCache();
+    await load(true);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "调拨失败。");
+  } finally {
+    transferring.value = false;
+  }
+}
 // 服务端分页：rows 是当前页，total 是匹配总数。
 const rows = ref<ComputerRow[]>([]);
 const total = ref(0);
@@ -558,6 +619,9 @@ onMounted(async () => {
       <el-table-column label="操作" width="180" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="openMovement(row)">流转</el-button>
+          <el-button v-if="hasPermission('asset_transfer', 'create')" link @click="openTransfer(row)">
+            调拨
+          </el-button>
           <el-button v-if="hasPermission('it_assets', 'update')" link type="primary" @click="openEdit(row)">
             编辑
           </el-button>
@@ -806,6 +870,29 @@ onMounted(async () => {
       <div v-else-if="!movementLoading" class="oa-hint">这台终端还没有流转记录。</div>
     </div>
   </FormDialog>
+
+  <el-dialog v-model="transferDialog.visible" title="办公终端调拨" width="460px" :close-on-click-modal="false">
+    <p class="oa-hint">将「{{ transferDialog.deviceName }}」调拨到目标公司/组织，调拨后管理权随之转移。</p>
+    <el-form label-position="top">
+      <el-form-item label="目标公司" required>
+        <el-select v-model="transferDialog.targetCompanyId" placeholder="选择公司" class="oa-full-width" @change="transferDialog.targetOrgUnitId = ''">
+          <el-option v-for="c in transferCompanies" :key="c.id" :label="c.name" :value="c.id" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="目标组织">
+        <el-select v-model="transferDialog.targetOrgUnitId" placeholder="可选" clearable class="oa-full-width">
+          <el-option v-for="o in transferOrgOptions(transferDialog.targetCompanyId)" :key="o.id" :label="o.name" :value="o.id" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="备注">
+        <el-input v-model="transferDialog.note" placeholder="可留空" />
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="transferDialog.visible = false">取消</el-button>
+      <el-button type="primary" :loading="transferring" @click="submitTransfer">调拨</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <style scoped>

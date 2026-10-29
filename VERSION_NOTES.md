@@ -12,6 +12,57 @@
 - v2.31.0 起旧前端已整体删除，早期条目里的「回滚到旧前端 / 从 `MIGRATED_VIEWS` 移除」
   操作已不再适用。
 
+## v4.0.0
+
+发布日期：2026-10-29
+
+### 变更
+
+**单公司升级为集团多公司架构。**
+
+- 新增「公司」实体：一个集团下多个公司，公司平级、各自独立管理组织架构；
+- 组织架构增加树状视图（可看整个集团或单个公司）；系统管理员可新增公司并「转移组织架构的一部分」；
+- 员工支持多职位（主职位唯一，可跨组织、跨公司任职）；
+- 办公终端、IT 物资仓库、机房/机柜/机房设备、会议室巡检对象按公司隔离；
+- 跨公司资产/物资/机房设备走「调拨」（免审批、留审计）；
+- 机房管理与巡检管理可整体开关，新装初始化时可选择；
+- 升级后首次登录强制进入「集团/公司初始化向导」补全集团与公司名称。
+
+### 数据库影响
+
+执行迁移 `database/migrations/20261029_001_multi_company_group.sql`
+（Docker 部署由 migrate 服务自动执行）。
+
+- 新增表：`company`、`employee_position`、`asset_transfer_record`；
+- 为 `org_unit`、`computer_asset`、`inventory_warehouse`、`asset_site`、`asset_rack`、
+  `datacenter_device`、`site_device`、`asset_scrap_record`、`inventory_scrap_record` 增加 `company_id`；
+- 存量数据全部回填到「初始公司」，每个员工生成一条主职位；
+- 新增系统设置键：`group_name`、`group_setup_done`、`module_datacenter_enabled`、`module_inspection_enabled`；
+- 权限数据范围新增 `company`，新增角色 `company_admin`（公司管理员）与模块 `company_management`、`asset_transfer`。
+
+### 升级指引（必须逐项完成，无遗漏）
+
+1. 备份数据库并校验摘要；
+2. 执行 `20261029_001_multi_company_group.sql`；
+3. 运行 `python tools/migration_runner.py --verify` 校验迁移登记；
+4. 核对 `company` 有 1 条初始公司、`org_unit` 全部有 `company_id`；
+5. 核对 `employee_position` 条数 = 员工数（每员工 1 条主职位）；
+6. 核对各业务表 `company_id` 非空；
+7. 核对系统设置四键存在；
+8. 重启服务，`/api/health` 返回 `requiredTableCount = 75`；
+9. 重新构建前端并刷新；
+10. 首次登录完成「集团/公司初始化向导」；
+11. 验证：组织树、新增公司、组织转移、多职位、调拨、机房/巡检开关；
+12. 权限回归（超管 / 公司管理员 / 普通用户）。
+
+### 配置
+
+新增系统设置键见上；`group_name` 为空且 `group_setup_done = 0` 时视为未完成初始化，前端会引导管理员完成向导。
+
+### 回滚
+
+代码回退到 `v3.0.41`，数据库用升级前备份恢复。迁移为增量，新增表与列不影响旧代码读取旧数据。
+
 ## v3.0.41
 
 发布日期：2026-10-28

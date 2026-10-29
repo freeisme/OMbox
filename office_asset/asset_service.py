@@ -1885,6 +1885,13 @@ class AssetService:
             raise self.api_error("Computer name is required.")
         org_id = self.db.integer(payload.get("orgId"), 0)
         self.scope.assert_org_access(context, org_id)
+        company_id = self.db.integer(payload.get("companyId"), 0)
+        if company_id <= 0 and org_id > 0:
+            company_id = self.db.scalar(
+                f"SELECT COALESCE(company_id, 0) FROM org_unit WHERE org_unit_id = {org_id};"
+            )
+        if company_id <= 0:
+            company_id = self.db.scalar("SELECT COALESCE(MIN(company_id), 0) FROM company WHERE is_active = 1;")
         status = self._normalize_status(payload.get("status"), "idle")
         computer_id = self.db.integer(resource_id, 0)
         old = self._computer(computer_id) if computer_id else None
@@ -1966,6 +1973,7 @@ class AssetService:
         values = {
             "device_name": self.db.quote(device_name),
             "org_unit_id": "NULL" if org_id <= 0 else str(org_id),
+            "company_id": str(company_id) if company_id > 0 else "NULL",
             "device_type": self.db.quote(self.db.text(payload.get("deviceType")) or "desktop"),
             "brand": self.db.quote(brand) if brand else "NULL",
             "model": self.db.quote(model_name) if model_name else "NULL",
@@ -2284,6 +2292,52 @@ class AssetService:
                 """
             )
             employee_id = self.db.integer(output.splitlines()[-1] if output else 0, 0)
+        # 同步主职位（employee_position）：主职位跟随员工三列快照走
+        if employee_id > 0:
+            company_id = self.db.integer(payload.get("companyId"), 0)
+            if company_id <= 0 and org_id > 0:
+                company_id = self.db.scalar(
+                    f"SELECT COALESCE(company_id, 0) FROM org_unit WHERE org_unit_id = {org_id};"
+                )
+            if company_id <= 0:
+                company_id = self.db.scalar(
+                    "SELECT COALESCE(MIN(company_id), 0) FROM company WHERE is_active = 1;"
+                )
+            if company_id > 0:
+                department = self.db.text(payload.get("department"))
+                position_name = self.db.text(payload.get("position"))
+                primary_position_id = self.db.scalar(
+                    f"SELECT position_id FROM employee_position "
+                    f"WHERE employee_id = {employee_id} AND is_primary = 1 ORDER BY position_id LIMIT 1;"
+                )
+                org_sql = "NULL" if org_id <= 0 else str(org_id)
+                dept_sql = self.db.quote(department) if department else "NULL"
+                pos_sql = self.db.quote(position_name) if position_name else "NULL"
+                if primary_position_id > 0:
+                    self.db.execute(
+                        f"""
+                        UPDATE employee_position
+                        SET company_id = {company_id},
+                            org_unit_id = {org_sql},
+                            department = {dept_sql},
+                            position_name = {pos_sql},
+                            is_active = 1
+                        WHERE position_id = {primary_position_id};
+                        """
+                    )
+                else:
+                    self.db.execute(
+                        f"""
+                        INSERT INTO employee_position (
+                          employee_id, company_id, org_unit_id, department, position_name,
+                          is_primary, sort_order, is_active
+                        )
+                        VALUES (
+                          {employee_id}, {company_id}, {org_sql}, {dept_sql}, {pos_sql},
+                          1, 0, 1
+                        );
+                        """
+                    )
         return {"employee": self._employee(employee_id)}
 
     def _save_organization(self, resource_id: object | None, payload: dict, context: dict) -> dict:
@@ -2297,6 +2351,17 @@ class AssetService:
         if org_id and parent_id == org_id:
             raise self.api_error("An organization cannot be its own parent.")
         sort_order = max(0, self.db.integer(payload.get("sortOrder"), 1000))
+        # 公司归属：显式 companyId 优先，否则继承父组织公司，最后落到首个公司
+        company_id = self.db.integer(payload.get("companyId"), 0)
+        if company_id <= 0 and parent_id > 0:
+            company_id = self.db.scalar(
+                f"SELECT COALESCE(company_id, 0) FROM org_unit WHERE org_unit_id = {parent_id};"
+            )
+        if company_id <= 0:
+            company_id = self.db.scalar(
+                "SELECT COALESCE(MIN(company_id), 0) FROM company WHERE is_active = 1;"
+            )
+        company_sql = str(company_id) if company_id > 0 else "NULL"
         if org_id:
             self.scope.assert_org_access(context, org_id)
             self.db.execute(
@@ -2306,6 +2371,7 @@ class AssetService:
                 SET org_code = {self.db.quote(code)},
                     org_name = {self.db.quote(name)},
                     parent_org_unit_id = {"NULL" if parent_id <= 0 else parent_id},
+                    company_id = {company_sql},
                     sort_order = {sort_order}
                 WHERE org_unit_id = {org_id};
                 {self._audit_sql('organization_updated', 'org_unit', org_id, name, 'Organization updated', context)};
@@ -2315,11 +2381,12 @@ class AssetService:
         else:
             output = self.db.execute(
                 f"""
-                INSERT INTO org_unit (org_code, org_name, parent_org_unit_id, sort_order)
+                INSERT INTO org_unit (org_code, org_name, parent_org_unit_id, company_id, sort_order)
                 VALUES (
                   {self.db.quote(code)},
                   {self.db.quote(name)},
                   {"NULL" if parent_id <= 0 else parent_id},
+                  {company_sql},
                   {sort_order}
                 );
                 SELECT LAST_INSERT_ID();
@@ -2333,6 +2400,7 @@ class AssetService:
               'code', org_code,
               'name', org_name,
               'parentId', COALESCE(CAST(parent_org_unit_id AS CHAR), ''),
+              'companyId', COALESCE(CAST(company_id AS CHAR), ''),
               'sortOrder', sort_order
             )
             FROM org_unit

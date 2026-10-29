@@ -5,6 +5,7 @@ from typing import Callable
 from urllib.parse import ParseResult
 
 from .asset_service import AssetService
+from .company import CompanyService
 from .inspection import InspectionService
 from .rack_layout import RackLayoutService
 from .device_topology import DeviceTopologyService
@@ -36,6 +37,13 @@ class DomainApiRouter:
         self.deps = deps
         self.scope = OrganizationScopeService(deps.db, deps.forbidden_error)
         self.assets = AssetService(
+            deps.db,
+            self.scope,
+            deps.api_error,
+            deps.conflict_error,
+            deps.forbidden_error,
+        )
+        self.companies = CompanyService(
             deps.db,
             self.scope,
             deps.api_error,
@@ -969,6 +977,54 @@ class DomainApiRouter:
                 context = self._write_context(handler, module_code, "delete")
                 send_json(self.assets.delete_resource(parts[3], parts[4], context))
                 return True
+
+        # 集团多公司：公司管理 / 组织树 / 组织转移 / 员工多职位
+        if path == "/api/companies" and method == "GET":
+            context = self._read_context(handler, "company_management")
+            send_json({"companies": self.companies.list_companies(context)})
+            return True
+        if path == "/api/companies" and method == "POST":
+            context = self._write_context(handler, "company_management", "create")
+            send_json({"company": self.companies.save_company(None, self._payload(handler), context)}, status=201)
+            return True
+        if path.startswith("/api/companies/"):
+            parts = path.split("/")
+            if len(parts) == 4 and method == "PUT":
+                context = self._write_context(handler, "company_management", "update")
+                send_json({"company": self.companies.save_company(parts[3], self._payload(handler), context)})
+                return True
+            if len(parts) == 4 and method == "DELETE":
+                context = self._write_context(handler, "company_management", "delete")
+                send_json(self.companies.delete_company(parts[3], context))
+                return True
+
+        if path == "/api/org-tree" and method == "GET":
+            context = self._read_context(handler, "organizations")
+            company_id = str((params.get("companyId") or [""])[0])
+            send_json(self.companies.org_tree(context, company_id))
+            return True
+
+        if path == "/api/organizations/transfer" and method == "POST":
+            context = self._write_context(handler, "company_management", "update")
+            send_json(self.companies.transfer_org_subtree(self._payload(handler), context))
+            return True
+
+        if path == "/api/asset-transfers" and method == "POST":
+            context = self._write_context(handler, "asset_transfer", "create")
+            send_json(self.companies.transfer_asset(self._payload(handler), context), status=201)
+            return True
+
+        if path.startswith("/api/employees/") and path.endswith("/positions"):
+            parts = path.split("/")
+            if len(parts) == 5 and parts[2] == "employees" and parts[4] == "positions":
+                if method == "GET":
+                    context = self._read_context(handler, "employees")
+                    send_json({"positions": self.companies.list_positions(parts[3], context)})
+                    return True
+                if method == "PUT":
+                    context = self._write_context(handler, "employees", "update")
+                    send_json({"positions": self.companies.save_positions(parts[3], self._payload(handler), context)})
+                    return True
 
         if path == "/api/relations" and method == "GET":
             context = self._read_context(handler, "organizations")

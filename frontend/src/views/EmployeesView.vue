@@ -39,6 +39,7 @@ import {
 import { statusLabel, statusTagType } from "../labels";
 import { hasPermission } from "../session";
 import { confirmAction } from "../composables/useConfirm";
+import { listPositions, loadOrgTree, savePositions, type Company, type Position } from "../api/company";
 
 interface OrgNode {
   id: string;
@@ -86,6 +87,12 @@ const formVisible = ref(false);
 const editingId = ref("");
 const form = reactive<EmployeeFormPayload>(emptyEmployeeForm());
 const importDialog = ref(false);
+
+const positionsDialog = reactive({ visible: false, employeeId: "", employeeName: "" });
+const positions = ref<Position[]>([]);
+const positionCompanies = ref<Company[]>([]);
+const positionOrgs = ref<Array<{ id: string; name: string; companyId: string }>>([]);
+const positionsSaving = ref(false);
 
 /** 使用人员导入模板：表头与后端 EMPLOYEE_IMPORT_ALIASES 对应。 */
 const EMPLOYEE_IMPORT_FIELDS: Record<string, string> = {
@@ -276,6 +283,91 @@ async function submitForm(): Promise<void> {
     ElMessage.error(error instanceof Error ? error.message : "保存失败。");
   } finally {
     saving.value = false;
+  }
+}
+
+async function openPositions(row: EmployeeDetailRow): Promise<void> {
+  positionsDialog.employeeId = row.id;
+  positionsDialog.employeeName = row.name;
+  positionsDialog.visible = true;
+  try {
+    const tree = await loadOrgTree();
+    positionCompanies.value = tree.companies;
+    positionOrgs.value = tree.organizations.map((org) => ({
+      id: org.id,
+      name: org.name,
+      companyId: org.companyId,
+    }));
+    positions.value = await listPositions(row.id);
+    if (positions.value.length === 0) {
+      positions.value = [
+        {
+          companyId: tree.companies[0]?.id ?? "",
+          orgUnitId: row.orgId ?? "",
+          department: row.department ?? "",
+          positionName: row.position ?? "",
+          isPrimary: true,
+        },
+      ];
+    }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "加载任职失败。");
+  }
+}
+
+function setPrimary(index: number): void {
+  positions.value = positions.value.map((pos, i) => ({ ...pos, isPrimary: i === index }));
+}
+
+function addPosition(): void {
+  positions.value.push({
+    companyId: "",
+    orgUnitId: "",
+    department: "",
+    positionName: "",
+    isPrimary: positions.value.length === 0,
+  });
+}
+
+function removePosition(index: number): void {
+  positions.value.splice(index, 1);
+  if (positions.value.length === 0) addPosition();
+}
+
+function orgOptions(companyId: string): Array<{ id: string; name: string }> {
+  return positionOrgs.value.filter((org) => org.companyId === companyId);
+}
+
+async function submitPositions(): Promise<void> {
+  if (positions.value.length === 0) {
+    ElMessage.warning("至少需要一个职位。");
+    return;
+  }
+  if (positions.value.filter((pos) => pos.isPrimary).length !== 1) {
+    ElMessage.warning("必须且只能设置一个主职位。");
+    return;
+  }
+  for (const pos of positions.value) {
+    if (!pos.companyId) {
+      ElMessage.warning("每个职位都要选择公司。");
+      return;
+    }
+    if (!pos.positionName.trim()) {
+      ElMessage.warning("每个职位都要填写岗位。");
+      return;
+    }
+  }
+  positionsSaving.value = true;
+  try {
+    positions.value = await savePositions(positionsDialog.employeeId, positions.value);
+    ElMessage.success("任职已保存。");
+    positionsDialog.visible = false;
+    invalidateEmployeesCache();
+    await load(true);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "保存任职失败。");
+  } finally {
+    positionsSaving.value = false;
   }
 }
 
@@ -1012,6 +1104,13 @@ onMounted(async () => {
               <el-button
                 v-if="hasPermission('employees', 'update')"
                 link
+                @click="openPositions(row)"
+              >
+                任职
+              </el-button>
+              <el-button
+                v-if="hasPermission('employees', 'update')"
+                link
                 type="primary"
                 @click="openEdit(row)"
               >
@@ -1100,6 +1199,33 @@ onMounted(async () => {
       />
     </el-form>
   </FormDialog>
+
+  <el-dialog
+    v-model="positionsDialog.visible"
+    :title="`任职管理 · ${positionsDialog.employeeName}`"
+    width="780px"
+    :close-on-click-modal="false"
+  >
+    <div v-for="(pos, index) in positions" :key="index" class="oa-flex-row oa-mb-2">
+      <el-button :type="pos.isPrimary ? 'primary' : 'default'" size="small" @click="setPrimary(index)">
+        {{ pos.isPrimary ? "主职" : "设为兼职" }}
+      </el-button>
+      <el-select v-model="pos.companyId" placeholder="公司" style="width: 150px" @change="pos.orgUnitId = ''">
+        <el-option v-for="c in positionCompanies" :key="c.id" :label="c.name" :value="c.id" />
+      </el-select>
+      <el-select v-model="pos.orgUnitId" placeholder="组织" clearable style="width: 150px">
+        <el-option v-for="o in orgOptions(pos.companyId)" :key="o.id" :label="o.name" :value="o.id" />
+      </el-select>
+      <el-input v-model="pos.department" placeholder="部门" style="width: 120px" />
+      <el-input v-model="pos.positionName" placeholder="岗位" style="width: 150px" />
+      <el-button link type="danger" @click="removePosition(index)">删除</el-button>
+    </div>
+    <el-button link type="primary" @click="addPosition">+ 添加职位</el-button>
+    <template #footer>
+      <el-button @click="positionsDialog.visible = false">取消</el-button>
+      <el-button type="primary" :loading="positionsSaving" @click="submitPositions">保存</el-button>
+    </template>
+  </el-dialog>
 
   <FormDialog
     v-model="offboardVisible"

@@ -1258,7 +1258,7 @@ class ScrapManagementRegressionTests(TestCase):
         self.assertIn("AND ca.is_archived = 0", state_reader)
         self.assertIn("AND asset.is_archived = 0", service)
         self.assertIn("'scrap_reason', 'inventory_scrap_record', 'asset_scrap_record', ", state_reader)
-        self.assertIn("required_table_count = 72", state_reader)
+        self.assertIn("required_table_count = 75", state_reader)
 
     def test_frontend_exposes_scrap_actions_and_records_page(self):
         scrap_view = (ROOT / "frontend" / "src" / "views" / "ScrapRecordsView.vue").read_text(
@@ -1728,7 +1728,7 @@ class InspectionManagementRegressionTests(TestCase):
 
         self.assertIn("'asset_site', 'asset_rack', 'inspection_template', 'inspection_template_item', ", server)
         self.assertIn("'inspection_task'", server)
-        self.assertIn("required_table_count = 72", server)
+        self.assertIn("required_table_count = 75", server)
 
     def test_inspection_page_is_wired_into_navigation_and_exports(self):
         navigation = (ROOT / "frontend" / "src" / "navigation.ts").read_text(encoding="utf-8")
@@ -2383,7 +2383,7 @@ class DevicePanelTopologyRegressionTests(TestCase):
             "datacenter_device",
         ):
             self.assertIn(f"'{table}'", server_source)
-        self.assertIn("required_table_count = 72", server_source)
+        self.assertIn("required_table_count = 75", server_source)
 
 
 class InspectionTemplateExportTests(TestCase):

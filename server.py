@@ -1163,6 +1163,73 @@ def branding_payload() -> dict:
     }
 
 
+def group_meta_payload() -> dict:
+    """集团多公司元信息：集团名、初始化完成标记、机房/巡检开关。"""
+    settings = settings_payload()
+    return {
+        "groupName": text_value(settings.get("group_name")),
+        "groupSetupDone": text_value(settings.get("group_setup_done")) == "1",
+        "moduleDatacenterEnabled": text_value(settings.get("module_datacenter_enabled")) != "0",
+        "moduleInspectionEnabled": text_value(settings.get("module_inspection_enabled")) != "0",
+    }
+
+
+def module_datacenter_enabled() -> bool:
+    return text_value(settings_payload().get("module_datacenter_enabled")) != "0"
+
+
+def module_inspection_enabled() -> bool:
+    return text_value(settings_payload().get("module_inspection_enabled")) != "0"
+
+
+def setup_group_company(
+    group_name: str = "",
+    company_name: str = "",
+    datacenter_enabled: bool = True,
+    inspection_enabled: bool = True,
+) -> dict:
+    """完成集团/公司初始化：写集团名、命名首个公司、写模块开关。"""
+    group_name = (text_value(group_name) or "").strip()
+    company_name = (text_value(company_name) or "").strip() or "初始公司"
+    company_id = sql_int(
+        run_mysql(
+            "SELECT company_id FROM company ORDER BY company_id LIMIT 1;",
+            database=DB_NAME,
+        ).strip(),
+        0,
+    )
+    if company_id <= 0:
+        run_mysql(
+            f"""
+            INSERT INTO company (company_code, company_name, sort_order, is_active)
+            VALUES ('CMP-001', {sql_quote(company_name)}, 0, 1);
+            """,
+            database=DB_NAME,
+        )
+    else:
+        run_mysql(
+            f"""
+            UPDATE company
+            SET company_name = {sql_quote(company_name)}
+            WHERE company_id = {company_id};
+            """,
+            database=DB_NAME,
+        )
+    run_mysql(
+        f"""
+        INSERT INTO system_setting (setting_key, setting_value, setting_description)
+        VALUES
+          ('group_name', {sql_quote(group_name)}, '集团名称'),
+          ('group_setup_done', '1', '集团/公司初始化向导是否完成（0/1）'),
+          ('module_datacenter_enabled', {'1' if datacenter_enabled else '0'}, '机房管理开关'),
+          ('module_inspection_enabled', {'1' if inspection_enabled else '0'}, '巡检管理开关')
+        ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value);
+        """,
+        database=DB_NAME,
+    )
+    return group_meta_payload()
+
+
 def export_logo_bytes() -> bytes | None:
     """导出 Excel 时附带的公司 Logo；没开启或 Logo 有问题时返回 None（导出不因此失败）。"""
     settings = settings_payload()
@@ -2042,6 +2109,7 @@ def normalize_computers(computers: list[dict], employee_ids: set[str]) -> list[d
                 "id": text_value(computer.get("id")),
                 "deviceName": text_value(computer.get("deviceName")),
                 "orgId": text_value(computer.get("orgId")),
+                "companyId": text_value(computer.get("companyId")),
                 "deviceType": text_value(computer.get("deviceType")),
                 "brand": text_value(computer.get("brand")),
                 "model": text_value(computer.get("model")),
@@ -3701,14 +3769,28 @@ def build_state_payload(include_audit_logs: bool = True) -> dict:
           'code', org_code,
           'name', org_name,
           'parentId', COALESCE(CAST(parent_org_unit_id AS CHAR), ''),
+          'companyId', COALESCE(CAST(company_id AS CHAR), ''),
           'sortOrder', sort_order
         )), JSON_ARRAY())
         FROM (
-          SELECT org_unit_id, org_code, org_name, parent_org_unit_id, sort_order
+          SELECT org_unit_id, org_code, org_name, parent_org_unit_id, company_id, sort_order
           FROM org_unit
           WHERE is_active = 1
           ORDER BY sort_order, org_code, org_unit_id
         ) AS ordered_orgs
+        """,
+        """
+        SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
+          'id', CAST(company_id AS CHAR),
+          'code', company_code,
+          'name', company_name,
+          'sortOrder', sort_order
+        )), JSON_ARRAY())
+        FROM (
+          SELECT company_id, company_code, company_name, sort_order
+          FROM company
+          ORDER BY sort_order, company_id
+        ) AS ordered_companies
         """,
         """
         SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
@@ -3767,6 +3849,7 @@ def build_state_payload(include_audit_logs: bool = True) -> dict:
           'code', warehouse.warehouse_code,
           'name', warehouse.warehouse_name,
           'orgId', CAST(warehouse.org_unit_id AS CHAR),
+          'companyId', COALESCE(CAST(warehouse.company_id AS CHAR), ''),
           'managerEmployeeId', COALESCE(CAST(warehouse.manager_employee_id AS CHAR), ''),
           'managerName', COALESCE(manager.employee_name, ''),
           'contactPhone', warehouse.contact_phone,
@@ -3852,6 +3935,7 @@ def build_state_payload(include_audit_logs: bool = True) -> dict:
           'id', CAST(computer_id AS CHAR),
           'deviceName', device_name,
           'orgId', COALESCE(CAST(org_unit_id AS CHAR), ''),
+          'companyId', COALESCE(CAST(company_id AS CHAR), ''),
            'deviceType', device_type,
            'brand', COALESCE(brand, ''),
            'model', COALESCE(model, ''),
@@ -4018,6 +4102,7 @@ def build_state_payload(include_audit_logs: bool = True) -> dict:
     (
         state_revision,
         orgs,
+        companies,
         types,
         inventory_brands,
         inventory_models,
@@ -4039,6 +4124,7 @@ def build_state_payload(include_audit_logs: bool = True) -> dict:
             "code": org.get("code") or "",
             "name": org.get("name") or "",
             "parentId": str(org.get("parentId") or ""),
+            "companyId": str(org.get("companyId") or ""),
             "sortOrder": sql_int(org.get("sortOrder"), 1000),
         }
         for org in orgs
@@ -4087,6 +4173,7 @@ def build_state_payload(include_audit_logs: bool = True) -> dict:
             "code": item.get("code") or "",
             "name": item.get("name") or "",
             "orgId": str(item.get("orgId") or ""),
+            "companyId": str(item.get("companyId") or ""),
             "managerEmployeeId": str(item.get("managerEmployeeId") or ""),
             "managerName": item.get("managerName") or "",
             "contactPhone": item.get("contactPhone") or "",
@@ -4212,9 +4299,20 @@ def build_state_payload(include_audit_logs: bool = True) -> dict:
     active_employee_ids = {employee["id"] for employee in active_employees}
     computer_rows = normalize_computers(computers, active_employee_ids)
 
+    company_rows = [
+        {
+            "id": str(item.get("id") or ""),
+            "code": item.get("code") or "",
+            "name": item.get("name") or "",
+            "sortOrder": sql_int(item.get("sortOrder"), 1000),
+        }
+        for item in companies
+    ]
+
     return {
         "stateRevision": max(0, sql_int(state_revision, 0)),
         "orgs": org_rows,
+        "companies": company_rows,
         "nonAssetTypes": type_rows,
         "inventoryBrands": inventory_brand_rows,
         "inventoryModels": inventory_model_rows,
@@ -4509,6 +4607,27 @@ def scoped_org_ids_for_state(context: dict) -> set[str]:
     return allowed
 
 
+def scoped_company_ids_for_state(context: dict) -> set[str]:
+    """公司数据范围：由用户组织范围推导其可见公司的集合。"""
+    org_ids = scoped_org_ids_for_state(context)
+    if not org_ids:
+        return set()
+    id_list = ", ".join(sorted(org_ids))
+    rows = json_query_one(
+        f"""
+        SELECT COALESCE(JSON_ARRAYAGG(company_id), JSON_ARRAY())
+        FROM (
+          SELECT DISTINCT company_id
+          FROM org_unit
+          WHERE org_unit_id IN ({id_list})
+            AND company_id IS NOT NULL
+        ) scoped_companies
+        """,
+        [],
+    )
+    return {str(sql_int(v, 0)) for v in (rows or []) if sql_int(v, 0) > 0}
+
+
 def filter_state_payload(payload: dict, context: dict) -> dict:
     result = dict(payload)
     permissions = permission_map(context)
@@ -4525,6 +4644,11 @@ def filter_state_payload(payload: dict, context: dict) -> dict:
         if scope_for(module_code) in {"organization", "own"}
     }
     allowed_orgs = scoped_org_ids_for_state(context) if restricted_modules else set()
+    company_scoped = any(
+        scope_for(module_code) == "company"
+        for module_code in ("it_assets", "employees", "organizations", "warehouse_management")
+    )
+    allowed_companies = scoped_company_ids_for_state(context) if company_scoped else set()
 
     def filter_org_records(records: list[dict], module_code: str) -> list[dict]:
         scope = scope_for(module_code)
@@ -4532,6 +4656,8 @@ def filter_state_payload(payload: dict, context: dict) -> dict:
             return records
         if scope == "organization":
             return [item for item in records if text_value(item.get("orgId")) in allowed_orgs]
+        if scope == "company":
+            return [item for item in records if text_value(item.get("companyId")) in allowed_companies]
         if scope == "own":
             employee_id = text_value((context.get("employee") or {}).get("employeeId"))
             if not employee_id:
@@ -4549,6 +4675,12 @@ def filter_state_payload(payload: dict, context: dict) -> dict:
         if org_scope == "organization":
             result["orgs"] = [
                 item for item in result.get("orgs") or [] if text_value(item.get("id")) in allowed_orgs
+            ]
+        elif org_scope == "company":
+            result["orgs"] = [
+                item
+                for item in result.get("orgs") or []
+                if text_value(item.get("companyId")) in allowed_companies
             ]
         elif org_scope == "own":
             result["orgs"] = []
@@ -4578,6 +4710,12 @@ def filter_state_payload(payload: dict, context: dict) -> dict:
         elif warehouse_scope == "organization":
             visible_warehouses = [
                 item for item in warehouses if text_value(item.get("orgId")) in allowed_orgs
+            ]
+        elif warehouse_scope == "company":
+            visible_warehouses = [
+                item
+                for item in warehouses
+                if text_value(item.get("companyId")) in allowed_companies
             ]
         elif warehouse_scope == "own":
             employee_id = text_value((context.get("employee") or {}).get("employeeId"))
@@ -5595,6 +5733,23 @@ class AppHandler(SimpleHTTPRequestHandler):
     def handle_api(self) -> None:
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query, keep_blank_values=True)
+        path = parsed.path.rstrip("/") or "/"
+        if not module_datacenter_enabled() and (
+            path == "/api/datacenter-devices"
+            or path.startswith("/api/datacenter-devices/")
+            or path.startswith("/api/rack-layout")
+        ):
+            self.send_json(
+                {"error": "机房管理已关闭，请在系统设置中开启。"},
+                status=HTTPStatus.FORBIDDEN,
+            )
+            return
+        if not module_inspection_enabled() and path.startswith("/api/inspection"):
+            self.send_json(
+                {"error": "巡检管理已关闭，请在系统设置中开启。"},
+                status=HTTPStatus.FORBIDDEN,
+            )
+            return
         if DOMAIN_ROUTER.dispatch(self, parsed, params):
             return
         if parsed.path == "/api/meta" and self.command == "GET":
@@ -5638,13 +5793,13 @@ class AppHandler(SimpleHTTPRequestHandler):
                         "'inspection_task', 'inspection_task_item', 'rack_device_placement'"
                         ", 'device_type_catalog', 'device_type_port_template', 'rack_device_port', "
                         "'rack_cable_run', 'topology_node_position', 'datacenter_device', 'site_device'"
-                        ", 'topology_annotation'"
+                        ", 'topology_annotation', 'company', 'employee_position', 'asset_transfer_record'"
                         ");",
                         database=DB_NAME,
                     ).strip(),
                     0,
                 )
-                required_table_count = 72
+                required_table_count = 75
                 healthy = probe == 1 and table_count == required_table_count
                 self.send_json(
                     {
@@ -5674,6 +5829,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                         "app_logo": branding["app_logo"],
                         "login_notice": public_settings.get("login_notice", ""),
                     },
+                    **group_meta_payload(),
                 }
             )
             return
@@ -5693,6 +5849,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                     "idleMinutes": configured_session_hours() * 60,
                     "appName": branding["app_name"],
                     "appLogo": branding["app_logo"],
+                    **group_meta_payload(),
                 }
             )
             return
@@ -5707,12 +5864,42 @@ class AppHandler(SimpleHTTPRequestHandler):
                 raise ApiError("两次输入的密码不一致。")
             stored_hash = password_hash(password)
             user = create_first_admin(username, display_name, stored_hash)
+            setup_group_company(
+                group_name=text_value(payload.get("groupName")),
+                company_name=text_value(payload.get("companyName")),
+                datacenter_enabled=parse_bool(payload.get("moduleDatacenterEnabled"), True),
+                inspection_enabled=parse_bool(payload.get("moduleInspectionEnabled"), True),
+            )
             session_token, csrf_token = create_auth_session(text_value(user.get("id")), self)
             write_auth_audit(username, "user_account_bootstrapped", text_value(user.get("id")), username, f"初始化管理员账号 {username}")
             self.send_json(
                 {"authenticated": True, "user": auth_user_public(user)},
                 headers=cookie_headers(session_token, csrf_token),
             )
+            return
+
+        if parsed.path == "/api/auth/group-setup" and self.command == "POST":
+            context = current_auth_context(self)
+            if not context:
+                self.send_json({"authenticated": False}, status=HTTPStatus.UNAUTHORIZED)
+                return
+            if not parse_bool(context.get("isSuperAdmin")):
+                raise ForbiddenError("只有超级管理员可以完成集团/公司初始化。")
+            payload = self.read_json()
+            meta = setup_group_company(
+                group_name=text_value(payload.get("groupName")),
+                company_name=text_value(payload.get("companyName")),
+                datacenter_enabled=parse_bool(payload.get("moduleDatacenterEnabled"), True),
+                inspection_enabled=parse_bool(payload.get("moduleInspectionEnabled"), True),
+            )
+            write_auth_audit(
+                text_value(context.get("username")),
+                "group_company_setup",
+                text_value(context.get("id")),
+                text_value(context.get("username")),
+                "完成集团/公司初始化",
+            )
+            self.send_json({"ok": True, **meta})
             return
 
         if parsed.path == "/api/auth/login" and self.command == "POST":

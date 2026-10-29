@@ -23,6 +23,7 @@ const VIEW_LOADERS: Record<string, () => Promise<unknown>> = {
   devicePanel: () => import("../views/DevicePanelView.vue"),
   topology: () => import("../views/TopologyView.vue"),
   meetingRooms: () => import("../views/MeetingRoomView.vue"),
+  organizations: () => import("../views/OrganizationsView.vue"),
 };
 
 const vueRoutes = NAV_ITEMS.filter((item) => VIEW_LOADERS[item.page]).map((item) => ({
@@ -38,6 +39,12 @@ const routes: RouteRecordRaw[] = [
     name: "login",
     component: () => import("../views/LoginView.vue"),
     meta: { title: "登录", public: true },
+  },
+  {
+    path: "/group-setup",
+    name: "group-setup",
+    component: () => import("../views/GroupSetupView.vue"),
+    meta: { title: "集团/公司初始化" },
   },
   { path: "/", redirect: PATH_BY_PAGE.dashboard },
   ...vueRoutes,
@@ -57,6 +64,12 @@ router.beforeEach(async (to) => {
   }
   if (!session.user) {
     return { path: "/login", query: to.fullPath === "/" ? {} : { redirect: to.fullPath } };
+  }
+  if (!session.groupSetupDone && to.path !== "/group-setup") {
+    return { path: "/group-setup" };
+  }
+  if (session.groupSetupDone && to.path === "/group-setup") {
+    return { path: firstVisiblePath() };
   }
   const page = typeof to.meta.page === "string" ? to.meta.page : "";
   if (page && !canViewPage(page)) {

@@ -28,6 +28,7 @@ export const PERMISSION_ACTIONS: Array<{ action: string; label: string; flag: st
 
 export const DATA_SCOPES: Record<string, string> = {
   all: "全部数据",
+  company: "本公司",
   organization: "所属部门及下属部门",
   own: "本人数据",
   submitted: "本人提交",

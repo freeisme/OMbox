@@ -211,6 +211,17 @@ class DatacenterDeviceService:
         org_id = self.db.integer(payload.get("orgId", current.get("orgId")), 0)
         if org_id > 0:
             self.scope.assert_org_access(context, org_id)
+        company_id = 0
+        if org_id > 0:
+            company_id = self.db.scalar(
+                f"SELECT COALESCE(company_id, 0) FROM org_unit WHERE org_unit_id = {org_id};"
+            )
+        if company_id <= 0:
+            company_id = self.db.integer(payload.get("companyId", current.get("companyId")), 0)
+        if company_id <= 0:
+            company_id = self.db.scalar(
+                "SELECT COALESCE(MIN(company_id), 0) FROM company WHERE is_active = 1;"
+            )
         return {
             "code": code,
             "name": name,
@@ -228,6 +239,7 @@ class DatacenterDeviceService:
             "disk": self.db.text(payload.get("disk", current.get("disk")))[:64],
             "status": status,
             "orgId": org_id,
+            "companyId": company_id,
             "notes": self.db.text(payload.get("notes", current.get("notes")))[:500],
         }
 
@@ -305,6 +317,8 @@ class DatacenterDeviceService:
                   'memory', device.memory,
                   'disk', device.disk,
                   'status', device.status,
+                  'orgId', COALESCE(CAST(device.org_unit_id AS CHAR), ''),
+                  'companyId', COALESCE(CAST(device.company_id AS CHAR), ''),
                   'siteId', COALESCE(CAST(device.site_id AS CHAR), ''),
                   'siteName', COALESCE(site.site_name, ''),
                   'rackId', COALESCE(CAST(device.rack_id AS CHAR), ''),
@@ -335,6 +349,7 @@ class DatacenterDeviceService:
         actor_id = self._actor_id(context)
         catalog_sql = str(fields["catalogId"]) if fields["catalogId"] > 0 else "NULL"
         org_sql = str(fields["orgId"]) if fields["orgId"] > 0 else "NULL"
+        company_sql = str(fields["companyId"]) if fields["companyId"] > 0 else "NULL"
         # 编号是唯一键，且不区分是否启用：删除走的是软删除（is_active = 0），
         # 所以同编号再次新增会撞上那条已删除的记录。这里先分辨两种情况：
         # 仍在用的设备提示换个编号；已删除的设备按"恢复"处理（复用原记录）。
@@ -360,7 +375,7 @@ class DatacenterDeviceService:
             INSERT INTO datacenter_device (
               device_code, device_name, catalog_id, brand_model, category, u_height,
               serial_number, asset_code, owner_label, purpose, remote_access, cpu, memory, disk,
-              status, org_unit_id, notes,
+              status, org_unit_id, company_id, notes,
               created_by, updated_by
             )
             VALUES (
@@ -380,6 +395,7 @@ class DatacenterDeviceService:
               {self.db.quote(fields['disk'])},
               {self.db.quote(fields['status'])},
               {org_sql},
+              {company_sql},
               {self.db.quote(fields['notes'])},
               {actor_id if actor_id > 0 else 'NULL'},
               {actor_id if actor_id > 0 else 'NULL'}
@@ -401,6 +417,7 @@ class DatacenterDeviceService:
               disk = VALUES(disk),
               status = VALUES(status),
               org_unit_id = VALUES(org_unit_id),
+              company_id = VALUES(company_id),
               notes = VALUES(notes),
               is_active = 1,
               updated_by = VALUES(updated_by);
@@ -448,6 +465,7 @@ class DatacenterDeviceService:
               'disk', disk,
               'status', status,
               'orgId', COALESCE(CAST(org_unit_id AS CHAR), ''),
+              'companyId', COALESCE(CAST(company_id AS CHAR), ''),
               'isActive', is_active,
               'notes', notes
             )
@@ -473,6 +491,7 @@ class DatacenterDeviceService:
         actor_id = self._actor_id(context)
         catalog_sql = str(fields["catalogId"]) if fields["catalogId"] > 0 else "NULL"
         org_sql = str(fields["orgId"]) if fields["orgId"] > 0 else "NULL"
+        company_sql = str(fields["companyId"]) if fields["companyId"] > 0 else "NULL"
         self.db.execute(
             f"""
             UPDATE datacenter_device
@@ -492,6 +511,7 @@ class DatacenterDeviceService:
                 disk = {self.db.quote(fields['disk'])},
                 status = {self.db.quote(fields['status'])},
                 org_unit_id = {org_sql},
+                company_id = {company_sql},
                 notes = {self.db.quote(fields['notes'])},
                 is_active = 1,
                 updated_by = {actor_id if actor_id > 0 else 'NULL'}

@@ -36,6 +36,14 @@ interface SessionState {
   /** 系统设置里的系统名与公司 Logo（Logo 为 PNG 的 data URI，没设置时为空）。 */
   appName: string;
   appLogo: string;
+  /** 集团名称（空表示尚未完成集团/公司初始化）。 */
+  groupName: string;
+  /** 集团/公司初始化向导是否已完成。 */
+  groupSetupDone: boolean;
+  /** 机房管理开关。 */
+  moduleDatacenterEnabled: boolean;
+  /** 巡检管理开关。 */
+  moduleInspectionEnabled: boolean;
 }
 
 export const session = reactive<SessionState>({
@@ -47,6 +55,10 @@ export const session = reactive<SessionState>({
   idleMinutes: 0,
   appName: "",
   appLogo: "",
+  groupName: "",
+  groupSetupDone: true,
+  moduleDatacenterEnabled: true,
+  moduleInspectionEnabled: true,
 });
 
 export function hasPermission(resource: string, action = "view"): boolean {
@@ -54,11 +66,20 @@ export function hasPermission(resource: string, action = "view"): boolean {
   return session.permissions.some((item) => item.resource === resource && item.action === action);
 }
 
+/** 模块级开关（机房管理 / 巡检管理），关闭后整个模块菜单隐藏。 */
+export function isModuleEnabled(resource: string): boolean {
+  if (resource === "rack_layout") return session.moduleDatacenterEnabled;
+  if (resource === "inspection_management") return session.moduleInspectionEnabled;
+  return true;
+}
+
 /** 与旧前端 canViewPage 保持一致的可见性规则。 */
 export function canViewPage(page: string): boolean {
   const item = NAV_BY_PAGE[page];
   if (!item) return true;
-  return item.modules.some((resource) => hasPermission(resource, "view"));
+  return item.modules.some(
+    (resource) => hasPermission(resource, "view") && isModuleEnabled(resource),
+  );
 }
 
 export function firstVisiblePath(): string {
@@ -85,11 +106,19 @@ export async function refreshSession(): Promise<boolean> {
       idleMinutes?: number;
       appName?: string;
       appLogo?: string;
+      groupName?: string;
+      groupSetupDone?: boolean;
+      moduleDatacenterEnabled?: boolean;
+      moduleInspectionEnabled?: boolean;
     }>("/api/auth/session");
     session.user = payload.user;
     session.idleMinutes = Number(payload.idleMinutes ?? 0) || 0;
     session.appName = String(payload.appName ?? "");
     session.appLogo = String(payload.appLogo ?? "");
+    session.groupName = String(payload.groupName ?? "");
+    session.groupSetupDone = payload.groupSetupDone !== false;
+    session.moduleDatacenterEnabled = payload.moduleDatacenterEnabled !== false;
+    session.moduleInspectionEnabled = payload.moduleInspectionEnabled !== false;
     const granted = await api<{ isSuperAdmin: boolean; permissions: Permission[] }>(
       "/api/auth/permissions",
     );

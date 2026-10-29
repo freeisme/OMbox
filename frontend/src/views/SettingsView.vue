@@ -77,6 +77,10 @@ const systemForm = reactive({
   /** 公司 Logo：PNG 的 data URI，存 system_setting.app_logo。 */
   app_logo: "",
   export_logo_enabled: false,
+  /** 集团名称与模块开关。 */
+  group_name: "",
+  module_datacenter_enabled: true,
+  module_inspection_enabled: true,
 });
 const passwordForm = reactive({ currentPassword: "", newPassword: "", confirmPassword: "" });
 const backupForm = reactive({ backup_enabled: "0", backup_time: "02:00", backup_retention_days: "30" });
@@ -283,6 +287,9 @@ async function loadAll(): Promise<void> {
     systemForm.login_notice = loaded.login_notice ?? "";
     systemForm.app_logo = loaded.app_logo ?? "";
     systemForm.export_logo_enabled = String(loaded.export_logo_enabled ?? "0") === "1";
+    systemForm.group_name = loaded.group_name ?? "";
+    systemForm.module_datacenter_enabled = String(loaded.module_datacenter_enabled ?? "1") === "1";
+    systemForm.module_inspection_enabled = String(loaded.module_inspection_enabled ?? "1") === "1";
     backupForm.backup_enabled = loaded.backup_enabled ?? "0";
     backupForm.backup_time = loaded.backup_time ?? "02:00";
     backupForm.backup_retention_days = loaded.backup_retention_days ?? "30";
@@ -401,11 +408,19 @@ async function submitSystemSettings(): Promise<void> {
       session_hours: String(hours),
       app_logo: systemForm.app_logo,
       export_logo_enabled: systemForm.export_logo_enabled ? "1" : "0",
+      group_name: systemForm.group_name.trim(),
+      module_datacenter_enabled: systemForm.module_datacenter_enabled ? "1" : "0",
+      module_inspection_enabled: systemForm.module_inspection_enabled ? "1" : "0",
     });
     settings.value = { ...settings.value, ...saved };
     // 左上角的系统名与图标立刻跟着变，不用重新登录
     session.appName = String(saved.app_name ?? systemForm.app_name.trim());
     session.appLogo = String(saved.app_logo ?? systemForm.app_logo);
+    session.groupName = String(saved.group_name ?? systemForm.group_name.trim());
+    session.moduleDatacenterEnabled =
+      String(saved.module_datacenter_enabled ?? "1") === "1";
+    session.moduleInspectionEnabled =
+      String(saved.module_inspection_enabled ?? "1") === "1";
     ElMessage.success("系统设置已保存。");
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "保存系统设置失败。");
@@ -865,6 +880,31 @@ onMounted(async () => {
               <div class="oa-hint">
                 连续无操作超过这个时长就结束会话，页面会退回登录页；有操作时自动顺延。
               </div>
+            </el-form-item>
+            <el-form-item label="集团名称">
+              <el-input
+                v-model="systemForm.group_name"
+                :disabled="!canUpdateSettings"
+                placeholder="集团名称，显示在组织架构树与左上角"
+              />
+            </el-form-item>
+            <el-form-item label="机房管理">
+              <el-switch
+                v-model="systemForm.module_datacenter_enabled"
+                :disabled="!canUpdateSettings"
+                active-text="开启"
+                inactive-text="关闭"
+              />
+              <div class="oa-hint">关闭后网络设备/服务器、机柜视图、设备面板与网络拓扑整组隐藏。</div>
+            </el-form-item>
+            <el-form-item label="巡检管理">
+              <el-switch
+                v-model="systemForm.module_inspection_enabled"
+                :disabled="!canUpdateSettings"
+                active-text="开启"
+                inactive-text="关闭"
+              />
+              <div class="oa-hint">关闭后巡检中心与会议室整组隐藏。</div>
             </el-form-item>
             <el-form-item label="登录页提示语">
               <el-input

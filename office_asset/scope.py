@@ -71,8 +71,67 @@ class OrganizationScopeService:
                 queue.extend(children.get(current, []))
         return allowed
 
+    def _requires_company_scope(self, context: dict) -> bool:
+        """Return whether the permission checked for this request is company-scoped."""
+        scopes = context.get("_permissionScopes")
+        if not isinstance(scopes, dict):
+            return False
+        return any(self.db.text(scope) == "company" for scope in scopes.values())
+
+    def scoped_company_ids(self, context: dict) -> set[int] | None:
+        """Return a company allowlist derived from the user's org scope (None = unrestricted)."""
+        if parse_bool(context.get("isSuperAdmin")):
+            return None
+        org_ids = self.scoped_org_ids(context)
+        if org_ids is None:
+            return None
+        if not org_ids:
+            return set()
+        id_list = ", ".join(str(i) for i in sorted(org_ids))
+        rows = self.db.json(
+            f"""
+            SELECT COALESCE(JSON_ARRAYAGG(company_id), JSON_ARRAY())
+            FROM (
+              SELECT DISTINCT company_id
+              FROM org_unit
+              WHERE org_unit_id IN ({id_list})
+                AND company_id IS NOT NULL
+            ) scoped_companies
+            """,
+            [],
+        )
+        return {
+            self.db.integer(value, 0)
+            for value in (rows or [])
+            if self.db.integer(value, 0) > 0
+        }
+
+    def company_org_ids(self, company_ids: set[int] | None) -> set[int] | None:
+        """Expand a company allowlist into the full org allowlist of those companies."""
+        if company_ids is None:
+            return None
+        if not company_ids:
+            return set()
+        id_list = ", ".join(str(i) for i in sorted(company_ids))
+        rows = self.db.json(
+            f"""
+            SELECT COALESCE(JSON_ARRAYAGG(org_unit_id), JSON_ARRAY())
+            FROM org_unit
+            WHERE company_id IN ({id_list})
+              AND is_active = 1
+            """,
+            [],
+        )
+        return {
+            self.db.integer(value, 0)
+            for value in (rows or [])
+            if self.db.integer(value, 0) > 0
+        }
+
     def permitted_org_ids(self, context: dict) -> set[int] | None:
-        """Return a concrete org allowlist only for an organization-scoped request."""
+        """Return a concrete org allowlist for an org- or company-scoped request."""
+        if self._requires_company_scope(context):
+            return self.company_org_ids(self.scoped_company_ids(context))
         if not self._requires_organization_scope(context):
             return None
         return self.scoped_org_ids(context)
