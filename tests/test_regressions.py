@@ -3939,7 +3939,7 @@ class InspectionEntryRegressionTests(TestCase):
                 "设备类型",
                 "占用高度",
                 "SN/ST",
-                "固资编码",
+                "资产编码",
                 "使用人",
                 "用途",
                 "远程访问地址",
@@ -4031,7 +4031,8 @@ class InspectionEntryRegressionTests(TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn('<el-option label="上架" value="installed" disabled />', devices)
+        self.assertNotIn('value="installed"', devices)
+        self.assertIn("上架（由机柜视图管理）", devices)
         self.assertNotIn("上架（由上架操作设置）", devices)
         self.assertNotIn("型号库（可选，选中后自动带出型号、类型与 U 高）", devices)
         self.assertIn("可选；选中后自动带出品牌型号、设备类型与占用高度。", devices)

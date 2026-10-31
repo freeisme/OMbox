@@ -196,7 +196,7 @@ class DatacenterDeviceService:
         status = self.db.text(payload.get("status", current.get("status"))) or "stock"
         if status not in STATUSES:
             raise self.api_error("设备状态无效。")
-        if status == "installed":
+        if status == "installed" and self.db.text(current.get("status")) != "installed":
             raise self.api_error("“上架”状态由机柜视图的上架操作设置，不能在这里手工选择。")
         u_height = self.db.integer(payload.get("uHeight", current.get("uHeight")), 1)
         if u_height < 1 or u_height > 50:

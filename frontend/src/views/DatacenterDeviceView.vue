@@ -680,13 +680,13 @@ onMounted(async () => {
           </el-col>
         </el-row>
         <el-form-item label="状态">
-          <el-select v-model="form.status" class="oa-full-width" :disabled="form.status === 'installed'">
+          <el-tag v-if="form.status === 'installed'" type="success" effect="plain">上架（由机柜视图管理）</el-tag>
+          <el-select v-else v-model="form.status" class="oa-full-width">
             <el-option label="未上架" value="stock" />
-            <el-option label="上架" value="installed" disabled />
             <el-option label="维修" value="repair" />
             <el-option label="报废" value="scrapped" />
           </el-select>
-          <div class="oa-hint">「上架」由机柜视图的上架操作写入，这里不能手工选择。</div>
+          <div v-if="form.status !== 'installed'" class="oa-hint">「上架」由机柜视图的上架操作写入，这里不能手工选择。</div>
         </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="form.notes" type="textarea" :rows="2" />
