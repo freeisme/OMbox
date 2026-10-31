@@ -199,7 +199,7 @@ function openDialog(device: DatacenterDeviceSummary | null): void {
 
 /**
  * 复制一台设备：只沿用"非唯一"的配置项（品牌型号、设备类型、占用高度、用途、
- * 远程访问地址、CPU、内存、硬盘、使用人），设备编号、名称、SN / ST、固资编码
+ * 远程访问地址、CPU、内存、硬盘、使用人），设备编号、名称、SN / ST、资产编码
  * 与备注都留空由手工填写，避免保存时撞唯一约束。
  * 状态统一回到"未上架"——上架状态只能由机柜视图的上架操作写入。
  */
@@ -297,7 +297,7 @@ const EXPORT_HEADER = [
   "设备类型",
   "占用高度",
   "SN/ST",
-  "固资编码",
+  "资产编码",
   "使用人",
   "状态",
   "所在机房",
@@ -353,7 +353,7 @@ function downloadTemplate(): void {
     "设备类型",
     "占用高度",
     "SN/ST",
-    "固资编码",
+    "资产编码",
     "使用人",
     "用途",
     "远程访问地址",
@@ -458,7 +458,7 @@ const IMPORT_FIELD_LABELS: Record<string, string> = {
   category: "设备类型",
   uHeight: "占用高度",
   serialNumber: "SN/ST",
-  assetCode: "固资编码",
+  assetCode: "资产编码",
   ownerLabel: "使用人",
   status: "状态",
   notes: "备注",
@@ -519,6 +519,7 @@ onMounted(async () => {
         <template #default="{ row }">{{ row.uHeight }}U</template>
       </el-table-column>
       <el-table-column prop="serialNumber" label="SN / ST" min-width="150" />
+          <el-table-column prop="assetCode" label="资产编码" min-width="140" show-overflow-tooltip />
       <el-table-column label="位置" min-width="200">
         <template #default="{ row }">
           {{ row.rackName ? `${row.siteName} / ${row.rackName}` : "—" }}
@@ -596,7 +597,7 @@ onMounted(async () => {
         type="info"
         :closable="false"
         show-icon
-        title="已沿用被复制设备的品牌型号、设备类型、占用高度、用途、远程访问地址与硬件配置；设备编号、名称、SN / ST、固资编码需手工填写。"
+        title="已沿用被复制设备的品牌型号、设备类型、占用高度、用途、远程访问地址与硬件配置；设备编号、名称、SN / ST、资产编码需手工填写。"
         class="oa-mb-2"
       />
       <el-form label-position="top" size="small">
@@ -649,7 +650,7 @@ onMounted(async () => {
         <el-form-item label="SN / ST">
           <el-input v-model="form.serialNumber" />
         </el-form-item>
-        <el-form-item label="固资编码">
+        <el-form-item label="资产编码">
           <el-input v-model="form.assetCode" />
         </el-form-item>
         <el-form-item label="使用人 / 责任人">
@@ -723,7 +724,7 @@ onMounted(async () => {
         />
       </div>
       <div class="hint">
-        可识别的列：设备编号、设备名称、品牌型号、设备类型、占用高度、SN/ST、固资编码、使用人、
+        可识别的列：设备编号、设备名称、品牌型号、设备类型、占用高度、SN/ST、资产编码、使用人、
         用途、远程访问地址、CPU、内存、硬盘、状态、备注。
         状态只接受「未上架 / 维修 / 报废」：<strong>导入的设备都还没有上架</strong>，写了「上架」会按
         「未上架」导入（真正的上架状态由机柜视图的上架操作写入）；设备类型支持中文名，
