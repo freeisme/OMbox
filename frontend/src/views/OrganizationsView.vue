@@ -31,16 +31,16 @@ const transferAll = reactive({ employees: true, computers: true, warehouses: tru
 
 const isSuperAdmin = computed(() => session.isSuperAdmin);
 
-function buildOrgSubtree(parentId: string): TreeNode[] {
+function buildOrgSubtree(parentId: string, companyId: string): TreeNode[] {
   return organizations.value
-    .filter((org) => org.parentId === parentId)
+    .filter((org) => org.parentId === parentId && org.companyId === companyId)
     .map((org) => ({
       id: org.id,
       label: org.name,
       kind: "org" as const,
       companyId: org.companyId,
       parentId: org.parentId,
-      children: buildOrgSubtree(org.id),
+      children: buildOrgSubtree(org.id, companyId),
     }));
 }
 
@@ -56,21 +56,40 @@ function buildOrgChildren(companyId: string): TreeNode[] {
     kind: "org" as const,
     companyId: org.companyId,
     parentId: org.parentId,
-    children: buildOrgSubtree(org.id),
+    children: buildOrgSubtree(org.id, companyId),
   }));
 }
 
 function buildTree(): TreeNode[] {
-  const root: TreeNode[] = [
-    { id: "__group__", label: session.groupName || "集团", kind: "group", children: [] },
-  ];
-  for (const company of companies.value) {
-    root[0].children!.push({
-      id: company.id,
-      label: company.name,
-      kind: "company",
-      companyId: company.id,
-      children: buildOrgChildren(company.id),
+  const visibleCompanies = viewCompanyId.value
+    ? companies.value.filter((company) => company.id === viewCompanyId.value)
+    : companies.value;
+  const root: TreeNode[] = [];
+  if (viewCompanyId.value) {
+    // 公司视图：只显示该公司自己的组织树
+    const company = visibleCompanies[0];
+    if (company) {
+      root.push({
+        id: company.id,
+        label: company.name,
+        kind: "company",
+        companyId: company.id,
+        children: buildOrgChildren(company.id),
+      });
+    }
+  } else {
+    // 集团视图：集团 → 公司 → 组织
+    root.push({
+      id: "__group__",
+      label: session.groupName || "集团",
+      kind: "group",
+      children: visibleCompanies.map((company) => ({
+        id: company.id,
+        label: company.name,
+        kind: "company",
+        companyId: company.id,
+        children: buildOrgChildren(company.id),
+      })),
     });
   }
   return root;
@@ -176,8 +195,18 @@ onMounted(reload);
   <el-card v-loading="loading">
     <template #header>
       <div class="oa-flex-between">
-        <span class="oa-card-title">组织架构（集团 → 公司 → 部门）</span>
-        <div>
+        <span class="oa-card-title">组织架构</span>
+        <div class="oa-flex-row">
+          <el-select
+            v-model="viewCompanyId"
+            clearable
+            placeholder="整个集团"
+            style="width: 180px"
+            @change="reload"
+          >
+            <el-option label="整个集团" value="" />
+            <el-option v-for="c in companies" :key="c.id" :label="c.name" :value="c.id" />
+          </el-select>
           <el-button v-if="isSuperAdmin" type="primary" @click="openCompanyCreate">新增公司</el-button>
           <el-button v-if="isSuperAdmin" @click="openTransfer">转移组织</el-button>
         </div>
