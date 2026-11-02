@@ -35,6 +35,7 @@ import {
   type UpdateVersion,
   type UserRow,
 } from "../api/settings";
+import { deleteNavLink, listAllNavLinks, saveNavLink, type NavLink } from "../api/company";
 import { loadMeta, hasPermission, session } from "../session";
 import { confirmAction } from "../composables/useConfirm";
 import ImportExcelDialog from "../components/ui/ImportExcelDialog.vue";
@@ -61,6 +62,18 @@ const themeColor = ref(currentThemeColor());
 const loading = ref(true);
 const saving = ref(false);
 const activeTab = ref("system");
+const navLinks = ref<NavLink[]>([]);
+const navLinkDialog = reactive<{
+  visible: boolean;
+  id: string;
+  title: string;
+  url: string;
+  icon: string;
+  sortOrder: number;
+  openMode: "new_tab" | "same_tab";
+  isActive: boolean;
+}>({ visible: false, id: "", title: "", url: "", icon: "", sortOrder: 1000, openMode: "new_tab", isActive: true });
+const navLinkSaving = ref(false);
 
 const settings = ref<AppSettings>({});
 const users = ref<UserRow[]>([]);
@@ -193,6 +206,7 @@ const tabs = computed(() => {
     { key: "accounts", label: "账号管理", visible: canViewUsers.value },
     { key: "access", label: "角色与权限", visible: canViewAccess.value },
     { key: "updates", label: "系统更新", visible: canUpdate.value },
+    { key: "navLinks", label: "外链应用", visible: session.isSuperAdmin },
   ];
   return items.filter((item) => item.visible);
 });
@@ -316,6 +330,7 @@ async function loadAll(): Promise<void> {
   if (!tabs.value.some((item) => item.key === activeTab.value)) {
     activeTab.value = tabs.value[0]?.key ?? "security";
   }
+  await loadNavLinks();
   loading.value = false;
 }
 
@@ -734,6 +749,72 @@ async function submitUpdateApply(): Promise<void> {
     ElMessage.error(error instanceof Error ? error.message : "执行版本更新失败。");
   } finally {
     updateApplying.value = false;
+  }
+}
+
+async function loadNavLinks(): Promise<void> {
+  try {
+    navLinks.value = await listAllNavLinks();
+  } catch {
+    navLinks.value = [];
+  }
+}
+
+function openNavLinkDialog(link: NavLink | null): void {
+  navLinkDialog.id = link?.id ?? "";
+  navLinkDialog.title = link?.title ?? "";
+  navLinkDialog.url = link?.url ?? "";
+  navLinkDialog.icon = link?.icon ?? "";
+  navLinkDialog.sortOrder = link?.sortOrder ?? 1000;
+  navLinkDialog.openMode = link?.openMode ?? "new_tab";
+  navLinkDialog.isActive = link?.isActive !== false;
+  navLinkDialog.visible = true;
+}
+
+async function submitNavLink(): Promise<void> {
+  if (!navLinkDialog.title.trim() || !navLinkDialog.url.trim()) {
+    ElMessage.warning("外链名称与地址不能为空。");
+    return;
+  }
+  if (!/^https?:\/\//i.test(navLinkDialog.url.trim())) {
+    ElMessage.warning("外链地址必须以 http:// 或 https:// 开头。");
+    return;
+  }
+  navLinkSaving.value = true;
+  try {
+    await saveNavLink(
+      {
+        title: navLinkDialog.title.trim(),
+        url: navLinkDialog.url.trim(),
+        icon: navLinkDialog.icon.trim(),
+        sortOrder: navLinkDialog.sortOrder,
+        openMode: navLinkDialog.openMode,
+        isActive: navLinkDialog.isActive,
+      },
+      navLinkDialog.id,
+    );
+    navLinkDialog.visible = false;
+    ElMessage.success("外链应用已保存。");
+    await loadNavLinks();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "保存外链应用失败。");
+  } finally {
+    navLinkSaving.value = false;
+  }
+}
+
+async function removeNavLink(link: NavLink): Promise<void> {
+  const ok = await confirmAction(`确定删除外链「${link.title}」吗？`, {
+    title: "删除外链",
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    await deleteNavLink(link.id);
+    ElMessage.success("外链应用已删除。");
+    await loadNavLinks();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "删除外链应用失败。");
   }
 }
 
@@ -1294,6 +1375,59 @@ onMounted(async () => {
               </el-button>
             </div>
           </el-form>
+        </template>
+
+        <template v-else-if="tab.key === 'navLinks'">
+          <div class="oa-flex-between oa-mb-3">
+            <div class="oa-hint">维护显示在左侧导航栏「外链应用」分组里的外部链接，点击后新标签页打开。</div>
+            <el-button type="primary" @click="openNavLinkDialog(null)">新增外链</el-button>
+          </div>
+          <el-table :data="navLinks" border>
+            <el-table-column prop="title" label="名称" min-width="160" />
+            <el-table-column prop="url" label="地址" min-width="260" show-overflow-tooltip />
+            <el-table-column prop="sortOrder" label="排序" width="80" />
+            <el-table-column label="打开方式" width="110">
+              <template #default="{ row }">{{ row.openMode === "same_tab" ? "当前页" : "新标签页" }}</template>
+            </el-table-column>
+            <el-table-column label="启用" width="80">
+              <template #default="{ row }">
+                <el-tag :type="row.isActive ? 'success' : 'info'" size="small">{{ row.isActive ? "启用" : "停用" }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="140" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="openNavLinkDialog(row)">编辑</el-button>
+                <el-button link type="danger" @click="removeNavLink(row)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <el-dialog v-model="navLinkDialog.visible" :title="navLinkDialog.id ? '编辑外链' : '新增外链'" width="480px">
+            <el-form label-position="top">
+              <el-form-item label="名称" required>
+                <el-input v-model="navLinkDialog.title" placeholder="例如 帮助中心" />
+              </el-form-item>
+              <el-form-item label="地址" required>
+                <el-input v-model="navLinkDialog.url" placeholder="https://…" />
+              </el-form-item>
+              <el-form-item label="排序">
+                <el-input-number v-model="navLinkDialog.sortOrder" :min="0" />
+              </el-form-item>
+              <el-form-item label="打开方式">
+                <el-radio-group v-model="navLinkDialog.openMode">
+                  <el-radio label="new_tab">新标签页</el-radio>
+                  <el-radio label="same_tab">当前页</el-radio>
+                </el-radio-group>
+              </el-form-item>
+              <el-form-item label="启用">
+                <el-switch v-model="navLinkDialog.isActive" />
+              </el-form-item>
+            </el-form>
+            <template #footer>
+              <el-button @click="navLinkDialog.visible = false">取消</el-button>
+              <el-button type="primary" :loading="navLinkSaving" @click="submitNavLink">保存</el-button>
+            </template>
+          </el-dialog>
         </template>
       </el-tab-pane>
     </el-tabs>

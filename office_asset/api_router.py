@@ -1014,6 +1014,31 @@ class DomainApiRouter:
             send_json(self.companies.transfer_asset(self._payload(handler), context), status=201)
             return True
 
+        # 外链应用：左侧栏显示 + 管理员维护
+        if path == "/api/nav-links" and method == "GET":
+            context = self._authenticated(handler)
+            send_json({"links": self.companies.list_nav_links(context)})
+            return True
+        if path == "/api/nav-links/all" and method == "GET":
+            context = self._read_context(handler, "custom_nav_links", "view")
+            send_json({"links": self.companies.list_all_nav_links(context)})
+            return True
+        if path == "/api/nav-links" and method == "POST":
+            context = self._write_context(handler, "custom_nav_links", "create")
+            send_json({"link": self.companies.save_nav_link(None, self._payload(handler), context)}, status=201)
+            return True
+        if path.startswith("/api/nav-links/"):
+            parts = path.split("/")
+            if len(parts) == 4 and parts[3].isdigit():
+                if method == "PUT":
+                    context = self._write_context(handler, "custom_nav_links", "update")
+                    send_json({"link": self.companies.save_nav_link(parts[3], self._payload(handler), context)})
+                    return True
+                if method == "DELETE":
+                    context = self._write_context(handler, "custom_nav_links", "delete")
+                    send_json(self.companies.delete_nav_link(parts[3], context))
+                    return True
+
         if path.startswith("/api/employees/") and path.endswith("/positions"):
             parts = path.split("/")
             if len(parts) == 5 and parts[2] == "employees" and parts[4] == "positions":

@@ -5799,7 +5799,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                     ).strip(),
                     0,
                 )
-                required_table_count = 75
+                required_table_count = 76
                 healthy = probe == 1 and table_count == required_table_count
                 self.send_json(
                     {

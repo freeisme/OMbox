@@ -5,13 +5,31 @@ import { ElMessage } from "element-plus";
 import { NAV_GROUPS, NAV_ITEMS, PATH_BY_PAGE } from "../navigation";
 import { canViewPage, hasPermission, loadMeta, logout, session } from "../session";
 import { fetchNotifications } from "../api/service";
+import { listNavLinks, type NavLink } from "../api/company";
 import { installActivityTracking, isIdleBeyond } from "../activity";
 
 const route = useRoute();
 const router = useRouter();
 const theme = ref(document.documentElement.dataset.theme === "dark" ? "dark" : "light");
 const notificationCount = ref("");
+const navLinks = ref<NavLink[]>([]);
 let pollTimer: number | undefined;
+
+function openExternalLink(link: NavLink): void {
+  if (link.openMode === "same_tab") {
+    window.location.href = link.url;
+  } else {
+    window.open(link.url, "_blank", "noopener,noreferrer");
+  }
+}
+
+async function loadNavLinks(): Promise<void> {
+  try {
+    navLinks.value = await listNavLinks();
+  } catch {
+    navLinks.value = [];
+  }
+}
 
 const visibleItems = computed(() => NAV_ITEMS.filter((item) => canViewPage(item.page)));
 const currentTitle = computed(() => String(route.meta.title ?? "OMbox 运维（O&M）盒子"));
@@ -62,6 +80,7 @@ onMounted(async () => {
   document.documentElement.classList.toggle("dark", theme.value === "dark");
   if (!session.meta) await loadMeta();
   await refreshNotificationCount();
+  await loadNavLinks();
   pollTimer = window.setInterval(() => {
     // 用户已经空闲超过会话时长（或页面在后台）时不再轮询：
     // 否则定时请求会不断刷新会话，服务端的"无操作超时"永远不会生效。
@@ -99,6 +118,12 @@ onBeforeUnmount(() => {
               {{ item.title }}
             </el-menu-item>
           </template>
+        </template>
+        <template v-if="navLinks.length">
+          <div class="oa-nav-group">外链应用</div>
+          <el-menu-item v-for="link in navLinks" :key="link.id" @click="openExternalLink(link)">
+            {{ link.title }}
+          </el-menu-item>
         </template>
       </el-menu>
 

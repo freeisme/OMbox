@@ -432,3 +432,100 @@ class CompanyService:
         ]
         self.db.execute(";\n".join(statements) + ";")
         return self.list_positions(employee_id_int, context)
+
+    # ------------------------------------------------------------ 外链应用
+    def list_nav_links(self, _context: dict) -> list[dict]:
+        """左侧栏外链（仅启用项，任意登录用户可见）。"""
+        rows = self.db.json(
+            """
+            SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
+              'id', CAST(link_id AS CHAR),
+              'title', title,
+              'url', url,
+              'icon', icon,
+              'sortOrder', sort_order,
+              'openMode', open_mode
+            )), JSON_ARRAY())
+            FROM (
+              SELECT link_id, title, url, icon, sort_order, open_mode
+              FROM custom_nav_link
+              WHERE is_active = 1
+              ORDER BY sort_order, link_id
+            ) ordered_links
+            """,
+            [],
+        )
+        return list(rows or [])
+
+    def list_all_nav_links(self, context: dict) -> list[dict]:
+        if not parse_bool(context.get("isSuperAdmin")):
+            raise self.forbidden_error("只有超级管理员可以管理外链应用。")
+        rows = self.db.json(
+            """
+            SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
+              'id', CAST(link_id AS CHAR),
+              'title', title,
+              'url', url,
+              'icon', icon,
+              'sortOrder', sort_order,
+              'openMode', open_mode,
+              'isActive', is_active
+            )), JSON_ARRAY())
+            FROM (
+              SELECT link_id, title, url, icon, sort_order, open_mode, is_active
+              FROM custom_nav_link
+              ORDER BY sort_order, link_id
+            ) ordered_links
+            """,
+            [],
+        )
+        return list(rows or [])
+
+    def save_nav_link(self, link_id: object | None, payload: dict, context: dict) -> dict:
+        if not parse_bool(context.get("isSuperAdmin")):
+            raise self.forbidden_error("只有超级管理员可以管理外链应用。")
+        link_id_int = self.db.integer(link_id, 0)
+        title = self.db.text(payload.get("title")).strip()
+        url = self.db.text(payload.get("url")).strip()
+        if not title or not url:
+            raise self.api_error("外链名称与地址不能为空。")
+        if not url.startswith(("http://", "https://")):
+            raise self.api_error("外链地址必须以 http:// 或 https:// 开头。")
+        icon = self.db.text(payload.get("icon")).strip()
+        sort_order = max(0, self.db.integer(payload.get("sortOrder"), 1000))
+        open_mode = self.db.text(payload.get("openMode")) or "new_tab"
+        if open_mode not in {"new_tab", "same_tab"}:
+            open_mode = "new_tab"
+        is_active = 1 if parse_bool(payload.get("isActive"), True) else 0
+        if link_id_int > 0:
+            self.db.execute(
+                f"""
+                UPDATE custom_nav_link
+                SET title = {self.db.quote(title)},
+                    url = {self.db.quote(url)},
+                    icon = {self.db.quote(icon)},
+                    sort_order = {sort_order},
+                    open_mode = {self.db.quote(open_mode)},
+                    is_active = {is_active}
+                WHERE link_id = {link_id_int};
+                """
+            )
+        else:
+            link_id_int = self.db.one_id(
+                f"""
+                INSERT INTO custom_nav_link (title, url, icon, sort_order, open_mode, is_active, created_by)
+                VALUES (
+                  {self.db.quote(title)}, {self.db.quote(url)}, {self.db.quote(icon)},
+                  {sort_order}, {self.db.quote(open_mode)}, {is_active}, {self.db.integer(context.get("id"), 0)}
+                );
+                SELECT LAST_INSERT_ID();
+                """
+            )
+        return {"id": link_id_int}
+
+    def delete_nav_link(self, link_id: object, context: dict) -> dict:
+        if not parse_bool(context.get("isSuperAdmin")):
+            raise self.forbidden_error("只有超级管理员可以管理外链应用。")
+        link_id_int = self.db.integer(link_id, 0)
+        self.db.execute(f"DELETE FROM custom_nav_link WHERE link_id = {link_id_int};")
+        return {"id": link_id_int, "deleted": True}

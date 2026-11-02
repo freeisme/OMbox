@@ -107,3 +107,35 @@ export async function completeGroupSetup(payload: {
 }): Promise<void> {
   await api("/api/auth/group-setup", { method: "POST", body: payload });
 }
+
+export interface NavLink {
+  id: string;
+  title: string;
+  url: string;
+  icon?: string;
+  sortOrder: number;
+  openMode: "new_tab" | "same_tab";
+  isActive?: boolean | number;
+}
+
+export async function listNavLinks(): Promise<NavLink[]> {
+  const payload = await api<{ links?: NavLink[] }>("/api/nav-links");
+  return payload.links ?? [];
+}
+
+export async function listAllNavLinks(): Promise<NavLink[]> {
+  const payload = await api<{ links?: NavLink[] }>("/api/nav-links/all");
+  return payload.links ?? [];
+}
+
+export async function saveNavLink(payload: Partial<NavLink> & { title: string; url: string }, linkId = ""): Promise<void> {
+  if (linkId) {
+    await api(`/api/nav-links/${encodeURIComponent(linkId)}`, { method: "PUT", body: payload });
+  } else {
+    await api("/api/nav-links", { method: "POST", body: payload });
+  }
+}
+
+export async function deleteNavLink(linkId: string): Promise<void> {
+  await api(`/api/nav-links/${encodeURIComponent(linkId)}`, { method: "DELETE" });
+}
