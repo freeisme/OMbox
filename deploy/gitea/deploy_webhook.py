@@ -525,6 +525,7 @@ def _available_versions(
     current_sha: str,
     branch_ref: str,
     release_channel: str = DEFAULT_RELEASE_CHANNEL,
+    current_in_history: bool = True,
 ) -> tuple[list[dict], dict | None, dict | None]:
     release_channel = _normalize_release_channel(release_channel)
     output = _git_output(
@@ -591,6 +592,15 @@ def _available_versions(
             and _is_ancestor(current_sha, version["sha"])
             and (current_sort_key is None or version["_sortKey"] > current_sort_key)
         )
+        if (
+            not current_in_history
+            and version is latest_version
+            and not version["isCurrent"]
+            and (current_sort_key is None or version["_sortKey"] > current_sort_key)
+        ):
+            # 当前部署提交不在发布历史中（例如历史重写/换源导致分叉）：
+            # 部署脚本用 git reset --hard 到目标提交，可安全地强制更新到最新发布版本。
+            version["isSelectable"] = True
 
     display_versions = versions[:VERSION_LIST_LIMIT]
     if current_version and current_version in versions and current_version not in display_versions:
@@ -660,6 +670,7 @@ def _update_snapshot(
             current_sha,
             branch_ref,
             release_channel,
+            current_in_history=_is_ancestor(current_sha, latest_sha_remote),
         )
     with state_lock:
         running = deployment_running
