@@ -4,6 +4,7 @@ import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { NAV_GROUPS, NAV_ITEMS, PATH_BY_PAGE } from "../navigation";
 import { canViewPage, hasPermission, loadMeta, logout, session } from "../session";
+import { checkUpdateStatus } from "../api/settings";
 import { fetchNotifications } from "../api/service";
 import { listNavLinks, type NavLink } from "../api/company";
 import { installActivityTracking, isIdleBeyond } from "../activity";
@@ -13,7 +14,30 @@ const router = useRouter();
 const theme = ref(document.documentElement.dataset.theme === "dark" ? "dark" : "light");
 const notificationCount = ref("");
 const navLinks = ref<NavLink[]>([]);
+const updateBanner = ref<{ latestVersion: string; targetTab: string } | null>(null);
 let pollTimer: number | undefined;
+
+function dismissUpdateBanner(): void {
+  updateBanner.value = null;
+}
+
+async function checkUpdateBanner(): Promise<void> {
+  if (!hasPermission("system_updates", "update")) return;
+  try {
+    const status = await checkUpdateStatus();
+    if (status.hasUpdate && status.latestVersion) {
+      updateBanner.value = { latestVersion: status.latestVersion, targetTab: "updates" };
+    }
+  } catch {
+    // 更新服务未配置或不可达时静默忽略，不打扰用户
+  }
+}
+
+function goToUpdates(): void {
+  const target = updateBanner.value;
+  dismissUpdateBanner();
+  void router.push({ path: PATH_BY_PAGE.settings, query: { tab: target?.targetTab ?? "updates" } });
+}
 
 function openExternalLink(link: NavLink): void {
   if (link.openMode === "same_tab") {
@@ -81,6 +105,7 @@ onMounted(async () => {
   if (!session.meta) await loadMeta();
   await refreshNotificationCount();
   await loadNavLinks();
+  await checkUpdateBanner();
   pollTimer = window.setInterval(() => {
     // 用户已经空闲超过会话时长（或页面在后台）时不再轮询：
     // 否则定时请求会不断刷新会话，服务端的"无操作超时"永远不会生效。
@@ -150,6 +175,16 @@ onBeforeUnmount(() => {
           <el-button text type="danger" @click="signOut">退出</el-button>
         </div>
       </header>
+
+      <div v-if="updateBanner" class="oa-update-banner">
+        <el-alert type="warning" :closable="true" show-icon @close="dismissUpdateBanner">
+          <template #title>
+            发现可用版本 <strong>v{{ updateBanner.latestVersion }}</strong>，是否立即更新？
+          </template>
+          <el-button type="primary" size="small" @click="goToUpdates">立即更新</el-button>
+          <el-button size="small" @click="dismissUpdateBanner">稍后</el-button>
+        </el-alert>
+      </div>
 
       <section class="oa-content is-scroll">
         <slot />

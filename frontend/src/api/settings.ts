@@ -292,6 +292,18 @@ export async function changePassword(payload: {
   await api("/api/auth/change-password", { method: "POST", body: payload });
 }
 
+export interface UpdateStatusSummary {
+  status?: string;
+  latestVersion?: string;
+  latestSha?: string;
+  hasUpdate?: boolean;
+}
+
+/** 登录后检查是否有可用更新（供顶部公告栏使用），无需 CSRF。 */
+export async function checkUpdateStatus(): Promise<UpdateStatusSummary> {
+  return api<UpdateStatusSummary>("/api/updates/status");
+}
+
 export async function checkForUpdate(payload: {
   repositoryUrl: string;
   releaseChannel: string;

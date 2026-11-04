@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
+import { useRoute } from "vue-router";
 import { ElMessage } from "element-plus";
 import { api } from "../api/client";
 import { loadEmployeesData, type EmployeeDetailRow } from "../api/employees";
@@ -61,6 +62,7 @@ const frontendBuildTime = __APP_BUILD_TIME__;
 const themeColor = ref(currentThemeColor());
 const loading = ref(true);
 const saving = ref(false);
+const route = useRoute();
 const activeTab = ref("system");
 const navLinks = ref<NavLink[]>([]);
 const navLinkDialog = reactive<{
@@ -819,6 +821,8 @@ async function removeNavLink(link: NavLink): Promise<void> {
 }
 
 onMounted(async () => {
+  const requestedTab = String(route.query.tab ?? "");
+  if (requestedTab) activeTab.value = requestedTab;
   await loadMeta();
   try {
     health.value = await api<{ ok: boolean; requiredTables: number; requiredTableCount: number }>(

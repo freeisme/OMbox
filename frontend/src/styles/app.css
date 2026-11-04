@@ -288,6 +288,23 @@ html.dark .oa-topbar {
   padding: 16px;
 }
 
+.oa-update-banner {
+  padding: 12px 16px 0;
+}
+
+.oa-update-banner .el-alert {
+  padding: 10px 16px;
+}
+
+.oa-update-banner .el-alert__content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+}
+
 .oa-login {
   display: flex;
   align-items: center;

@@ -6278,6 +6278,25 @@ class AppHandler(SimpleHTTPRequestHandler):
             self.send_json({"settings": settings_payload()})
             return
 
+        if parsed.path == "/api/updates/status" and self.command == "GET":
+            context = require_auth(self)
+            require_permission(context, "system_updates", "update")
+            stored_url = text_value(settings_payload().get("update_repository_url"))
+            update_payload = request_update_service(
+                repository_url=normalize_update_repository_url(stored_url),
+                release_channel=DEFAULT_UPDATE_RELEASE_CHANNEL,
+            )
+            status = text_value(update_payload.get("status"))
+            self.send_json(
+                {
+                    "status": status,
+                    "latestVersion": text_value(update_payload.get("latestVersion")),
+                    "latestSha": text_value(update_payload.get("latestSha")),
+                    "hasUpdate": status == "update_available",
+                }
+            )
+            return
+
         if parsed.path == "/api/updates/check" and self.command == "POST":
             context = require_auth(self)
             require_permission(context, "system_updates", "update")
