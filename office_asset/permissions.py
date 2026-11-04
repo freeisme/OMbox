@@ -368,7 +368,7 @@ class PermissionService:
         )
         return dict(self.role(role_id) or {})
 
-    def _validate_permission_item(self, item: dict) -> tuple[int, list[str]]:
+    def _validate_permission_item(self, item: dict) -> tuple[int, list[str]] | None:
         module_code = self.db.text(item.get("moduleCode"))
         action_code = self.db.text(item.get("actionCode"))
         if action_code not in ACTION_CODES:
@@ -382,7 +382,10 @@ class PermissionService:
             """
         )
         if permission_id <= 0:
-            raise self.api_error("Unsupported permission module.")
+            # 前端按「模块 × 六个标准动作」整体提交，而历史数据里个别模块没有登记
+            # 全部动作（例如巡检、机柜视图缺少 approve，外链应用缺少 approve/export）。
+            # 这类动作没有可写入的权限行，跳过即可，不应让整批保存失败。
+            return None
         scope = self.db.text(item.get("dataScope")) or "none"
         if scope not in DATA_SCOPES:
             raise self.api_error("Unsupported data scope.")
@@ -397,7 +400,10 @@ class PermissionService:
         role_value = "@created_role_id" if use_session_id else str(self.db.integer(role_id, 0))
         rows: list[str] = []
         for item in items:
-            permission_id, (scope,) = self._validate_permission_item(item)
+            validated = self._validate_permission_item(item)
+            if validated is None:
+                continue
+            permission_id, (scope,) = validated
             rows.append(
                 "("
                 + ", ".join(
@@ -452,7 +458,10 @@ class PermissionService:
             raise self.api_error("User does not exist.")
         rows: list[str] = []
         for item in items:
-            permission_id, (scope,) = self._validate_permission_item(item)
+            validated = self._validate_permission_item(item)
+            if validated is None:
+                continue
+            permission_id, (scope,) = validated
             rows.append(
                 "("
                 + ", ".join(
