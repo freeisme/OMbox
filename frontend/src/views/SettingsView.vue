@@ -35,6 +35,7 @@ import {
   type UpdateStatus,
   type UpdateVersion,
   type UserRow,
+  updateRole,
 } from "../api/settings";
 import { deleteNavLink, listAllNavLinks, saveNavLink, type NavLink } from "../api/company";
 import { loadMeta, hasPermission, session } from "../session";
@@ -136,6 +137,14 @@ const roleForm = reactive({
   category: "custom",
   isSuperAdmin: false,
   rows: [] as PermissionRow[],
+});
+
+const roleEditDialog = reactive({
+  visible: false,
+  id: "",
+  name: "",
+  category: "custom",
+  isSuperAdmin: false,
 });
 
 const updateSource = ref("github");
@@ -651,6 +660,42 @@ async function submitRole(): Promise<void> {
     ElMessage.success("角色已创建。");
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "创建角色失败。");
+  } finally {
+    saving.value = false;
+  }
+}
+
+function openRoleEdit(): void {
+  if (accessTargetType.value !== "role") return;
+  const role = roles.value.find((item) => String(item.id) === String(accessTargetId.value));
+  if (!role) {
+    ElMessage.warning("请先在「目标对象」里选择一个角色。");
+    return;
+  }
+  roleEditDialog.id = String(role.id);
+  roleEditDialog.name = role.name ?? "";
+  roleEditDialog.category = role.category ?? "custom";
+  roleEditDialog.isSuperAdmin = Boolean(role.isSuperAdmin);
+  roleEditDialog.visible = true;
+}
+
+async function submitRoleEdit(): Promise<void> {
+  if (!roleEditDialog.name.trim()) {
+    ElMessage.warning("角色名称必填。");
+    return;
+  }
+  saving.value = true;
+  try {
+    await updateRole(roleEditDialog.id, {
+      name: roleEditDialog.name.trim(),
+      category: roleEditDialog.category,
+      isSuperAdmin: roleEditDialog.isSuperAdmin,
+    });
+    roleEditDialog.visible = false;
+    await loadAccess();
+    ElMessage.success("角色已更新。");
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "更新角色失败。");
   } finally {
     saving.value = false;
   }
@@ -1203,6 +1248,14 @@ onMounted(async () => {
                   清空权限
                 </el-button>
                 <el-button
+                  v-if="accessTargetType === 'role'"
+                  size="small"
+                  :disabled="!canUpdateAccess || !accessTargetId"
+                  @click="openRoleEdit"
+                >
+                  编辑角色
+                </el-button>
+                <el-button
                   type="primary"
                   size="small"
                   :loading="saving"
@@ -1523,4 +1576,30 @@ onMounted(async () => {
       </el-form-item>
     </el-form>
   </FormDialog>
+
+  <el-dialog v-model="roleEditDialog.visible" title="编辑角色" width="440px">
+    <el-form label-position="top">
+      <el-form-item label="角色名称" required>
+        <el-input v-model="roleEditDialog.name" />
+      </el-form-item>
+      <el-form-item label="角色类别">
+        <el-select v-model="roleEditDialog.category" class="oa-full-width">
+          <el-option
+            v-for="(label, value) in ROLE_CATEGORIES"
+            :key="value"
+            :label="label"
+            :value="value"
+          />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="超级管理员">
+        <el-switch v-model="roleEditDialog.isSuperAdmin" />
+        <div class="oa-hint">开启后该角色的所有账号将拥有全部数据与权限（超管角色类别须为「管理员」）。</div>
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="roleEditDialog.visible = false">取消</el-button>
+      <el-button type="primary" :loading="saving" @click="submitRoleEdit">保存</el-button>
+    </template>
+  </el-dialog>
 </template>

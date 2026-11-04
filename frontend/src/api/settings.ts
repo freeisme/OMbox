@@ -266,6 +266,18 @@ export async function createRole(payload: {
   return { ...role, id: String(role.id) };
 }
 
+export async function updateRole(
+  roleId: string,
+  payload: { name: string; category: string; isSuperAdmin: boolean },
+): Promise<AccessRole> {
+  const result = await api<{ role?: AccessRole }>("/api/roles/" + encodeURIComponent(roleId), {
+    method: "PUT",
+    body: payload,
+  });
+  const role = result.role ?? { id: roleId, code: "", name: payload.name };
+  return { ...role, id: String(role.id) };
+}
+
 export async function loadBackups(): Promise<BackupRow[]> {
   const payload = await api<{ backups?: BackupRow[] }>("/api/backups");
   return payload.backups ?? [];

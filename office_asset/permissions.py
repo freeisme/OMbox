@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 
 from .sql import SqlGateway, parse_bool
+
+
+logger = logging.getLogger(__name__)
 
 
 ACTION_CODES = ("view", "create", "update", "delete", "approve", "export")
@@ -372,7 +376,7 @@ class PermissionService:
         module_code = self.db.text(item.get("moduleCode"))
         action_code = self.db.text(item.get("actionCode"))
         if action_code not in ACTION_CODES:
-            raise self.api_error("Unsupported permission action.")
+            raise self.api_error(f"权限动作不存在：module={module_code}, action={action_code}")
         permission_id = self.db.scalar(
             f"""
             SELECT permission_id
@@ -385,6 +389,7 @@ class PermissionService:
             # 前端按「模块 × 六个标准动作」整体提交，而历史数据里个别模块没有登记
             # 全部动作（例如巡检、机柜视图缺少 approve，外链应用缺少 approve/export）。
             # 这类动作没有可写入的权限行，跳过即可，不应让整批保存失败。
+            logger.warning("权限动作不存在（已跳过）：module=%s, action=%s", module_code, action_code)
             return None
         scope = self.db.text(item.get("dataScope")) or "none"
         if scope not in DATA_SCOPES:
