@@ -2384,6 +2384,12 @@ class DevicePanelTopologyRegressionTests(TestCase):
         ):
             self.assertIn(f"'{table}'", server_source)
         self.assertIn("required_table_count = 76", server_source)
+        # 表名列表长度必须与 required_table_count 一致；漏加表会让 /api/health 恒返回 503。
+        start = server_source.index("'org_unit', 'employee', 'computer_asset'")
+        end = server_source.index('");",', start)
+        listed = re.findall(r"'([a-z_0-9]+)'", server_source[start:end])
+        self.assertEqual(len(set(listed)), 76)
+        self.assertIn("custom_nav_link", listed)
 
 
 class InspectionTemplateExportTests(TestCase):

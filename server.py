@@ -5794,6 +5794,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                         ", 'device_type_catalog', 'device_type_port_template', 'rack_device_port', "
                         "'rack_cable_run', 'topology_node_position', 'datacenter_device', 'site_device'"
                         ", 'topology_annotation', 'company', 'employee_position', 'asset_transfer_record'"
+                        ", 'custom_nav_link'"
                         ");",
                         database=DB_NAME,
                     ).strip(),
