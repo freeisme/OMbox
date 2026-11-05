@@ -45,9 +45,16 @@ const transferDialog = reactive({ visible: false, targetCompanyId: "", orgUnitId
 const transferAll = reactive({ employees: true, computers: true, warehouses: true, datacenter: true });
 
 const isSuperAdmin = computed(() => session.isSuperAdmin);
-/** 有集团级权限（超管或公司管理）才能看「整个集团」并切换公司。 */
+/** 有集团级数据范围（超管，或组织模块 dataScope=all）才能看「整个集团」并切换公司。 */
 const canManageGroup = computed(
-  () => session.isSuperAdmin || hasPermission("company_management", "view"),
+  () =>
+    session.isSuperAdmin ||
+    session.permissions.some(
+      (item) =>
+        (item.moduleCode ?? item.resource) === "organizations" &&
+        String(item.dataScope ?? "") === "all" &&
+        Boolean(item.canView ?? true),
+    ),
 );
 const canEditOrg = computed(
   () =>
@@ -60,15 +67,21 @@ const canDeleteOrg = computed(
 );
 const myCompanyId = computed(() => String(session.user?.companyId ?? ""));
 
-/** 无集团权限的账号只能看本公司，且不能切换。 */
-const effectiveCompanyId = computed(() =>
-  canManageGroup.value ? scopeCompanyId.value : myCompanyId.value,
-);
+/** 集团管理员可用任意公司；无集团权限时只能在其任职公司之间切换。 */
+const effectiveCompanyId = computed(() => {
+  if (canManageGroup.value) return scopeCompanyId.value;
+  if (scopeCompanyId.value && companies.value.some((item) => item.id === scopeCompanyId.value)) {
+    return scopeCompanyId.value;
+  }
+  // 多公司任职：默认展示其全部公司；单公司则只有一家
+  return "";
+});
 const visibleCompanies = computed(() =>
   effectiveCompanyId.value
     ? companies.value.filter((item) => item.id === effectiveCompanyId.value)
     : companies.value,
 );
+const companyOptions = computed(() => companies.value);
 
 function buildOrgSubtree(parentId: string, companyId: string): TreeNode[] {
   return organizations.value
@@ -103,30 +116,26 @@ function buildOrgChildren(companyId: string): TreeNode[] {
 
 function buildTree(): TreeNode[] {
   const root: TreeNode[] = [];
+  const companyNode = (company: Company): TreeNode => ({
+    id: "company:" + company.id,
+    label: company.name,
+    kind: "company",
+    companyId: company.id,
+    children: buildOrgChildren(company.id),
+  });
   if (effectiveCompanyId.value) {
     const company = visibleCompanies.value[0];
-    if (company) {
-      root.push({
-        id: "company:" + company.id,
-        label: company.name,
-        kind: "company",
-        companyId: company.id,
-        children: buildOrgChildren(company.id),
-      });
-    }
-  } else {
+    if (company) root.push(companyNode(company));
+  } else if (canManageGroup.value) {
     root.push({
       id: "__group__",
       label: session.groupName || "集团",
       kind: "group",
-      children: visibleCompanies.value.map((company) => ({
-        id: "company:" + company.id,
-        label: company.name,
-        kind: "company",
-        companyId: company.id,
-        children: buildOrgChildren(company.id),
-      })),
+      children: visibleCompanies.value.map(companyNode),
     });
+  } else {
+    // 多公司任职（无集团权限）：并列展示其可管理的公司
+    root.push(...visibleCompanies.value.map(companyNode));
   }
   return root;
 }
@@ -367,14 +376,14 @@ onMounted(reload);
         <span class="oa-card-title">组织架构</span>
         <div class="oa-flex-row">
           <el-select
-            v-if="canManageGroup"
+            v-if="canManageGroup || companies.length > 1"
             v-model="scopeCompanyId"
             clearable
-            placeholder="整个集团"
-            style="width: 180px"
+            :placeholder="canManageGroup ? '整个集团' : '全部（我的公司）'"
+            style="width: 200px"
             @change="reload"
           >
-            <el-option label="整个集团" value="" />
+            <el-option :label="canManageGroup ? '整个集团' : '全部（我的公司）'" value="" />
             <el-option v-for="c in companies" :key="c.id" :label="c.name" :value="c.id" />
           </el-select>
           <el-input

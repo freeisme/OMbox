@@ -123,11 +123,64 @@ class CompanyService:
         return {"id": company_id_int, "deleted": True}
 
     # ---------------------------------------------------------------- 组织树
+    def _user_company_ids(self, context: dict) -> set[int]:
+        """账号可管理的公司：任职（employee_position）+ 主组织所属公司。"""
+        employee = context.get("employee") if isinstance(context.get("employee"), dict) else {}
+        employee_id = self.db.integer(context.get("employeeId") or employee.get("employeeId"), 0)
+        allowed: set[int] = set()
+        if employee_id > 0:
+            rows = self.db.json(
+                f"""
+                SELECT COALESCE(JSON_ARRAYAGG(company_id), JSON_ARRAY())
+                FROM (
+                  SELECT DISTINCT company_id FROM employee_position
+                  WHERE employee_id = {employee_id}
+                    AND company_id IS NOT NULL
+                    AND is_active = 1
+                  UNION
+                  SELECT org.company_id FROM employee emp
+                  JOIN org_unit org ON org.org_unit_id = emp.org_unit_id
+                  WHERE emp.employee_id = {employee_id}
+                    AND org.company_id IS NOT NULL
+                ) user_companies
+                """,
+                [],
+            )
+            for value in rows or []:
+                company_value = self.db.integer(value, 0)
+                if company_value > 0:
+                    allowed.add(company_value)
+        primary = self.db.integer(context.get("companyId"), 0)
+        if primary > 0:
+            allowed.add(primary)
+        return allowed
+
     def org_tree(self, context: dict, company_id: object = "") -> dict:
-        company_filter = ""
         company_id_int = self.db.integer(company_id, 0)
-        if company_id_int > 0:
-            company_filter = f"WHERE company_id = {company_id_int}"
+        # 没有集团级数据范围（dataScope != all）的账号只能看「任职公司」；
+        # 传了别家公司的 companyId 直接拒绝，避免前端强制过滤被绕过。
+        scopes = context.get("_permissionScopes")
+        org_scope = ""
+        if isinstance(scopes, dict):
+            org_scope = self.db.text(scopes.get("organizations"))
+        allowed_companies: set[int] | None = None
+        if not parse_bool(context.get("isSuperAdmin")) and org_scope != "all":
+            allowed_companies = self._user_company_ids(context)
+            if not allowed_companies:
+                raise self.forbidden_error("当前账号未绑定公司，无法查看组织架构。")
+            if company_id_int > 0 and company_id_int not in allowed_companies:
+                raise self.forbidden_error("只能查看本公司的组织架构。")
+        if allowed_companies is not None:
+            id_list = ", ".join(str(i) for i in sorted(allowed_companies))
+            company_filter = (
+                f"WHERE company_id = {company_id_int}"
+                if company_id_int > 0
+                else f"WHERE company_id IN ({id_list})"
+            )
+        else:
+            company_filter = ""
+            if company_id_int > 0:
+                company_filter = f"WHERE company_id = {company_id_int}"
         org_rows = self.db.json(
             f"""
             SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
@@ -148,8 +201,16 @@ class CompanyService:
             """,
             [],
         )
+        companies = self.list_companies(context)
+        if allowed_companies is not None:
+            allowed_ids = {str(item) for item in allowed_companies}
+            companies = [
+                company
+                for company in companies
+                if self.db.text(company.get("id")) in allowed_ids
+            ]
         return {
-            "companies": self.list_companies(context),
+            "companies": companies,
             "organizations": list(org_rows or []),
         }
 

@@ -1022,6 +1022,7 @@ def current_auth_context(handler: SimpleHTTPRequestHandler) -> dict | None:
           ),
           'isActive', user.is_active,
           'csrfHash', session.csrf_token_hash,
+          'companyId', COALESCE(CAST(org.company_id AS CHAR), ''),
           'employee', JSON_OBJECT(
             'employeeId', COALESCE(CAST(employee.employee_id AS CHAR), ''),
             'employeeNo', COALESCE(employee.employee_no, ''),
