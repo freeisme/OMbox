@@ -915,6 +915,15 @@ class DomainApiRouter:
             send_json(self.assets.offboarding_preview(parts[3], context))
             return True
 
+        # 离职人员档案删除
+        if path.startswith("/api/left-employees/") and method == "DELETE":
+            parts = path.split("/")
+            if len(parts) != 4 or not parts[3].isdigit():
+                raise self.deps.api_error("Invalid left employee archive path.")
+            context = self._write_context(handler, "employees", "delete")
+            send_json(self.assets.delete_left_employee(parts[3], context))
+            return True
+
         # 使用人员 / 办公终端的批量导入（xlsx、csv；dryRun 预览 + skip/update）
         if path == "/api/employees/import" and method == "POST":
             context = self._write_context(handler, "employees", "create")

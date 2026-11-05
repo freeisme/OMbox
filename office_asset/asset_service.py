@@ -910,7 +910,70 @@ class AssetService:
             return self._delete_inventory_model(resource_id, context)
         if resource_type == "inventory-brand":
             return self._delete_inventory_brand(resource_id, context)
+        if resource_type == "organization":
+            return self._delete_organization(resource_id, context)
         raise self.api_error("Unsupported resource type.")
+
+    def _delete_organization(self, resource_id: object, context: dict) -> dict:
+        """删除组织：有下级、人员或已挂资产时拒绝，避免悬挂引用。"""
+        org_id = self.db.integer(resource_id, 0)
+        if org_id <= 0:
+            raise self.api_error("组织不存在。")
+        self.scope.assert_org_access(context, org_id)
+        children = self.db.scalar(
+            f"SELECT COUNT(*) FROM org_unit WHERE parent_org_unit_id = {org_id};"
+        )
+        if children:
+            raise self.api_error(f"该组织下还有 {children} 个下级组织，请先删除或转移。")
+        employees = self.db.scalar(
+            f"SELECT COUNT(*) FROM employee WHERE org_unit_id = {org_id};"
+        )
+        if employees:
+            raise self.api_error(f"该组织下还有 {employees} 名人员，请先调整人员归属。")
+        computers = self.db.scalar(
+            f"SELECT COUNT(*) FROM computer_asset WHERE org_unit_id = {org_id};"
+        )
+        if computers:
+            raise self.api_error(f"该组织下还有 {computers} 台终端，请先调整终端归属。")
+        warehouses = self.db.scalar(
+            f"SELECT COUNT(*) FROM inventory_warehouse WHERE org_unit_id = {org_id};"
+        )
+        if warehouses:
+            raise self.api_error(f"该组织下还有 {warehouses} 个仓库，请先调整仓库归属。")
+        name = self.db.text(
+            self.db.execute(f"SELECT org_name FROM org_unit WHERE org_unit_id = {org_id};").strip()
+        ) or str(org_id)
+        self.db.execute(
+            f"""
+            START TRANSACTION;
+            DELETE FROM org_unit WHERE org_unit_id = {org_id};
+            {self._audit_sql('organization_deleted', 'org_unit', org_id, name, 'Organization deleted', context)};
+            COMMIT;
+            """
+        )
+        return {"id": org_id, "deleted": True}
+
+    def delete_left_employee(self, archive_id: object, context: dict) -> dict:
+        """删除一条离职人员档案（只删历史归档，不动在职人员）。"""
+        archive = self.db.integer(archive_id, 0)
+        if archive <= 0:
+            raise self.api_error("离职档案不存在。")
+        name = self.db.text(
+            self.db.execute(
+                f"SELECT employee_name FROM left_employee_archive WHERE archive_id = {archive};"
+            ).strip()
+        )
+        if not name:
+            raise self.api_error("离职档案不存在。")
+        self.db.execute(
+            f"""
+            START TRANSACTION;
+            DELETE FROM left_employee_archive WHERE archive_id = {archive};
+            {self._audit_sql('left_employee_deleted', 'left_employee_archive', archive, name, 'Left employee archive deleted', context)};
+            COMMIT;
+            """
+        )
+        return {"id": archive, "deleted": True}
 
     # ------------------------------------------------- 使用人员 / 办公终端批量导入
 
@@ -2362,6 +2425,7 @@ class AssetService:
                 "SELECT COALESCE(MIN(company_id), 0) FROM company WHERE is_active = 1;"
             )
         company_sql = str(company_id) if company_id > 0 else "NULL"
+        is_active = 1 if parse_bool(payload.get("isActive"), True) else 0
         if org_id:
             self.scope.assert_org_access(context, org_id)
             self.db.execute(
@@ -2372,7 +2436,8 @@ class AssetService:
                     org_name = {self.db.quote(name)},
                     parent_org_unit_id = {"NULL" if parent_id <= 0 else parent_id},
                     company_id = {company_sql},
-                    sort_order = {sort_order}
+                    sort_order = {sort_order},
+                    is_active = {is_active}
                 WHERE org_unit_id = {org_id};
                 {self._audit_sql('organization_updated', 'org_unit', org_id, name, 'Organization updated', context)};
                 COMMIT;

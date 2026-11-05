@@ -63,6 +63,26 @@ export async function loadOrgTree(companyId = ""): Promise<OrgTree> {
   return { companies: payload.companies ?? [], organizations: payload.organizations ?? [] };
 }
 
+export async function saveOrganization(
+  payload: Partial<OrgNode> & { code: string; name: string },
+  orgId = "",
+): Promise<OrgNode | null> {
+  const result = orgId
+    ? await api<{ organization?: OrgNode }>(
+        "/api/resources/organization/" + encodeURIComponent(orgId),
+        { method: "PUT", body: payload },
+      )
+    : await api<{ organization?: OrgNode }>("/api/resources/organization", {
+        method: "POST",
+        body: payload,
+      });
+  return result.organization ?? null;
+}
+
+export async function deleteOrganization(orgId: string): Promise<void> {
+  await api("/api/resources/organization/" + encodeURIComponent(orgId), { method: "DELETE" });
+}
+
 export async function transferOrgSubtree(payload: {
   targetCompanyId: string;
   orgUnitIds: string[];

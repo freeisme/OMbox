@@ -467,6 +467,7 @@ def auth_user_public(user: dict) -> dict:
         "positionName": text_value(user.get("positionName") or user.get("position_name") or employee.get("positionName")),
         "orgId": text_value(user.get("orgId") or user.get("org_id") or employee.get("orgId")),
         "orgName": text_value(user.get("orgName") or user.get("org_name") or employee.get("orgName")),
+        "companyId": text_value(user.get("companyId") or user.get("company_id") or employee.get("companyId")),
         "email": text_value(user.get("email") or employee.get("email")),
         "mobile": text_value(user.get("mobile") or employee.get("mobile")),
     }
@@ -578,6 +579,7 @@ def find_user_by_username(username: str) -> dict | None:
           ,'positionName', COALESCE(employee.position_name, '')
           ,'orgId', COALESCE(CAST(employee.org_unit_id AS CHAR), '')
           ,'orgName', COALESCE(org.org_name, '')
+          ,'companyId', COALESCE(CAST(org.company_id AS CHAR), '')
           ,'email', COALESCE(employee.email, '')
           ,'mobile', COALESCE(employee.mobile, '')
         )

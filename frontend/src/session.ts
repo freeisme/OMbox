@@ -3,10 +3,23 @@ import { api } from "./api/client";
 import { NAV_BY_PAGE } from "./navigation";
 
 export interface Permission {
-  resource: string;
-  action: string;
+  /** 后端 /api/auth/permissions 的字段名：moduleCode/actionCode + can* 标记。 */
+  moduleCode?: string;
+  actionCode?: string;
+  canView?: boolean | number;
+  canCreate?: boolean | number;
+  canUpdate?: boolean | number;
+  canDelete?: boolean | number;
+  canApprove?: boolean | number;
+  canExport?: boolean | number;
+  dataScope?: string;
+  /** 兼容旧字段。 */
+  resource?: string;
+  action?: string;
   scope?: string;
 }
+
+export type PermissionAction = "view" | "create" | "update" | "delete" | "approve" | "export";
 
 export interface SessionUser {
   id?: string;
@@ -16,6 +29,8 @@ export interface SessionUser {
   isSuperAdmin: boolean;
   employeeId?: string;
   orgId?: string;
+  orgName?: string;
+  companyId?: string;
 }
 
 export interface AppMeta {
@@ -61,9 +76,15 @@ export const session = reactive<SessionState>({
   moduleInspectionEnabled: true,
 });
 
-export function hasPermission(resource: string, action = "view"): boolean {
+export function hasPermission(resource: string, action: PermissionAction = "view"): boolean {
   if (session.isSuperAdmin) return true;
-  return session.permissions.some((item) => item.resource === resource && item.action === action);
+  const flag = ("can" + action.charAt(0).toUpperCase() + action.slice(1)) as keyof Permission;
+  return session.permissions.some((item) => {
+    const module = item.moduleCode ?? item.resource;
+    if (module !== resource) return false;
+    if (Boolean(item[flag])) return true;
+    return item.action === action && Boolean(item.canView ?? true);
+  });
 }
 
 /** 模块级开关（机房管理 / 巡检管理），关闭后整个模块菜单隐藏。 */

@@ -3,13 +3,15 @@ import { computed, onMounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   deleteCompany,
+  deleteOrganization,
   loadOrgTree,
   saveCompany,
+  saveOrganization,
   transferOrgSubtree,
   type Company,
   type OrgNode,
 } from "../api/company";
-import { canViewPage, session } from "../session";
+import { hasPermission, session } from "../session";
 
 interface TreeNode {
   id: string;
@@ -17,29 +19,67 @@ interface TreeNode {
   kind: "group" | "company" | "org";
   companyId?: string;
   parentId?: string;
+  orgId?: string;
   children?: TreeNode[];
 }
 
 const loading = ref(false);
 const companies = ref<Company[]>([]);
 const organizations = ref<OrgNode[]>([]);
-const viewCompanyId = ref("");
+const selectedKey = ref("__group__");
+const searchText = ref("");
+const scopeCompanyId = ref("");
 
 const companyDialog = reactive({ visible: false, id: "", code: "", name: "", sortOrder: 1000 });
+const orgDialog = reactive({
+  visible: false,
+  id: "",
+  code: "",
+  name: "",
+  parentId: "",
+  companyId: "",
+  sortOrder: 1000,
+  isActive: true,
+});
 const transferDialog = reactive({ visible: false, targetCompanyId: "", orgUnitIds: [] as string[] });
 const transferAll = reactive({ employees: true, computers: true, warehouses: true, datacenter: true });
 
 const isSuperAdmin = computed(() => session.isSuperAdmin);
+/** 有集团级权限（超管或公司管理）才能看「整个集团」并切换公司。 */
+const canManageGroup = computed(
+  () => session.isSuperAdmin || hasPermission("company_management", "view"),
+);
+const canEditOrg = computed(
+  () =>
+    session.isSuperAdmin ||
+    hasPermission("organizations", "create") ||
+    hasPermission("organizations", "update"),
+);
+const canDeleteOrg = computed(
+  () => session.isSuperAdmin || hasPermission("organizations", "delete"),
+);
+const myCompanyId = computed(() => String(session.user?.companyId ?? ""));
+
+/** 无集团权限的账号只能看本公司，且不能切换。 */
+const effectiveCompanyId = computed(() =>
+  canManageGroup.value ? scopeCompanyId.value : myCompanyId.value,
+);
+const visibleCompanies = computed(() =>
+  effectiveCompanyId.value
+    ? companies.value.filter((item) => item.id === effectiveCompanyId.value)
+    : companies.value,
+);
 
 function buildOrgSubtree(parentId: string, companyId: string): TreeNode[] {
   return organizations.value
     .filter((org) => org.parentId === parentId && org.companyId === companyId)
     .map((org) => ({
-      id: org.id,
+      id: "org:" + org.id,
       label: org.name,
       kind: "org" as const,
       companyId: org.companyId,
       parentId: org.parentId,
+      orgId: org.id,
       children: buildOrgSubtree(org.id, companyId),
     }));
 }
@@ -51,26 +91,23 @@ function buildOrgChildren(companyId: string): TreeNode[] {
       !organizations.value.some((p) => p.id === org.parentId && p.companyId === companyId),
   );
   return direct.map((org) => ({
-    id: org.id,
+    id: "org:" + org.id,
     label: org.name,
     kind: "org" as const,
     companyId: org.companyId,
     parentId: org.parentId,
+    orgId: org.id,
     children: buildOrgSubtree(org.id, companyId),
   }));
 }
 
 function buildTree(): TreeNode[] {
-  const visibleCompanies = viewCompanyId.value
-    ? companies.value.filter((company) => company.id === viewCompanyId.value)
-    : companies.value;
   const root: TreeNode[] = [];
-  if (viewCompanyId.value) {
-    // 公司视图：只显示该公司自己的组织树
-    const company = visibleCompanies[0];
+  if (effectiveCompanyId.value) {
+    const company = visibleCompanies.value[0];
     if (company) {
       root.push({
-        id: company.id,
+        id: "company:" + company.id,
         label: company.name,
         kind: "company",
         companyId: company.id,
@@ -78,13 +115,12 @@ function buildTree(): TreeNode[] {
       });
     }
   } else {
-    // 集团视图：集团 → 公司 → 组织
     root.push({
       id: "__group__",
       label: session.groupName || "集团",
       kind: "group",
-      children: visibleCompanies.map((company) => ({
-        id: company.id,
+      children: visibleCompanies.value.map((company) => ({
+        id: "company:" + company.id,
         label: company.name,
         kind: "company",
         companyId: company.id,
@@ -97,17 +133,71 @@ function buildTree(): TreeNode[] {
 
 const treeData = computed(() => buildTree());
 
+const filterNode = (value: string, data: TreeNode): boolean => {
+  if (!value) return true;
+  return String(data.label ?? "").includes(value);
+};
+
+const selectedOrg = computed<OrgNode | null>(() => {
+  if (!selectedKey.value.startsWith("org:")) return null;
+  const id = selectedKey.value.slice(4);
+  return organizations.value.find((item) => item.id === id) ?? null;
+});
+
+const selectedCompany = computed<Company | null>(() => {
+  if (selectedKey.value.startsWith("company:")) {
+    const id = selectedKey.value.slice(8);
+    return companies.value.find((item) => item.id === id) ?? null;
+  }
+  if (selectedOrg.value?.companyId) {
+    return companies.value.find((item) => item.id === selectedOrg.value!.companyId) ?? null;
+  }
+  return null;
+});
+
+const orgPath = computed<string[]>(() => {
+  const path: string[] = [];
+  let current: OrgNode | null = selectedOrg.value;
+  let guard = 0;
+  while (current && guard < 20) {
+    path.unshift(current.name);
+    const parentId: string = current.parentId;
+    current = parentId ? organizations.value.find((item) => item.id === parentId) ?? null : null;
+    guard += 1;
+  }
+  if (selectedCompany.value) path.unshift(selectedCompany.value.name);
+  return path;
+});
+
+const childCount = computed(() => {
+  const org = selectedOrg.value;
+  if (!org) return 0;
+  return organizations.value.filter((item) => item.parentId === org.id).length;
+});
+
 async function reload(): Promise<void> {
   loading.value = true;
   try {
-    const tree = await loadOrgTree(viewCompanyId.value);
+    const tree = await loadOrgTree(effectiveCompanyId.value);
     companies.value = tree.companies;
     organizations.value = tree.organizations;
+    if (!treeData.value.some((node) => nodeContains(node, selectedKey.value))) {
+      selectedKey.value = treeData.value[0]?.id ?? "__group__";
+    }
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "加载组织架构失败。");
   } finally {
     loading.value = false;
   }
+}
+
+function nodeContains(node: TreeNode, key: string): boolean {
+  if (node.id === key) return true;
+  return (node.children ?? []).some((child) => nodeContains(child, key));
+}
+
+function selectNode(data: TreeNode): void {
+  selectedKey.value = data.id;
 }
 
 function openCompanyCreate(): void {
@@ -122,18 +212,22 @@ function openCompanyEdit(company: Company): void {
   companyDialog.id = company.id;
   companyDialog.code = company.code;
   companyDialog.name = company.name;
-  companyDialog.sortOrder = company.sortOrder;
+  companyDialog.sortOrder = company.sortOrder ?? 1000;
   companyDialog.visible = true;
 }
 
 async function submitCompany(): Promise<void> {
   if (!companyDialog.name.trim()) {
-    ElMessage.warning("公司名称不能为空。");
+    ElMessage.warning("公司名称必填。");
     return;
   }
   try {
     await saveCompany(
-      { code: companyDialog.code.trim(), name: companyDialog.name.trim(), sortOrder: companyDialog.sortOrder },
+      {
+        code: companyDialog.code.trim() || companyDialog.name.trim().toUpperCase(),
+        name: companyDialog.name.trim(),
+        sortOrder: companyDialog.sortOrder,
+      },
       companyDialog.id,
     );
     companyDialog.visible = false;
@@ -145,20 +239,91 @@ async function submitCompany(): Promise<void> {
 }
 
 async function removeCompany(company: Company): Promise<void> {
+  const ok = await ElMessageBox.confirm(
+    "确定删除公司「" + company.name + "」吗？公司下必须没有组织和数据。",
+    "删除公司",
+    { type: "warning" },
+  ).catch(() => false);
+  if (!ok) return;
   try {
-    await ElMessageBox.confirm("确定停用公司「" + company.name + "」吗？", "停用公司", { type: "warning" });
     await deleteCompany(company.id);
-    ElMessage.success("公司已停用。");
+    ElMessage.success("公司已删除。");
     await reload();
   } catch (error) {
-    if (error === "cancel" || error === "close") return;
-    ElMessage.error(error instanceof Error ? error.message : "停用公司失败。");
+    ElMessage.error(error instanceof Error ? error.message : "删除公司失败。");
+  }
+}
+
+function openOrgCreate(parentId = "", companyId = ""): void {
+  orgDialog.id = "";
+  orgDialog.code = "";
+  orgDialog.name = "";
+  orgDialog.parentId = parentId;
+  orgDialog.companyId = companyId || selectedCompany.value?.id || "";
+  orgDialog.sortOrder = 1000;
+  orgDialog.isActive = true;
+  orgDialog.visible = true;
+}
+
+function openOrgEdit(org: OrgNode): void {
+  orgDialog.id = org.id;
+  orgDialog.code = org.code;
+  orgDialog.name = org.name;
+  orgDialog.parentId = org.parentId || "";
+  orgDialog.companyId = org.companyId || "";
+  orgDialog.sortOrder = org.sortOrder ?? 1000;
+  orgDialog.isActive = org.isActive === true || Number(org.isActive) === 1;
+  orgDialog.visible = true;
+}
+
+async function submitOrg(): Promise<void> {
+  if (!orgDialog.code.trim() || !orgDialog.name.trim()) {
+    ElMessage.warning("组织编码与名称必填。");
+    return;
+  }
+  try {
+    await saveOrganization(
+      {
+        code: orgDialog.code.trim(),
+        name: orgDialog.name.trim(),
+        parentId: orgDialog.parentId,
+        companyId: orgDialog.companyId,
+        sortOrder: orgDialog.sortOrder,
+        isActive: orgDialog.isActive,
+      },
+      orgDialog.id,
+    );
+    orgDialog.visible = false;
+    ElMessage.success("组织已保存。");
+    await reload();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "保存组织失败。");
+  }
+}
+
+async function removeOrg(org: OrgNode): Promise<void> {
+  const ok = await ElMessageBox.confirm(
+    "确定删除组织「" + org.name + "」吗？有下级、人员或资产时会被拒绝。",
+    "删除组织",
+    { type: "warning" },
+  ).catch(() => false);
+  if (!ok) return;
+  try {
+    await deleteOrganization(org.id);
+    ElMessage.success("组织已删除。");
+    await reload();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "删除组织失败。");
   }
 }
 
 function openTransfer(): void {
   transferDialog.targetCompanyId = "";
-  transferDialog.orgUnitIds = [];
+  transferDialog.orgUnitIds = selectedOrg.value ? [selectedOrg.value.id] : [];
+  transferAll.employees = true;
+  transferAll.computers = true;
+  transferAll.warehouses = true;
+  transferAll.datacenter = true;
   transferDialog.visible = true;
 }
 
@@ -167,7 +332,7 @@ async function submitTransfer(): Promise<void> {
     ElMessage.warning("请选择目标公司。");
     return;
   }
-  if (transferDialog.orgUnitIds.length === 0) {
+  if (!transferDialog.orgUnitIds.length) {
     ElMessage.warning("请选择要转移的组织。");
     return;
   }
@@ -188,6 +353,10 @@ async function submitTransfer(): Promise<void> {
   }
 }
 
+function orgOptions(companyId: string): OrgNode[] {
+  return organizations.value.filter((item) => !companyId || item.companyId === companyId);
+}
+
 onMounted(reload);
 </script>
 
@@ -198,7 +367,8 @@ onMounted(reload);
         <span class="oa-card-title">组织架构</span>
         <div class="oa-flex-row">
           <el-select
-            v-model="viewCompanyId"
+            v-if="canManageGroup"
+            v-model="scopeCompanyId"
             clearable
             placeholder="整个集团"
             style="width: 180px"
@@ -207,39 +377,94 @@ onMounted(reload);
             <el-option label="整个集团" value="" />
             <el-option v-for="c in companies" :key="c.id" :label="c.name" :value="c.id" />
           </el-select>
+          <el-input
+            v-model="searchText"
+            clearable
+            placeholder="搜索部门"
+            style="width: 180px"
+          />
           <el-button v-if="isSuperAdmin" type="primary" @click="openCompanyCreate">新增公司</el-button>
           <el-button v-if="isSuperAdmin" @click="openTransfer">转移组织</el-button>
         </div>
       </div>
     </template>
 
-    <el-tree
-      :data="treeData"
-      node-key="id"
-      default-expand-all
-      :props="{ label: 'label', children: 'children' }"
-      :expand-on-click-node="false"
-    >
-      <template #default="{ data }">
-        <div class="oa-flex-between oa-tree-row">
-          <span>
-            <el-tag v-if="data.kind === 'group'" size="small" effect="plain" type="info">集团</el-tag>
-            <el-tag v-else-if="data.kind === 'company'" size="small" type="primary">公司</el-tag>
-            <el-tag v-else size="small" effect="plain">部门</el-tag>
-            <span class="oa-ml-2">{{ data.label }}</span>
-          </span>
-          <span v-if="data.kind === 'company' && isSuperAdmin">
-            <el-button size="small" text @click="openCompanyEdit(data)">编辑</el-button>
-            <el-button size="small" text type="danger" @click="removeCompany(data)">停用</el-button>
-          </span>
-        </div>
-      </template>
-    </el-tree>
+    <el-row :gutter="12">
+      <el-col :xs="24" :md="9">
+        <el-card shadow="never" class="oa-org-tree-card">
+          <el-tree
+            ref="treeRef"
+            :data="treeData"
+            node-key="id"
+            default-expand-all
+            highlight-current
+            :filter-node-method="filterNode"
+            :props="{ label: 'label', children: 'children' }"
+            :expand-on-click-node="false"
+            @node-click="selectNode"
+          >
+            <template #default="{ data }">
+              <div class="oa-flex-between oa-org-tree-row">
+                <span>
+                  <el-tag v-if="data.kind === 'group'" size="small" effect="plain" type="info">集团</el-tag>
+                  <el-tag v-else-if="data.kind === 'company'" size="small" type="primary">公司</el-tag>
+                  <span class="oa-ml-2">{{ data.label }}</span>
+                </span>
+                <span v-if="data.kind === 'company' && canEditOrg" class="oa-org-tree-actions">
+                  <el-button link size="small" @click.stop="openOrgCreate('', data.companyId)">+ 部门</el-button>
+                </span>
+                <span v-else-if="data.kind === 'org' && canEditOrg" class="oa-org-tree-actions">
+                  <el-button link size="small" @click.stop="openOrgCreate(data.orgId, data.companyId)">+</el-button>
+                </span>
+              </div>
+            </template>
+          </el-tree>
+        </el-card>
+      </el-col>
+
+      <el-col :xs="24" :md="15">
+        <el-card shadow="never">
+          <template #header>
+            <div class="oa-flex-between">
+              <span>
+                <template v-if="selectedOrg">{{ orgPath.join(" / ") }}</template>
+                <template v-else-if="selectedCompany">{{ selectedCompany.name }}</template>
+                <template v-else>{{ session.groupName || "集团" }}</template>
+              </span>
+              <div v-if="selectedOrg">
+                <el-button v-if="canEditOrg" size="small" @click="openOrgCreate(selectedOrg.id, selectedOrg.companyId)">新增下级</el-button>
+                <el-button v-if="canEditOrg" size="small" type="primary" @click="openOrgEdit(selectedOrg)">编辑</el-button>
+                <el-button v-if="canDeleteOrg" size="small" type="danger" @click="removeOrg(selectedOrg)">删除</el-button>
+              </div>
+              <div v-else-if="selectedCompany">
+                <el-button v-if="canEditOrg" size="small" type="primary" @click="openOrgCreate('', selectedCompany.id)">新增部门</el-button>
+                <el-button v-if="isSuperAdmin" size="small" @click="openCompanyEdit(selectedCompany)">编辑公司</el-button>
+                <el-button v-if="isSuperAdmin" size="small" type="danger" @click="removeCompany(selectedCompany)">删除公司</el-button>
+              </div>
+            </div>
+          </template>
+
+          <el-descriptions v-if="selectedOrg" :column="2" border>
+            <el-descriptions-item label="组织编码">{{ selectedOrg.code }}</el-descriptions-item>
+            <el-descriptions-item label="组织名称">{{ selectedOrg.name }}</el-descriptions-item>
+            <el-descriptions-item label="所属公司">{{ selectedCompany?.name || "—" }}</el-descriptions-item>
+            <el-descriptions-item label="下级组织">{{ childCount }}</el-descriptions-item>
+            <el-descriptions-item label="排序">{{ selectedOrg.sortOrder }}</el-descriptions-item>
+            <el-descriptions-item label="状态">
+              <el-tag :type="selectedOrg.isActive === true || Number(selectedOrg.isActive) === 1 ? 'success' : 'info'" size="small">
+                {{ selectedOrg.isActive === true || Number(selectedOrg.isActive) === 1 ? "启用" : "停用" }}
+              </el-tag>
+            </el-descriptions-item>
+          </el-descriptions>
+          <el-empty v-else description="选择左侧的部门或公司查看详情" />
+        </el-card>
+      </el-col>
+    </el-row>
 
     <el-dialog v-model="companyDialog.visible" :title="companyDialog.id ? '编辑公司' : '新增公司'" width="440px">
       <el-form label-position="top">
-        <el-form-item label="公司编码" required>
-          <el-input v-model="companyDialog.code" placeholder="例如 CMP-002" />
+        <el-form-item label="公司编码">
+          <el-input v-model="companyDialog.code" placeholder="留空自动用大写名称" />
         </el-form-item>
         <el-form-item label="公司名称" required>
           <el-input v-model="companyDialog.name" placeholder="例如 示例公司" />
@@ -254,36 +479,79 @@ onMounted(reload);
       </template>
     </el-dialog>
 
-    <el-dialog v-model="transferDialog.visible" title="转移组织架构" width="520px">
+    <el-dialog v-model="orgDialog.visible" :title="orgDialog.id ? '编辑组织' : '新增组织'" width="480px">
       <el-form label-position="top">
-        <el-form-item label="目标公司" required>
-          <el-select v-model="transferDialog.targetCompanyId" placeholder="选择要转入的公司">
+        <el-form-item label="上级组织">
+          <el-select v-model="orgDialog.parentId" clearable filterable class="oa-full-width" placeholder="留空表示公司根组织">
+            <el-option
+              v-for="org in orgOptions(orgDialog.companyId).filter((o) => o.id !== orgDialog.id)"
+              :key="org.id"
+              :label="org.name"
+              :value="org.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="所属公司" required>
+          <el-select v-model="orgDialog.companyId" class="oa-full-width">
             <el-option v-for="c in companies" :key="c.id" :label="c.name" :value="c.id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="要转移的组织（可多选，含其子组织）">
-          <el-tree-select
-            v-model="transferDialog.orgUnitIds"
-            :data="treeData"
-            node-key="id"
-            multiple
-            show-checkbox
-            check-strictly
-            :props="{ label: 'label', children: 'children' }"
-            placeholder="选择组织"
-          />
+        <el-form-item label="组织编码" required>
+          <el-input v-model="orgDialog.code" placeholder="例如 DEPT-A" />
         </el-form-item>
-        <el-form-item label="连同转移">
-          <el-checkbox v-model="transferAll.employees">其下员工</el-checkbox>
-          <el-checkbox v-model="transferAll.computers">办公终端</el-checkbox>
-          <el-checkbox v-model="transferAll.warehouses">IT 物资仓库</el-checkbox>
-          <el-checkbox v-model="transferAll.datacenter">机房设备</el-checkbox>
+        <el-form-item label="组织名称" required>
+          <el-input v-model="orgDialog.name" placeholder="例如 技术部" />
+        </el-form-item>
+        <el-form-item label="排序">
+          <el-input-number v-model="orgDialog.sortOrder" :min="0" />
+        </el-form-item>
+        <el-form-item label="启用">
+          <el-switch v-model="orgDialog.isActive" />
         </el-form-item>
       </el-form>
       <template #footer>
+        <el-button @click="orgDialog.visible = false">取消</el-button>
+        <el-button type="primary" @click="submitOrg">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="transferDialog.visible" title="转移组织" width="520px">
+      <el-form label-position="top">
+        <el-form-item label="目标公司" required>
+          <el-select v-model="transferDialog.targetCompanyId" class="oa-full-width">
+            <el-option v-for="c in companies" :key="c.id" :label="c.name" :value="c.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="要转移的组织" required>
+          <el-select v-model="transferDialog.orgUnitIds" multiple filterable class="oa-full-width">
+            <el-option v-for="org in organizations" :key="org.id" :label="org.name" :value="org.id" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <el-checkbox v-model="transferAll.employees">同时转移人员</el-checkbox>
+      <el-checkbox v-model="transferAll.computers">同时转移办公终端</el-checkbox>
+      <el-checkbox v-model="transferAll.warehouses">同时转移仓库</el-checkbox>
+      <el-checkbox v-model="transferAll.datacenter">同时转移机房设备</el-checkbox>
+      <template #footer>
         <el-button @click="transferDialog.visible = false">取消</el-button>
-        <el-button type="primary" @click="submitTransfer">转移</el-button>
+        <el-button type="primary" @click="submitTransfer">确认转移</el-button>
       </template>
     </el-dialog>
   </el-card>
 </template>
+
+<style scoped>
+.oa-org-tree-card {
+  min-height: 520px;
+}
+.oa-org-tree-row {
+  width: 100%;
+  padding-right: 6px;
+}
+.oa-org-tree-actions {
+  opacity: 0.6;
+}
+.oa-org-tree-actions:hover {
+  opacity: 1;
+}
+</style>

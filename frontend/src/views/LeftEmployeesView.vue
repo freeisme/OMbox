@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
+import { api } from "../api/client";
 import {
   loadDirectoryData,
   offboardDeviceActionText,
@@ -33,10 +34,49 @@ const filtered = computed(() => {
   );
 });
 
+type SortOrder = "ascending" | "descending" | null;
+const sortKey = ref("");
+const sortOrder = ref<SortOrder>(null);
+
+const sorted = computed(() => {
+  const list = filtered.value.slice();
+  if (!sortKey.value || !sortOrder.value) return list;
+  const key = sortKey.value;
+  const sign = sortOrder.value === "descending" ? -1 : 1;
+  list.sort((a, b) => {
+    const av = String((a as unknown as Record<string, unknown>)[key] ?? "");
+    const bv = String((b as unknown as Record<string, unknown>)[key] ?? "");
+    return sign * av.localeCompare(bv, "zh-Hans-CN");
+  });
+  return list;
+});
+
 const paged = computed(() => {
   const start = (page.value - 1) * pageSize.value;
-  return filtered.value.slice(start, start + pageSize.value);
+  return sorted.value.slice(start, start + pageSize.value);
 });
+
+function onSortChange(payload: { prop: string; order: SortOrder }): void {
+  sortKey.value = payload.order ? payload.prop : "";
+  sortOrder.value = payload.order;
+  page.value = 1;
+}
+
+async function removeRow(row: LeftEmployeeRow): Promise<void> {
+  const ok = await ElMessageBox.confirm(
+    "确定删除离职档案「" + row.name + "」吗？删除后不可恢复（不影响在职人员）。",
+    "删除离职档案",
+    { type: "warning" },
+  ).catch(() => false);
+  if (!ok) return;
+  try {
+    await api("/api/left-employees/" + encodeURIComponent(row.id), { method: "DELETE" });
+    rows.value = rows.value.filter((item) => item.id !== row.id);
+    ElMessage.success("离职档案已删除。");
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "删除离职档案失败。");
+  }
+}
 
 const summary = computed(() => `显示 ${filtered.value.length} / ${rows.value.length} 人`);
 
@@ -100,27 +140,43 @@ onMounted(async () => {
   </PageHeader>
 
   <DataPanel class="oa-panel-gap" :loading="loading">
-    <el-table :data="paged" size="small" border stripe empty-text="暂无离职人员记录">
-      <el-table-column label="人员" min-width="150">
+    <el-table
+      :data="paged"
+      size="small"
+      border
+      stripe
+      empty-text="暂无离职人员记录"
+      @sort-change="onSortChange"
+    >
+      <el-table-column label="人员" prop="name" min-width="150" sortable="custom">
         <template #default="{ row }">
           <div>{{ row.name }}</div>
           <div class="oa-cell-sub">{{ row.employeeNo }}</div>
         </template>
       </el-table-column>
-      <el-table-column label="原组织 / 部门" min-width="220">
+      <el-table-column label="原组织 / 部门" prop="orgPath" min-width="220" sortable="custom">
         <template #default="{ row }">
           <div>{{ row.orgPath || "—" }}</div>
           <div class="oa-cell-sub">{{ row.department || "未填写部门" }}</div>
         </template>
       </el-table-column>
-      <el-table-column prop="position" label="岗位" width="110" />
-      <el-table-column prop="leaveDate" label="离职日期" width="115" />
-      <el-table-column label="离职设备快照" min-width="280" show-overflow-tooltip>
+      <el-table-column prop="position" label="岗位" width="110" sortable="custom" />
+      <el-table-column prop="leaveDate" label="离职日期" width="115" sortable="custom" />
+      <el-table-column
+        prop="archivedAt"
+        label="归档时间"
+        width="140"
+        sortable="custom"
+      >
+        <template #default="{ row }">{{ formatDateTimeText(row.archivedAt) }}</template>
+      </el-table-column>
+      <el-table-column label="离职设备快照" min-width="240" show-overflow-tooltip>
         <template #default="{ row }">{{ deviceSummary(row.devices) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="100" fixed="right">
+      <el-table-column label="操作" width="150" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="openDetail(row)">查看详情</el-button>
+          <el-button link type="danger" @click="removeRow(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
