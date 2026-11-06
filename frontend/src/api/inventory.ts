@@ -1,4 +1,5 @@
 import { api } from "./client";
+import { withCompanyQuery } from "../companyScope";
 import type { ImportSummary } from "./datacenter";
 
 export interface WarehouseRow {
@@ -103,7 +104,7 @@ function sortInventoryRefs(data: InventoryData): InventoryData {
 export async function loadInventoryData(force = false): Promise<InventoryData> {
   if (cache && !force && Date.now() - cache.at < 60_000) return cache.data;
   const payload = await api<Record<string, unknown>>(
-    "/api/state?include=warehouses,nonAssetTypes,inventoryBrands,inventoryModels,warehouseStocks,inventoryPurchaseLogs,orgs",
+    withCompanyQuery("/api/state?include=warehouses,nonAssetTypes,inventoryBrands,inventoryModels,warehouseStocks,inventoryPurchaseLogs,orgs"),
   );
   const data: InventoryData = {
     warehouses: (payload.warehouses as WarehouseRow[]) ?? [],

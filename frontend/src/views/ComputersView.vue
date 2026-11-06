@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
+import { companyScope } from "../companyScope";
 import {
   COMPUTER_STATUS_OPTIONS,
   COMPUTER_EXPORT_HEADER,
@@ -510,6 +511,13 @@ function clearFilters(): void {
 function onSelectionChange(rows: ComputerRow[]): void {
   selectedIds.value = rows.map((row) => row.id);
 }
+
+watch(
+  () => companyScope.companyId,
+  () => {
+    void load(true);
+  },
+);
 
 onMounted(async () => {
   await load(false);

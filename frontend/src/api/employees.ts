@@ -1,4 +1,5 @@
 import { api } from "./client";
+import { withCompanyQuery } from "../companyScope";
 import type { ImportSummary } from "./datacenter";
 
 export interface UsageItem {
@@ -53,7 +54,7 @@ export async function loadEmployeesData(force = false): Promise<EmployeesData> {
   // 人员清单需要全量（组织树人数、离职转交候选人）；终端改用
   // /api/list/computers?fields=names 的精简行，所以这里不再请求 computers。
   const payload = await api<Partial<EmployeesData>>(
-    "/api/state?include=employees,orgs,warehouses",
+    withCompanyQuery("/api/state?include=employees,orgs,warehouses"),
   );
   const data: EmployeesData = {
     employees: Array.isArray(payload.employees) ? payload.employees : [],

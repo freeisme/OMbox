@@ -55,3 +55,11 @@ export const companyScopeAllLabel = computed(() =>
 export function setCompanyScope(companyId: string): void {
   companyScope.companyId = companyId;
 }
+
+/** 给 /api/state 等接口追加当前公司过滤参数（空表示不限制）。 */
+export function withCompanyQuery(path: string): string {
+  const companyId = companyScope.companyId;
+  if (!companyId) return path;
+  const separator = path.includes("?") ? "&" : "?";
+  return path + separator + "companyId=" + encodeURIComponent(companyId);
+}

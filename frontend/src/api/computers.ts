@@ -1,4 +1,5 @@
 import { api } from "./client";
+import { withCompanyQuery } from "../companyScope";
 import type { ComputerRow, EmployeeRow, OrgRow } from "./state";
 import type { ImportSummary } from "./datacenter";
 
@@ -91,7 +92,7 @@ let cache: { at: number; data: ComputersData } | null = null;
 export async function loadComputersData(force = false): Promise<ComputersData> {
   if (cache && !force && Date.now() - cache.at < 60_000) return cache.data;
   const payload = await api<FullStatePayload>(
-    "/api/state?include=orgs,employees,warehouses,nonAssetTypes,inventoryBrands,inventoryModels,warehouseStocks",
+    withCompanyQuery("/api/state?include=orgs,employees,warehouses,nonAssetTypes,inventoryBrands,inventoryModels,warehouseStocks"),
   );
   const data: ComputersData = {
     orgs: Array.isArray(payload.orgs) ? payload.orgs : [],

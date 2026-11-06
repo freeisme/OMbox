@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
+import { companyScope } from "../companyScope";
 import {
   EMPLOYEE_STATUS_OPTIONS,
   EMPLOYEE_EXPORT_HEADER,
@@ -942,6 +943,13 @@ function expandAll(value: boolean): void {
     node.expanded = value;
   });
 }
+
+watch(
+  () => companyScope.companyId,
+  () => {
+    void load(true);
+  },
+);
 
 onMounted(async () => {
   await load(false);

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "../api/client";
+import { companyScope } from "../companyScope";
 import { hasPermission } from "../session";
 import {
   loadDirectoryData,
@@ -107,7 +108,7 @@ function resetFilters(): void {
   keyword.value = "";
 }
 
-onMounted(async () => {
+async function loadRows(): Promise<void> {
   loading.value = true;
   try {
     const data = await loadDirectoryData();
@@ -117,7 +118,17 @@ onMounted(async () => {
   } finally {
     loading.value = false;
   }
-});
+}
+
+watch(
+  () => companyScope.companyId,
+  () => {
+    page.value = 1;
+    void loadRows();
+  },
+);
+
+onMounted(loadRows);
 </script>
 
 <template>

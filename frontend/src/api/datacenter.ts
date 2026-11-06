@@ -1,4 +1,5 @@
 import { api } from "./client";
+import { companyScope } from "../companyScope";
 
 export interface RackSummary {
   id: string;
@@ -232,6 +233,7 @@ export function listDatacenterDevices(
   if (params.status) query.set("status", params.status);
   if (params.keyword) query.set("keyword", params.keyword);
   if (params.siteId) query.set("siteId", params.siteId);
+  if (companyScope.companyId) query.set("companyId", companyScope.companyId);
   const suffix = query.toString() ? `?${query.toString()}` : "";
   return api<{ devices: DatacenterDeviceSummary[] }>(`/api/datacenter-devices${suffix}`);
 }

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
+import { companyScope } from "../companyScope";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   DATACENTER_STATUS_LABELS as STATUS_LABELS,
@@ -463,6 +464,13 @@ const IMPORT_FIELD_LABELS: Record<string, string> = {
   status: "状态",
   notes: "备注",
 };
+
+watch(
+  () => companyScope.companyId,
+  () => {
+    void loadDevices();
+  },
+);
 
 onMounted(async () => {
   await loadDeviceTypes();

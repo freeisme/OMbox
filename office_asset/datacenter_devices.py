@@ -145,6 +145,37 @@ class DatacenterDeviceService:
     conflict_error: type[Exception]
     forbidden_error: type[Exception]
 
+    def _user_company_ids(self, context: dict) -> set[int]:
+        employee = context.get("employee") if isinstance(context.get("employee"), dict) else {}
+        employee_id = self.db.integer(context.get("employeeId") or employee.get("employeeId"), 0)
+        allowed: set[int] = set()
+        if employee_id > 0:
+            rows = self.db.json(
+                f"""
+                SELECT COALESCE(JSON_ARRAYAGG(company_id), JSON_ARRAY())
+                FROM (
+                  SELECT DISTINCT company_id FROM employee_position
+                  WHERE employee_id = {employee_id}
+                    AND company_id IS NOT NULL
+                    AND is_active = 1
+                  UNION
+                  SELECT org.company_id FROM employee emp
+                  JOIN org_unit org ON org.org_unit_id = emp.org_unit_id
+                  WHERE emp.employee_id = {employee_id}
+                    AND org.company_id IS NOT NULL
+                ) user_companies
+                """,
+                [],
+            )
+            for value in rows or []:
+                company_value = self.db.integer(value, 0)
+                if company_value > 0:
+                    allowed.add(company_value)
+        own = self.db.integer(context.get("companyId"), 0)
+        if own > 0:
+            allowed.add(own)
+        return allowed
+
     def _actor_id(self, context: dict) -> int:
         return self.db.integer(context.get("id"), 0)
 
@@ -280,6 +311,13 @@ class DatacenterDeviceService:
         keyword = self.db.text(params.get("keyword", [""])[0])[:64]
         site_id = self.db.integer(params.get("siteId", [""])[0], 0)
         filters = ["device.is_active = 1"]
+        company_id = self.db.integer(params.get("companyId", [""])[0], 0)
+        if company_id > 0:
+            if not parse_bool(context.get("isSuperAdmin")):
+                allowed = self._user_company_ids(context)
+                if company_id not in allowed:
+                    raise self.forbidden_error("只能查看本公司的机房设备。")
+            filters.append(f"device.company_id = {company_id}")
         if status in STATUSES:
             filters.append(f"device.status = {self.db.quote(status)}")
         if site_id > 0:

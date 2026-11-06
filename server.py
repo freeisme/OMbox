@@ -2106,6 +2106,7 @@ def normalize_left_employees(left_employees: list[dict]) -> list[dict]:
                 "employeeNo": text_value(item.get("employeeNo")),
                 "name": text_value(item.get("name")),
                 "orgId": text_value(item.get("orgId")),
+                "companyId": text_value(item.get("companyId")),
                 "orgPath": text_value(item.get("orgPath")),
                 "department": text_value(item.get("department")),
                 "position": text_value(item.get("position")),
@@ -2704,6 +2705,7 @@ def legacy_left_employee_record(
         "employeeNo": text_value(employee.get("employeeNo")),
         "name": text_value(employee.get("name")),
         "orgId": text_value(employee.get("orgId")),
+        "companyId": text_value(employee.get("companyId")),
         "orgPath": org_path_from_map(employee.get("orgId"), orgs_by_id),
         "department": text_value(employee.get("department")),
         "position": text_value(employee.get("position")),
@@ -3908,6 +3910,7 @@ def build_state_payload(include_audit_logs: bool = True) -> dict:
           'employeeNo', employee_no,
           'name', employee_name,
           'orgId', COALESCE(CAST(org_unit_id AS CHAR), ''),
+          'companyId', company_id,
           'department', COALESCE(department, ''),
           'position', COALESCE(position_name, ''),
           'email', COALESCE(email, ''),
@@ -3915,10 +3918,13 @@ def build_state_payload(include_audit_logs: bool = True) -> dict:
           'status', employment_status
         )), JSON_ARRAY())
         FROM (
-          SELECT employee_id, employee_no, employee_name, org_unit_id, department, position_name, email, mobile, employment_status
-          FROM employee
-          WHERE is_active = 1 AND employment_status <> 'left'
-          ORDER BY employee_no, employee_name, employee_id
+          SELECT emp.employee_id, emp.employee_no, emp.employee_name, emp.org_unit_id,
+                 COALESCE(CAST(org.company_id AS CHAR), '') AS company_id,
+                 emp.department, emp.position_name, emp.email, emp.mobile, emp.employment_status
+          FROM employee emp
+          LEFT JOIN org_unit org ON org.org_unit_id = emp.org_unit_id
+          WHERE emp.is_active = 1 AND emp.employment_status <> 'left'
+          ORDER BY emp.employee_no, emp.employee_name, emp.employee_id
         ) AS ordered_employees
         """,
         """
@@ -3986,6 +3992,7 @@ def build_state_payload(include_audit_logs: bool = True) -> dict:
           'department', COALESCE(department, ''),
           'status', it_asset_status,
           'remarks', COALESCE(remarks, ''),
+          'companyId', COALESCE(CAST(company_id AS CHAR), ''),
           'userId', CASE WHEN active_employee_id IS NULL THEN NULL ELSE CAST(active_employee_id AS CHAR) END,
           'assignmentEmployeeId', CASE WHEN active_employee_id IS NULL THEN NULL ELSE CAST(active_employee_id AS CHAR) END,
           'assignmentEmployeeStatus', COALESCE(active_employee_status, '')
@@ -4016,6 +4023,7 @@ def build_state_payload(include_audit_logs: bool = True) -> dict:
           'employeeNo', COALESCE(employee_no, ''),
           'name', COALESCE(employee_name, ''),
           'orgId', COALESCE(CAST(org_unit_id AS CHAR), ''),
+          'companyId', company_id,
           'orgPath', COALESCE(org_path, ''),
           'department', COALESCE(department, ''),
           'position', COALESCE(position_name, ''),
@@ -4028,11 +4036,16 @@ def build_state_payload(include_audit_logs: bool = True) -> dict:
           'devices', COALESCE(device_snapshot, JSON_ARRAY())
         )), JSON_ARRAY())
         FROM (
-          SELECT archive_id, source_employee_ref, employee_no, employee_name, org_unit_id,
-                 org_path, department, position_name, email, mobile,
-                 leave_date, leave_info, leave_remark, archived_at, device_snapshot
-          FROM left_employee_archive
-          ORDER BY COALESCE(leave_date, DATE(archived_at)) DESC, archived_at DESC, archive_id DESC
+          SELECT archive.archive_id, archive.source_employee_ref, archive.employee_no,
+                 archive.employee_name, archive.org_unit_id,
+                 COALESCE(CAST(org.company_id AS CHAR), '') AS company_id,
+                 archive.org_path, archive.department, archive.position_name,
+                 archive.email, archive.mobile, archive.leave_date, archive.leave_info,
+                 archive.leave_remark, archive.archived_at, archive.device_snapshot
+          FROM left_employee_archive archive
+          LEFT JOIN org_unit org ON org.org_unit_id = archive.org_unit_id
+          ORDER BY COALESCE(archive.leave_date, DATE(archive.archived_at)) DESC,
+                   archive.archived_at DESC, archive.archive_id DESC
         ) AS ordered_left_employees
         """,
         """
@@ -4239,6 +4252,7 @@ def build_state_payload(include_audit_logs: bool = True) -> dict:
             "employeeNo": employee.get("employeeNo") or "",
             "name": employee.get("name") or "",
             "orgId": str(employee.get("orgId") or ""),
+            "companyId": str(employee.get("companyId") or ""),
             "department": employee.get("department") or "",
             "position": employee.get("position") or "",
             "email": employee.get("email") or "",
@@ -4604,7 +4618,22 @@ def scoped_org_ids_for_state(context: dict) -> set[str]:
         [],
     )
     if not scopes:
-        return set()
+        # 未显式配置组织范围时，退回到本人所在组织（含下级），
+        # 否则组织/公司数据范围的账号会看不到任何数据。
+        employee = context.get("employee") if isinstance(context.get("employee"), dict) else {}
+        employee_id = sql_int(context.get("employeeId") or employee.get("employeeId"), 0)
+        if employee_id <= 0:
+            return set()
+        own_org = sql_int(
+            json_query_one(
+                f"SELECT COALESCE(org_unit_id, 0) FROM employee WHERE employee_id = {employee_id};",
+                0,
+            ),
+            0,
+        )
+        if own_org <= 0:
+            return set()
+        scopes = [{"orgId": own_org, "includeDescendants": 1}]
     org_rows = json_query_one(
         """
         SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
@@ -4637,25 +4666,59 @@ def scoped_org_ids_for_state(context: dict) -> set[str]:
     return allowed
 
 
+def user_company_ids_for_context(context: dict) -> set[str]:
+    """账号的任职公司（employee_position + 主组织所属公司）。"""
+    employee = context.get("employee") if isinstance(context.get("employee"), dict) else {}
+    employee_id = sql_int(context.get("employeeId") or employee.get("employeeId"), 0)
+    result: set[str] = set()
+    if employee_id > 0:
+        rows = json_query_one(
+            f"""
+            SELECT COALESCE(JSON_ARRAYAGG(company_id), JSON_ARRAY())
+            FROM (
+              SELECT DISTINCT company_id FROM employee_position
+              WHERE employee_id = {employee_id}
+                AND company_id IS NOT NULL
+                AND is_active = 1
+              UNION
+              SELECT org.company_id FROM employee emp
+              JOIN org_unit org ON org.org_unit_id = emp.org_unit_id
+              WHERE emp.employee_id = {employee_id}
+                AND org.company_id IS NOT NULL
+            ) user_companies
+            """,
+            [],
+        )
+        for value in rows or []:
+            if sql_int(value, 0) > 0:
+                result.add(str(sql_int(value, 0)))
+    own = sql_int(context.get("companyId"), 0)
+    if own > 0:
+        result.add(str(own))
+    return result
+
+
 def scoped_company_ids_for_state(context: dict) -> set[str]:
-    """公司数据范围：由用户组织范围推导其可见公司的集合。"""
+    """公司数据范围：组织范围推导的公司 + 本人任职公司（多公司任职可跨公司管理）。"""
+    result: set[str] = set()
     org_ids = scoped_org_ids_for_state(context)
-    if not org_ids:
-        return set()
-    id_list = ", ".join(sorted(org_ids))
-    rows = json_query_one(
-        f"""
-        SELECT COALESCE(JSON_ARRAYAGG(company_id), JSON_ARRAY())
-        FROM (
-          SELECT DISTINCT company_id
-          FROM org_unit
-          WHERE org_unit_id IN ({id_list})
-            AND company_id IS NOT NULL
-        ) scoped_companies
-        """,
-        [],
-    )
-    return {str(sql_int(v, 0)) for v in (rows or []) if sql_int(v, 0) > 0}
+    if org_ids:
+        id_list = ", ".join(sorted(org_ids))
+        rows = json_query_one(
+            f"""
+            SELECT COALESCE(JSON_ARRAYAGG(company_id), JSON_ARRAY())
+            FROM (
+              SELECT DISTINCT company_id
+              FROM org_unit
+              WHERE org_unit_id IN ({id_list})
+                AND company_id IS NOT NULL
+            ) scoped_companies
+            """,
+            [],
+        )
+        result |= {str(sql_int(v, 0)) for v in (rows or []) if sql_int(v, 0) > 0}
+    result |= user_company_ids_for_context(context)
+    return result
 
 
 def filter_state_payload(payload: dict, context: dict) -> dict:
@@ -4817,6 +4880,35 @@ def filter_state_payload(payload: dict, context: dict) -> dict:
         ]
     if not can_view("audit_logs"):
         result["auditLogs"] = []
+    return result
+
+
+def filter_state_by_company(payload: dict, company_id: object) -> dict:
+    """按顶栏选中的公司再收一刀（在数据范围过滤之后执行）。
+
+    由于 `filter_state_payload` 已经按 data_scope 收敛过，这里即使传入
+    无权访问的 companyId 也只会得到空集合，不会泄露其它公司的数据。
+    """
+    company_text = text_value(company_id).strip()
+    if not company_text:
+        return payload
+    result = dict(payload)
+    for key in ("orgs", "employees", "leftEmployees", "computers", "warehouses"):
+        records = result.get(key)
+        if isinstance(records, list):
+            result[key] = [
+                item for item in records if text_value(item.get("companyId")) == company_text
+            ]
+    visible_warehouse_ids = {
+        text_value(item.get("id")) for item in (result.get("warehouses") or [])
+    }
+    stocks = result.get("warehouseStocks")
+    if isinstance(stocks, list):
+        result["warehouseStocks"] = [
+            item
+            for item in stocks
+            if text_value(item.get("warehouseId")) in visible_warehouse_ids
+        ]
     return result
 
 
@@ -6459,6 +6551,7 @@ class AppHandler(SimpleHTTPRequestHandler):
             context = require_auth(self)
             with DB_LOCK:
                 payload = filter_state_payload(build_state_payload(), context)
+            payload = filter_state_by_company(payload, (params.get("companyId") or [""])[0])
             self.send_json(filter_state_include(payload, (params.get("include") or [""])[0]))
             return
 
@@ -6472,6 +6565,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                 return
             with DB_LOCK:
                 payload = filter_state_payload(build_state_payload(include_audit_logs=False), context)
+            payload = filter_state_by_company(payload, (params.get("companyId") or [""])[0])
             self.send_json(paginate_computers(payload, params))
             return
 

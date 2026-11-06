@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
+import { companyScope } from "../companyScope";
 import {
   importOrganizations,
   invalidateDirectoryCache,
@@ -179,6 +180,13 @@ async function submitType(): Promise<void> {
     saving.value = false;
   }
 }
+
+watch(
+  () => companyScope.companyId,
+  () => {
+    void load(true);
+  },
+);
 
 onMounted(async () => {
   await load(false);

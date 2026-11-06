@@ -1,4 +1,5 @@
 import { api } from "./client";
+import { withCompanyQuery } from "../companyScope";
 import type { ImportSummary } from "./datacenter";
 
 export interface LeftDeviceRow {
@@ -66,7 +67,7 @@ export async function loadDirectoryData(force = false): Promise<DirectoryData> {
   if (cache && !force && Date.now() - cache.at < 60_000) return cache.data;
   // 只要这四块：整包约 567 KB，裁剪后约 105 KB。
   const payload = await api<Partial<DirectoryData>>(
-    "/api/state?include=leftEmployees,orgs,nonAssetTypes,employees",
+    withCompanyQuery("/api/state?include=leftEmployees,orgs,nonAssetTypes,employees"),
   );
   const data: DirectoryData = {
     leftEmployees: Array.isArray(payload.leftEmployees) ? payload.leftEmployees : [],

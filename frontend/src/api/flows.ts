@@ -1,4 +1,5 @@
 import { api } from "./client";
+import { withCompanyQuery } from "../companyScope";
 import { asText } from "./exports";
 
 export interface FlowRecord {
@@ -75,7 +76,7 @@ export function flowNoteText(record: FlowRecord): string {
 export async function loadFlowRecords(force = false): Promise<FlowRecord[]> {
   // 流转记录只要 movementLogs 一块：整包约 567 KB，裁剪后约 115 KB。
   const payload = await api<{ inventoryMovementLogs?: FlowRecord[] }>(
-    "/api/state?include=inventoryMovementLogs",
+    withCompanyQuery("/api/state?include=inventoryMovementLogs"),
   );
   const logs = Array.isArray(payload.inventoryMovementLogs) ? payload.inventoryMovementLogs : [];
   if (force) return logs;
