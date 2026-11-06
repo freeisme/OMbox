@@ -57,6 +57,22 @@ export async function deleteCompany(companyId: string): Promise<void> {
   await api(`/api/companies/${encodeURIComponent(companyId)}`, { method: "DELETE" });
 }
 
+export interface MyCompanies {
+  companies: Company[];
+  canViewGroup: boolean;
+  companyId: string;
+}
+
+/** 当前账号可切换的公司范围（顶栏切换用）。 */
+export async function loadMyCompanies(): Promise<MyCompanies> {
+  const payload = await api<Partial<MyCompanies>>("/api/my-companies");
+  return {
+    companies: payload.companies ?? [],
+    canViewGroup: Boolean(payload.canViewGroup),
+    companyId: String(payload.companyId ?? ""),
+  };
+}
+
 export async function loadOrgTree(companyId = ""): Promise<OrgTree> {
   const query = companyId ? `?companyId=${encodeURIComponent(companyId)}` : "";
   const payload = await api<Partial<OrgTree>>(`/api/org-tree${query}`);

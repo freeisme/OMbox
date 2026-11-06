@@ -1007,6 +1007,11 @@ class DomainApiRouter:
                 send_json(self.companies.delete_company(parts[3], context))
                 return True
 
+        if path == "/api/my-companies" and method == "GET":
+            context = self._authenticated(handler)
+            send_json(self.companies.my_companies(context))
+            return True
+
         if path == "/api/org-tree" and method == "GET":
             context = self._read_context(handler, "organizations")
             company_id = str((params.get("companyId") or [""])[0])

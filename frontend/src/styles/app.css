@@ -276,6 +276,35 @@ html.dark .oa-topbar {
   flex: 0 0 auto;
 }
 
+/* 顶栏右上角的公司视图切换：保持简洁、可点、可键盘聚焦 */
+.oa-company-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 8px;
+  font-weight: 500;
+}
+
+.oa-company-switch-label {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oa-company-switch-caret {
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0.6;
+}
+
+.oa-company-switch:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 2px;
+}
+
 .oa-content {
   position: relative;
   flex: 1 1 auto;

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   deleteCompany,
@@ -11,6 +11,7 @@ import {
   type Company,
   type OrgNode,
 } from "../api/company";
+import { companyScope } from "../companyScope";
 import { hasPermission, session } from "../session";
 
 interface TreeNode {
@@ -28,7 +29,9 @@ const companies = ref<Company[]>([]);
 const organizations = ref<OrgNode[]>([]);
 const selectedKey = ref("__group__");
 const searchText = ref("");
-const scopeCompanyId = ref("");
+const treeRef = ref<{ filter: (value: string) => void } | null>(null);
+/** 公司视图由顶栏右上角的全局切换器控制。 */
+const scopeCompanyId = computed(() => companyScope.companyId);
 
 const companyDialog = reactive({ visible: false, id: "", code: "", name: "", sortOrder: 1000 });
 const orgDialog = reactive({
@@ -46,16 +49,7 @@ const transferAll = reactive({ employees: true, computers: true, warehouses: tru
 
 const isSuperAdmin = computed(() => session.isSuperAdmin);
 /** 有集团级数据范围（超管，或组织模块 dataScope=all）才能看「整个集团」并切换公司。 */
-const canManageGroup = computed(
-  () =>
-    session.isSuperAdmin ||
-    session.permissions.some(
-      (item) =>
-        (item.moduleCode ?? item.resource) === "organizations" &&
-        String(item.dataScope ?? "") === "all" &&
-        Boolean(item.canView ?? true),
-    ),
-);
+const canManageGroup = computed(() => session.isSuperAdmin || companyScope.canViewGroup);
 const canEditOrg = computed(
   () =>
     session.isSuperAdmin ||
@@ -366,6 +360,18 @@ function orgOptions(companyId: string): OrgNode[] {
   return organizations.value.filter((item) => !companyId || item.companyId === companyId);
 }
 
+watch(searchText, (value) => {
+  treeRef.value?.filter(value);
+});
+
+watch(
+  () => companyScope.companyId,
+  () => {
+    selectedKey.value = "__group__";
+    void reload();
+  },
+);
+
 onMounted(reload);
 </script>
 
@@ -375,17 +381,6 @@ onMounted(reload);
       <div class="oa-flex-between">
         <span class="oa-card-title">组织架构</span>
         <div class="oa-flex-row">
-          <el-select
-            v-if="canManageGroup || companies.length > 1"
-            v-model="scopeCompanyId"
-            clearable
-            :placeholder="canManageGroup ? '整个集团' : '全部（我的公司）'"
-            style="width: 200px"
-            @change="reload"
-          >
-            <el-option :label="canManageGroup ? '整个集团' : '全部（我的公司）'" value="" />
-            <el-option v-for="c in companies" :key="c.id" :label="c.name" :value="c.id" />
-          </el-select>
           <el-input
             v-model="searchText"
             clearable

@@ -7,6 +7,14 @@ import { canViewPage, hasPermission, loadMeta, logout, session } from "../sessio
 import { checkUpdateStatus } from "../api/settings";
 import { fetchNotifications } from "../api/service";
 import { listNavLinks, type NavLink } from "../api/company";
+import {
+  canSwitchCompany,
+  companyScope,
+  companyScopeAllLabel,
+  companyScopeLabel,
+  loadCompanyScope,
+  setCompanyScope,
+} from "../companyScope";
 import { installActivityTracking, isIdleBeyond } from "../activity";
 
 const route = useRoute();
@@ -19,6 +27,14 @@ let pollTimer: number | undefined;
 
 function dismissUpdateBanner(): void {
   updateBanner.value = null;
+}
+
+function onCompanyCommand(command: string): void {
+  if (command === "__scope_all__") {
+    setCompanyScope("");
+    return;
+  }
+  setCompanyScope(String(command));
 }
 
 async function checkUpdateBanner(): Promise<void> {
@@ -105,6 +121,7 @@ onMounted(async () => {
   if (!session.meta) await loadMeta();
   await refreshNotificationCount();
   await loadNavLinks();
+  await loadCompanyScope();
   await checkUpdateBanner();
   pollTimer = window.setInterval(() => {
     // 用户已经空闲超过会话时长（或页面在后台）时不再轮询：
@@ -166,6 +183,34 @@ onBeforeUnmount(() => {
           <el-tag size="small" effect="plain" type="info">v{{ version }}</el-tag>
         </div>
         <div class="oa-topbar-actions">
+          <el-dropdown
+            v-if="canSwitchCompany"
+            trigger="click"
+            placement="bottom-end"
+            @command="onCompanyCommand"
+          >
+            <el-button
+              text
+              class="oa-company-switch"
+              aria-label="切换公司视图"
+              title="切换公司视图"
+            >
+              <span class="oa-company-switch-label">{{ companyScopeLabel }}</span>
+              <span class="oa-company-switch-caret" aria-hidden="true">▾</span>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="__scope_all__">{{ companyScopeAllLabel }}</el-dropdown-item>
+                <el-dropdown-item
+                  v-for="item in companyScope.companies"
+                  :key="item.id"
+                  :command="item.id"
+                >
+                  {{ item.name }}
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
           <el-badge :value="notificationCount" :hidden="!notificationCount">
             <el-button text @click="openNotifications">消息</el-button>
           </el-badge>

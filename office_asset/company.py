@@ -123,6 +123,42 @@ class CompanyService:
         return {"id": company_id_int, "deleted": True}
 
     # ---------------------------------------------------------------- 组织树
+    def my_companies(self, context: dict) -> dict:
+        """当前账号可切换的公司范围（顶栏公司切换用，只需登录）。"""
+        role_code = self.db.text(context.get("role") or context.get("roleCode"))
+        can_view_group = parse_bool(context.get("isSuperAdmin"))
+        if not can_view_group and role_code:
+            can_view_group = (
+                self.db.scalar(
+                    f"""
+                    SELECT COUNT(*)
+                    FROM auth_role_permission rp
+                    JOIN auth_role r ON r.role_id = rp.role_id
+                    JOIN auth_permission p ON p.permission_id = rp.permission_id
+                    WHERE r.role_code = {self.db.quote(role_code)}
+                      AND p.module_code = 'organizations'
+                      AND rp.data_scope = 'all'
+                      AND rp.can_view = 1
+                    """
+                )
+                > 0
+            )
+        all_companies = self.list_companies(context)
+        if can_view_group:
+            companies = all_companies
+        else:
+            allowed = self._user_company_ids(context)
+            companies = [
+                company
+                for company in all_companies
+                if self.db.integer(company.get("id"), 0) in allowed
+            ]
+        return {
+            "companies": companies,
+            "canViewGroup": can_view_group,
+            "companyId": self.db.text(context.get("companyId")),
+        }
+
     def _user_company_ids(self, context: dict) -> set[int]:
         """账号可管理的公司：任职（employee_position）+ 主组织所属公司。"""
         employee = context.get("employee") if isinstance(context.get("employee"), dict) else {}
