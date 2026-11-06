@@ -1245,6 +1245,33 @@ def export_logo_bytes() -> bytes | None:
         return None
 
 
+_UPDATE_STATUS_CACHE: dict[str, object] = {"at": 0.0, "payload": None}
+
+
+def cached_update_status() -> dict:
+    """顶栏公告栏用的轻量状态：30 分钟内复用，避免每次页面加载都触发 git fetch。"""
+    now = time.monotonic()
+    cached_payload = _UPDATE_STATUS_CACHE.get("payload")
+    cached_at = float(_UPDATE_STATUS_CACHE.get("at") or 0)
+    if isinstance(cached_payload, dict) and now - cached_at < 1800:
+        return dict(cached_payload)
+    stored_url = text_value(settings_payload().get("update_repository_url"))
+    update_payload = request_update_service(
+        repository_url=normalize_update_repository_url(stored_url),
+        release_channel=DEFAULT_UPDATE_RELEASE_CHANNEL,
+    )
+    status = text_value(update_payload.get("status"))
+    summary = {
+        "status": status,
+        "latestVersion": text_value(update_payload.get("latestVersion")),
+        "latestSha": text_value(update_payload.get("latestSha")),
+        "hasUpdate": status == "update_available",
+    }
+    _UPDATE_STATUS_CACHE["at"] = now
+    _UPDATE_STATUS_CACHE["payload"] = summary
+    return summary
+
+
 def request_update_service(
     target_sha: str = "",
     repository_url: str = "",
@@ -6285,20 +6312,7 @@ class AppHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/updates/status" and self.command == "GET":
             context = require_auth(self)
             require_permission(context, "system_updates", "update")
-            stored_url = text_value(settings_payload().get("update_repository_url"))
-            update_payload = request_update_service(
-                repository_url=normalize_update_repository_url(stored_url),
-                release_channel=DEFAULT_UPDATE_RELEASE_CHANNEL,
-            )
-            status = text_value(update_payload.get("status"))
-            self.send_json(
-                {
-                    "status": status,
-                    "latestVersion": text_value(update_payload.get("latestVersion")),
-                    "latestSha": text_value(update_payload.get("latestSha")),
-                    "hasUpdate": status == "update_available",
-                }
-            )
+            self.send_json(cached_update_status())
             return
 
         if parsed.path == "/api/updates/check" and self.command == "POST":

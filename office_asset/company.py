@@ -30,6 +30,7 @@ class CompanyService:
             FROM (
               SELECT company_id, company_code, company_name, sort_order, is_active
               FROM company
+              WHERE is_active = 1
               ORDER BY sort_order, company_id
             ) ordered_companies
             """,
@@ -56,6 +57,34 @@ class CompanyService:
             """,
             None,
         )
+
+    def _audit_sql(
+        self,
+        action: str,
+        entity_type: str,
+        entity_id: object,
+        entity_name: str,
+        summary: str,
+        context: dict,
+    ) -> str:
+        actor = self.db.text(context.get("username")) or self.db.text(context.get("displayName"))
+        return f"""
+        INSERT INTO audit_log (
+          action_type, entity_type, entity_id, entity_name,
+          old_value, new_value, summary, actor, source
+        )
+        VALUES (
+          {self.db.quote(action)},
+          {self.db.quote(entity_type)},
+          {self.db.quote(str(entity_id))},
+          {self.db.quote(entity_name)},
+          JSON_OBJECT(),
+          JSON_OBJECT(),
+          {self.db.quote(summary[:500])},
+          {self.db.quote(actor)},
+          'api'
+        )
+        """
 
     def save_company(self, company_id: object | None, payload: dict, context: dict) -> dict:
         if not parse_bool(context.get("isSuperAdmin")):
@@ -84,12 +113,15 @@ class CompanyService:
                 raise self.api_error("公司不存在。")
             self.db.execute(
                 f"""
+                START TRANSACTION;
                 UPDATE company
                 SET company_code = {self.db.quote(code)},
                     company_name = {self.db.quote(name)},
                     sort_order = {sort_order},
                     is_active = {is_active}
                 WHERE company_id = {company_id_int};
+                {self._audit_sql('company_updated', 'company', company_id_int, name, '公司已更新', context)};
+                COMMIT;
                 """
             )
         else:
@@ -99,6 +131,11 @@ class CompanyService:
                 VALUES ({self.db.quote(code)}, {self.db.quote(name)}, {sort_order}, {is_active});
                 SELECT LAST_INSERT_ID();
                 """
+            )
+            self.db.execute(
+                self._audit_sql(
+                    "company_created", "company", company_id_int, name, "公司已创建", context
+                )
             )
         return dict(self.company(company_id_int) or {})
 
@@ -119,7 +156,15 @@ class CompanyService:
         )
         if org_count > 0:
             raise self.conflict_error("该公司下仍有组织，请先转移或删除其组织架构。")
-        self.db.execute(f"UPDATE company SET is_active = 0 WHERE company_id = {company_id_int};")
+        company_name = self.db.text((self.company(company_id_int) or {}).get("name"))
+        self.db.execute(
+            f"""
+            START TRANSACTION;
+            UPDATE company SET is_active = 0 WHERE company_id = {company_id_int};
+            {self._audit_sql('company_deleted', 'company', company_id_int, company_name, '公司已停用', context)};
+            COMMIT;
+            """
+        )
         return {"id": company_id_int, "deleted": True}
 
     # ---------------------------------------------------------------- 组织树

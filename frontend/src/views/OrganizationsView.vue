@@ -21,6 +21,7 @@ interface TreeNode {
   companyId?: string;
   parentId?: string;
   orgId?: string;
+  isActive?: boolean | number;
   children?: TreeNode[];
 }
 
@@ -87,6 +88,7 @@ function buildOrgSubtree(parentId: string, companyId: string): TreeNode[] {
       companyId: org.companyId,
       parentId: org.parentId,
       orgId: org.id,
+      isActive: org.isActive,
       children: buildOrgSubtree(org.id, companyId),
     }));
 }
@@ -104,6 +106,7 @@ function buildOrgChildren(companyId: string): TreeNode[] {
     companyId: org.companyId,
     parentId: org.parentId,
     orgId: org.id,
+    isActive: org.isActive,
     children: buildOrgSubtree(org.id, companyId),
   }));
 }
@@ -138,7 +141,9 @@ const treeData = computed(() => buildTree());
 
 const filterNode = (value: string, data: TreeNode): boolean => {
   if (!value) return true;
-  return String(data.label ?? "").includes(value);
+  return String(data.label ?? "")
+    .toLowerCase()
+    .includes(value.trim().toLowerCase());
 };
 
 const selectedOrg = computed<OrgNode | null>(() => {
@@ -413,6 +418,15 @@ onMounted(reload);
                   <el-tag v-if="data.kind === 'group'" size="small" effect="plain" type="info">集团</el-tag>
                   <el-tag v-else-if="data.kind === 'company'" size="small" type="primary">公司</el-tag>
                   <span class="oa-ml-2">{{ data.label }}</span>
+                  <el-tag
+                    v-if="data.kind === 'org' && !(data.isActive === true || Number(data.isActive) === 1)"
+                    size="small"
+                    type="info"
+                    effect="plain"
+                    class="oa-ml-2"
+                  >
+                    停用
+                  </el-tag>
                 </span>
                 <span v-if="data.kind === 'company' && canEditOrg" class="oa-org-tree-actions">
                   <el-button link size="small" @click.stop="openOrgCreate('', data.companyId)">+ 部门</el-button>
@@ -496,9 +510,10 @@ onMounted(reload);
           </el-select>
         </el-form-item>
         <el-form-item label="所属公司" required>
-          <el-select v-model="orgDialog.companyId" class="oa-full-width">
+          <el-select v-model="orgDialog.companyId" class="oa-full-width" :disabled="Boolean(orgDialog.id)">
             <el-option v-for="c in companies" :key="c.id" :label="c.name" :value="c.id" />
           </el-select>
+          <div v-if="orgDialog.id" class="oa-hint">跨公司调整请使用「转移组织」。</div>
         </el-form-item>
         <el-form-item label="组织编码" required>
           <el-input v-model="orgDialog.code" placeholder="例如 DEPT-A" />

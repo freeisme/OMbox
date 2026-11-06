@@ -112,6 +112,7 @@ async function refreshNotificationCount(): Promise<void> {
 
 async function signOut(): Promise<void> {
   await logout();
+  setCompanyScope("");
   await router.replace("/login");
 }
 
@@ -192,8 +193,8 @@ onBeforeUnmount(() => {
             <el-button
               text
               class="oa-company-switch"
-              aria-label="切换公司视图"
-              title="切换公司视图"
+              aria-label="切换公司视图（组织架构）"
+              title="切换公司视图（影响组织架构）"
             >
               <span class="oa-company-switch-label">{{ companyScopeLabel }}</span>
               <span class="oa-company-switch-caret" aria-hidden="true">▾</span>

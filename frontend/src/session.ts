@@ -83,7 +83,7 @@ export function hasPermission(resource: string, action: PermissionAction = "view
     const module = item.moduleCode ?? item.resource;
     if (module !== resource) return false;
     if (Boolean(item[flag])) return true;
-    return item.action === action && Boolean(item.canView ?? true);
+    return item.action === action && Boolean(item.canView);
   });
 }
 

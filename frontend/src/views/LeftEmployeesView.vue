@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "../api/client";
+import { hasPermission } from "../session";
 import {
   loadDirectoryData,
   offboardDeviceActionText,
@@ -176,7 +177,14 @@ onMounted(async () => {
       <el-table-column label="操作" width="150" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="openDetail(row)">查看详情</el-button>
-          <el-button link type="danger" @click="removeRow(row)">删除</el-button>
+          <el-button
+            v-if="hasPermission('employees', 'delete')"
+            link
+            type="danger"
+            @click="removeRow(row)"
+          >
+            删除
+          </el-button>
         </template>
       </el-table-column>
     </el-table>

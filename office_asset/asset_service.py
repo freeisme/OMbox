@@ -940,6 +940,27 @@ class AssetService:
         )
         if warehouses:
             raise self.api_error(f"该组织下还有 {warehouses} 个仓库，请先调整仓库归属。")
+        # 以下表的外键是 ON DELETE SET NULL，不拦会静默清空归属
+        sites = self.db.scalar(
+            f"SELECT COUNT(*) FROM asset_site WHERE org_unit_id = {org_id};"
+        )
+        if sites:
+            raise self.api_error(f"该组织下还有 {sites} 个机房，请先调整机房归属。")
+        racks = self.db.scalar(
+            f"SELECT COUNT(*) FROM asset_rack WHERE org_unit_id = {org_id};"
+        )
+        if racks:
+            raise self.api_error(f"该组织下还有 {racks} 个机柜，请先调整机柜归属。")
+        devices = self.db.scalar(
+            f"SELECT COUNT(*) FROM datacenter_device WHERE org_unit_id = {org_id};"
+        )
+        if devices:
+            raise self.api_error(f"该组织下还有 {devices} 台机房设备，请先调整设备归属。")
+        scopes = self.db.scalar(
+            f"SELECT COUNT(*) FROM user_org_scope WHERE org_unit_id = {org_id};"
+        )
+        if scopes:
+            raise self.api_error(f"该组织还被 {scopes} 条账号组织范围引用，请先解除。")
         name = self.db.text(
             self.db.execute(f"SELECT org_name FROM org_unit WHERE org_unit_id = {org_id};").strip()
         ) or str(org_id)
@@ -2412,7 +2433,40 @@ class AssetService:
         self.scope.assert_org_access(context, parent_id)
         org_id = self.db.integer(resource_id, 0)
         if org_id and parent_id == org_id:
-            raise self.api_error("An organization cannot be its own parent.")
+            raise self.api_error("上级组织不能是它自己。")
+        if parent_id > 0:
+            parent_company = self.db.scalar(
+                f"SELECT COALESCE(company_id, 0) FROM org_unit WHERE org_unit_id = {parent_id};"
+            )
+            if parent_company <= 0:
+                raise self.api_error("上级组织不存在。")
+            # 禁止把组织挂到自己的后代下（A→B→A 环会让组织树无限递归）
+            cursor = parent_id
+            guard = 0
+            while cursor > 0 and guard < 200:
+                if org_id and cursor == org_id:
+                    raise self.api_error("不能把组织挂到自己的下级组织下。")
+                cursor = self.db.scalar(
+                    f"SELECT COALESCE(parent_org_unit_id, 0) FROM org_unit WHERE org_unit_id = {cursor};"
+                )
+                guard += 1
+        # 同一上级下组织编码不能重复（根级 parent 为 NULL，MySQL 唯一索引对 NULL 不去重）
+        duplicate_where = (
+            "parent_org_unit_id IS NULL" if parent_id <= 0 else f"parent_org_unit_id = {parent_id}"
+        )
+        exclude_self = f" AND org_unit_id <> {org_id}" if org_id else ""
+        if (
+            self.db.scalar(
+                f"""
+                SELECT COUNT(*) FROM org_unit
+                WHERE {duplicate_where}
+                  AND org_code = {self.db.quote(code)}
+                  {exclude_self}
+                """
+            )
+            > 0
+        ):
+            raise self.api_error("同一上级下已存在相同组织编码。")
         sort_order = max(0, self.db.integer(payload.get("sortOrder"), 1000))
         # 公司归属：显式 companyId 优先，否则继承父组织公司，最后落到首个公司
         company_id = self.db.integer(payload.get("companyId"), 0)
@@ -2425,6 +2479,12 @@ class AssetService:
                 "SELECT COALESCE(MIN(company_id), 0) FROM company WHERE is_active = 1;"
             )
         company_sql = str(company_id) if company_id > 0 else "NULL"
+        if org_id:
+            current_company = self.db.scalar(
+                f"SELECT COALESCE(company_id, 0) FROM org_unit WHERE org_unit_id = {org_id};"
+            )
+            if current_company > 0 and company_id > 0 and company_id != current_company:
+                raise self.api_error("不能直接修改组织所属公司，请使用「转移组织」。")
         is_active = 1 if parse_bool(payload.get("isActive"), True) else 0
         if org_id:
             self.scope.assert_org_access(context, org_id)
@@ -2458,6 +2518,17 @@ class AssetService:
                 """
             )
             org_id = self.db.integer(output.splitlines()[-1] if output else 0, 0)
+            if org_id > 0:
+                self.db.execute(
+                    self._audit_sql(
+                        "organization_created",
+                        "org_unit",
+                        org_id,
+                        name,
+                        "Organization created",
+                        context,
+                    )
+                )
         result = self.db.json(
             f"""
             SELECT JSON_OBJECT(
