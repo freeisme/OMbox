@@ -117,11 +117,17 @@ def _import_cell(row: list[str], index: int | None) -> str:
 
 
 def _catalog_code(name: str) -> str:
-    """物资类型编码留空时自动生成：ASCII 名称转短横线，中文名用 type-<hash>。"""
-    slug = re.sub(r"[^a-z0-9]+", "-", (name or "").strip().lower()).strip("-")
+    """物资类型编码留空时自动生成。
+
+    名称里的非 ASCII 字符会被去掉，因此「电脑A」「电脑B」这类名称去掉中文后
+    都可能只剩同一个 ASCII 片段；编码上必须再拼一段名称哈希，否则会撞上
+    non_asset_type.type_code 的唯一索引。
+    """
+    raw = (name or "").strip()
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
+    slug = re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-")
     if slug:
-        return f"type-{slug}"[:48]
-    digest = hashlib.sha1((name or "").strip().encode("utf-8")).hexdigest()[:8]
+        return f"type-{slug}-{digest}"[:48]
     return f"type-{digest}"
 
 
@@ -3048,68 +3054,98 @@ class AssetService:
         if not type_name or not brand_name or not model_name:
             raise self.api_error("请选择库存型号，或填写物资类型、品牌与型号。")
 
-        type_id = self.db.integer(
-            self.db.scalar(
-                "SELECT non_asset_type_id FROM non_asset_type "
-                f"WHERE is_active = 1 AND type_name = {self.db.quote(type_name)} "
-                "ORDER BY non_asset_type_id LIMIT 1;"
-            ),
-            0,
-        )
-        if type_id <= 0:
-            type_code = self.db.text(payload.get("typeCode"))[:48] or _catalog_code(type_name)
-            unit = self.db.text(payload.get("unit"))[:16] or "件"
-            created = self._save_inventory_type(
-                None, {"code": type_code, "name": type_name, "unit": unit}, context
+        def lookup_type() -> int:
+            return self.db.integer(
+                self.db.scalar(
+                    "SELECT non_asset_type_id FROM non_asset_type "
+                    f"WHERE is_active = 1 AND type_name = {self.db.quote(type_name)} "
+                    "ORDER BY non_asset_type_id LIMIT 1;"
+                ),
+                0,
             )
-            type_id = self.db.integer((created.get("inventoryType") or {}).get("id"), 0)
+
+        def lookup_brand(current_type_id: int) -> int:
+            return self.db.integer(
+                self.db.scalar(
+                    "SELECT brand_id FROM it_inventory_brand "
+                    f"WHERE is_active = 1 AND non_asset_type_id = {current_type_id} "
+                    f"AND brand_name = {self.db.quote(brand_name)} LIMIT 1;"
+                ),
+                0,
+            )
+
+        def lookup_model(current_brand_id: int) -> int:
+            return self.db.integer(
+                self.db.scalar(
+                    "SELECT model_id FROM it_inventory_model "
+                    f"WHERE is_active = 1 AND brand_id = {current_brand_id} "
+                    f"AND model_name = {self.db.quote(model_name)} LIMIT 1;"
+                ),
+                0,
+            )
+
+        type_id = lookup_type()
+        if type_id <= 0:
+            try:
+                created = self._save_inventory_type(
+                    None,
+                    {
+                        "code": self.db.text(payload.get("typeCode"))[:48]
+                        or _catalog_code(type_name),
+                        "name": type_name,
+                        "unit": self.db.text(payload.get("unit"))[:16] or "件",
+                    },
+                    context,
+                )
+                type_id = self.db.integer((created.get("inventoryType") or {}).get("id"), 0)
+            except self.conflict_error:
+                # 并发下同名类型可能刚被另一个请求建好，回查一次再决定，避免整笔入库失败。
+                type_id = lookup_type()
+                if type_id <= 0:
+                    raise
         if type_id <= 0:
             raise self.api_error("无法创建物资类型。")
 
-        brand_id = self.db.integer(
-            self.db.scalar(
-                "SELECT brand_id FROM it_inventory_brand "
-                f"WHERE is_active = 1 AND non_asset_type_id = {type_id} "
-                f"AND brand_name = {self.db.quote(brand_name)} LIMIT 1;"
-            ),
-            0,
-        )
+        brand_id = lookup_brand(type_id)
         if brand_id <= 0:
-            created = self._save_inventory_brand(
-                None,
-                {"typeId": str(type_id), "name": brand_name, "sortOrder": 1000},
-                context,
-            )
-            brand_id = self.db.integer((created.get("inventoryBrand") or {}).get("id"), 0)
+            try:
+                created = self._save_inventory_brand(
+                    None,
+                    {"typeId": str(type_id), "name": brand_name, "sortOrder": 1000},
+                    context,
+                )
+                brand_id = self.db.integer((created.get("inventoryBrand") or {}).get("id"), 0)
+            except self.conflict_error:
+                brand_id = lookup_brand(type_id)
+                if brand_id <= 0:
+                    raise
         if brand_id <= 0:
             raise self.api_error("无法创建物资品牌。")
 
-        model_id = self.db.integer(
-            self.db.scalar(
-                "SELECT model_id FROM it_inventory_model "
-                f"WHERE is_active = 1 AND brand_id = {brand_id} "
-                f"AND model_name = {self.db.quote(model_name)} LIMIT 1;"
-            ),
-            0,
-        )
+        model_id = lookup_model(brand_id)
         if model_id <= 0:
-            created = self._save_inventory_model(
-                None,
-                {
-                    "typeId": str(type_id),
-                    "brandId": str(brand_id),
-                    "name": model_name,
-                    "batchKey": self.db.text(payload.get("batchKey"))[:64],
-                    "inboundDate": self.db.text(payload.get("inboundDate")),
-                    "cpu": self.db.text(payload.get("cpu"))[:128],
-                    "memory": self.db.text(payload.get("memory"))[:64],
-                    "storage": self.db.text(payload.get("storage"))[:128],
-                    "gpu": self.db.text(payload.get("gpu"))[:128],
-                    "sortOrder": 1000,
-                },
-                context,
-            )
-            model_id = self.db.integer((created.get("inventoryModel") or {}).get("id"), 0)
+            try:
+                created = self._save_inventory_model(
+                    None,
+                    {
+                        "typeId": str(type_id),
+                        "brandId": str(brand_id),
+                        "name": model_name,
+                        "batchKey": self.db.text(payload.get("batchKey"))[:64],
+                        "inboundDate": self.db.text(payload.get("inboundDate")),
+                        "cpu": self.db.text(payload.get("cpu"))[:128],
+                        "memory": self.db.text(payload.get("memory"))[:64],
+                        "storage": self.db.text(payload.get("storage"))[:128],
+                        "gpu": self.db.text(payload.get("gpu"))[:128],
+                        "sortOrder": 1000,
+                    },
+                    context,
+                )
+                model_id = self.db.integer((created.get("inventoryModel") or {}).get("id"), 0)
+            except self.conflict_error:
+                model_id = lookup_model(brand_id)
+                if model_id <= 0:
+                    raise
         if model_id <= 0:
             raise self.api_error("无法创建物资型号。")
         return model_id

@@ -22,6 +22,7 @@ from office_asset.datacenter_devices import (  # noqa: E402  (ROOT must be impor
     STATUS_ALIASES,
     DatacenterDeviceService,
 )
+from office_asset.asset_service import _catalog_code  # noqa: E402
 from office_asset.device_topology import layout_template_ports  # noqa: E402
 from office_asset.inspection import (  # noqa: E402
     IMPORT_RESULT_ALIASES,
@@ -1936,6 +1937,25 @@ class OrgEmployeeCountRuleTests(TestCase):
             "ORDER BY COALESCE(archive.leave_date, DATE(archive.archived_at)) DESC",
             server,
         )
+
+
+class CatalogCodeGenerationTests(TestCase):
+    """自动生成物资类型编码时必须保证唯一（灰盒测试发现的入库 409 回归）。"""
+
+    def test_same_ascii_prefix_does_not_collide(self):
+        # 去掉中文后都是 "rp1234"，旧实现会生成两个相同的 type-rp1234。
+        first = _catalog_code("RP1234类型")
+        second = _catalog_code("RP1234超大类型")
+        self.assertNotEqual(first, second)
+        self.assertTrue(first.startswith("type-rp1234"))
+        self.assertTrue(second.startswith("type-rp1234"))
+
+    def test_chinese_only_names_are_stable(self):
+        self.assertEqual(_catalog_code("电脑"), _catalog_code("电脑"))
+        self.assertNotEqual(_catalog_code("电脑"), _catalog_code("显示器"))
+
+    def test_code_fits_column_limit(self):
+        self.assertLessEqual(len(_catalog_code("x" * 200)), 48)
 
 
 class TemplateDeletionPermissionTests(TestCase):
