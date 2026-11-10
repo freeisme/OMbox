@@ -60,13 +60,21 @@ const page = ref(1);
 const pageSize = ref(20);
 
 const receiveVisible = ref(false);
+/** 入库按「仓库 → 类型 → 品牌 → 型号」逐级选择；没有的层级直接输入名称，入库时自动创建。 */
 const receiveForm = reactive({
-  modelId: "",
   warehouseId: "",
+  typeName: "",
+  brandName: "",
+  modelName: "",
   quantity: 1,
   inboundDate: new Date().toISOString().slice(0, 10),
   sourceLabel: "",
   note: "",
+  batchKey: "",
+  cpu: "",
+  memory: "",
+  storage: "",
+  gpu: "",
 });
 
 const transferVisible = ref(false);
@@ -325,32 +333,125 @@ async function refresh(): Promise<void> {
   await load(true);
 }
 
+const receiveTypeNames = computed(() => data.value.types.map((item) => item.name));
+const receiveMatchedType = computed(() =>
+  data.value.types.find((item) => item.name === receiveForm.typeName.trim()),
+);
+const receiveBrandNames = computed(() =>
+  data.value.brands
+    .filter((item) => !receiveMatchedType.value || item.typeId === receiveMatchedType.value.id)
+    .map((item) => item.name),
+);
+const receiveMatchedBrand = computed(() =>
+  data.value.brands.find(
+    (item) =>
+      item.name === receiveForm.brandName.trim() &&
+      (!receiveMatchedType.value || item.typeId === receiveMatchedType.value.id),
+  ),
+);
+const receiveModelNames = computed(() =>
+  data.value.models
+    .filter((item) => !receiveMatchedBrand.value || item.brandId === receiveMatchedBrand.value.id)
+    .map((item) => item.name),
+);
+const receiveMatchedModel = computed(() =>
+  data.value.models.find(
+    (item) =>
+      item.name === receiveForm.modelName.trim() &&
+      (!receiveMatchedBrand.value || item.brandId === receiveMatchedBrand.value.id),
+  ),
+);
+const receiveNeedsComputerConfig = computed(() => {
+  const type = receiveMatchedType.value;
+  if (type) return isComputerType(type.id);
+  return ["电脑", "计算机"].includes(receiveForm.typeName.trim());
+});
+const receiveExistingStock = computed(() =>
+  receiveMatchedModel.value ? stockOf(receiveMatchedModel.value.id, receiveForm.warehouseId) : 0,
+);
+/** 提示这次入库会顺带创建哪些目录项，避免用户以为只是选了现有型号。 */
+const receiveAutoCreateHint = computed(() => {
+  const typeName = receiveForm.typeName.trim();
+  const brandName = receiveForm.brandName.trim();
+  const modelName = receiveForm.modelName.trim();
+  if (!typeName) return "";
+  const names: string[] = [];
+  if (!receiveMatchedType.value) names.push(`类型「${typeName}」`);
+  if (brandName) {
+    if (!receiveMatchedType.value || !receiveMatchedBrand.value) names.push(`品牌「${brandName}」`);
+    if (modelName && (!receiveMatchedBrand.value || !receiveMatchedModel.value)) {
+      names.push(`型号「${modelName}」`);
+    }
+  }
+  return names.length ? `入库时自动创建：${names.join("、")}` : "";
+});
+
+function onReceiveTypeChange(): void {
+  receiveForm.brandName = "";
+  receiveForm.modelName = "";
+}
+
+function onReceiveBrandChange(): void {
+  receiveForm.modelName = "";
+}
+
 function openReceive(modelId = ""): void {
-  receiveForm.modelId = modelId || (data.value.models[0]?.id ?? "");
+  const model = modelId ? data.value.models.find((item) => item.id === modelId) : undefined;
+  const type = model ? data.value.types.find((item) => item.id === model.typeId) : undefined;
+  const brand = model ? data.value.brands.find((item) => item.id === model.brandId) : undefined;
   receiveForm.warehouseId = warehouseId.value || data.value.warehouses[0]?.id || "";
+  receiveForm.typeName = type?.name ?? "";
+  receiveForm.brandName = brand?.name ?? "";
+  receiveForm.modelName = model?.name ?? "";
   receiveForm.quantity = 1;
   receiveForm.inboundDate = new Date().toISOString().slice(0, 10);
   receiveForm.sourceLabel = "";
   receiveForm.note = "";
+  receiveForm.batchKey = "";
+  receiveForm.cpu = "";
+  receiveForm.memory = "";
+  receiveForm.storage = "";
+  receiveForm.gpu = "";
   receiveVisible.value = true;
 }
 
 async function submitReceive(): Promise<void> {
-  if (!receiveForm.modelId || !receiveForm.warehouseId || receiveForm.quantity <= 0) {
-    ElMessage.warning("请选择库存型号、仓库并填写大于零的数量。");
+  const typeName = receiveForm.typeName.trim();
+  const brandName = receiveForm.brandName.trim();
+  const modelName = receiveForm.modelName.trim();
+  if (!receiveForm.warehouseId) {
+    ElMessage.warning("请选择入库仓库。");
+    return;
+  }
+  if (!typeName || !brandName || !modelName) {
+    ElMessage.warning("请依次选择或填写物资类型、品牌与型号。");
+    return;
+  }
+  if (receiveForm.quantity <= 0) {
+    ElMessage.warning("数量必须大于零。");
     return;
   }
   saving.value = true;
   try {
+    const existingModel = receiveMatchedModel.value;
+    const needsConfig = receiveNeedsComputerConfig.value;
     await receiveInventory({
-      modelId: receiveForm.modelId,
+      modelId: existingModel?.id ?? "",
+      typeName,
+      brandName,
+      modelName,
       warehouseId: receiveForm.warehouseId,
       quantity: Number(receiveForm.quantity),
       inboundDate: receiveForm.inboundDate,
       sourceLabel: receiveForm.sourceLabel.trim(),
       note: receiveForm.note.trim(),
+      batchKey: needsConfig ? receiveForm.batchKey.trim() : "",
+      cpu: needsConfig ? receiveForm.cpu.trim() : "",
+      memory: needsConfig ? receiveForm.memory.trim() : "",
+      storage: needsConfig ? receiveForm.storage.trim() : "",
+      gpu: needsConfig ? receiveForm.gpu.trim() : "",
     });
-    ElMessage.success("入库完成。");
+    ElMessage.success(existingModel ? "入库完成。" : "已自动创建类型 / 品牌 / 型号并完成入库。");
     receiveVisible.value = false;
     await refresh();
   } catch (error) {
@@ -936,11 +1037,6 @@ onMounted(() => load(false));
     @confirm="submitReceive"
   >
     <el-form label-position="top">
-      <el-form-item label="库存型号" required>
-        <el-select v-model="receiveForm.modelId" filterable class="oa-full-width">
-          <el-option v-for="item in modelOptions" :key="item.value" :label="item.label" :value="item.value" />
-        </el-select>
-      </el-form-item>
       <el-form-item label="入库仓库" required>
         <el-select v-model="receiveForm.warehouseId" class="oa-full-width">
           <el-option
@@ -951,6 +1047,65 @@ onMounted(() => load(false));
           />
         </el-select>
       </el-form-item>
+      <el-form-item label="物资类型" required>
+        <el-select
+          v-model="receiveForm.typeName"
+          filterable
+          allow-create
+          default-first-option
+          :reserve-keyword="false"
+          placeholder="选择已有类型，或直接输入新类型名称"
+          class="oa-full-width"
+          @change="onReceiveTypeChange"
+        >
+          <el-option v-for="name in receiveTypeNames" :key="name" :label="name" :value="name" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="品牌" required>
+        <el-select
+          v-model="receiveForm.brandName"
+          filterable
+          allow-create
+          default-first-option
+          :reserve-keyword="false"
+          :disabled="!receiveForm.typeName.trim()"
+          placeholder="选择已有品牌，或直接输入新品牌名称"
+          class="oa-full-width"
+          @change="onReceiveBrandChange"
+        >
+          <el-option v-for="name in receiveBrandNames" :key="name" :label="name" :value="name" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="型号" required>
+        <el-select
+          v-model="receiveForm.modelName"
+          filterable
+          allow-create
+          default-first-option
+          :reserve-keyword="false"
+          :disabled="!receiveForm.brandName.trim()"
+          placeholder="选择已有型号，或直接输入新型号名称"
+          class="oa-full-width"
+        >
+          <el-option v-for="name in receiveModelNames" :key="name" :label="name" :value="name" />
+        </el-select>
+      </el-form-item>
+      <el-alert
+        v-if="receiveAutoCreateHint"
+        type="info"
+        :closable="false"
+        show-icon
+        :title="receiveAutoCreateHint"
+        class="oa-mb-3"
+      />
+      <el-alert
+        v-else-if="receiveMatchedModel"
+        type="success"
+        :closable="false"
+        show-icon
+        :title="`该型号在当前仓库已有库存 ${receiveExistingStock}，本次入库会累加。`"
+        class="oa-mb-3"
+      />
       <el-row :gutter="12">
         <el-col :xs="24" :sm="12">
           <el-form-item label="数量" required>
@@ -968,6 +1123,25 @@ onMounted(() => load(false));
           </el-form-item>
         </el-col>
       </el-row>
+      <template v-if="receiveNeedsComputerConfig">
+        <el-row :gutter="12">
+          <el-col :xs="24" :sm="12">
+            <el-form-item label="CPU"><el-input v-model="receiveForm.cpu" placeholder="例如 i5-13400" /></el-form-item>
+          </el-col>
+          <el-col :xs="24" :sm="12">
+            <el-form-item label="内存"><el-input v-model="receiveForm.memory" placeholder="例如 16G" /></el-form-item>
+          </el-col>
+        </el-row>
+        <el-row :gutter="12">
+          <el-col :xs="24" :sm="12">
+            <el-form-item label="硬盘"><el-input v-model="receiveForm.storage" placeholder="例如 512G SSD" /></el-form-item>
+          </el-col>
+          <el-col :xs="24" :sm="12">
+            <el-form-item label="显卡"><el-input v-model="receiveForm.gpu" placeholder="例如 集成显卡" /></el-form-item>
+          </el-col>
+        </el-row>
+        <el-form-item label="批次"><el-input v-model="receiveForm.batchKey" placeholder="例如 2026-11-A" /></el-form-item>
+      </template>
       <el-form-item label="来源"><el-input v-model="receiveForm.sourceLabel" placeholder="例如 供应商送货" /></el-form-item>
       <el-form-item label="备注"><el-input v-model="receiveForm.note" type="textarea" :rows="2" /></el-form-item>
     </el-form>

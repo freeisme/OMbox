@@ -125,12 +125,21 @@ export function invalidateInventoryCache(): void {
 }
 
 export async function receiveInventory(payload: {
-  modelId: string;
+  /** 已有型号可直接传 id；为空的类型 / 品牌 / 型号会按名称自动创建。 */
+  modelId?: string;
+  typeName?: string;
+  brandName?: string;
+  modelName?: string;
   warehouseId: string;
   quantity: number;
   inboundDate: string;
   sourceLabel: string;
   note: string;
+  batchKey?: string;
+  cpu?: string;
+  memory?: string;
+  storage?: string;
+  gpu?: string;
 }): Promise<void> {
   await api("/api/inventory/receipts", { method: "POST", body: payload });
 }

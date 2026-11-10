@@ -1272,6 +1272,40 @@ def cached_update_status() -> dict:
     return summary
 
 
+def decorate_update_progress(payload: dict) -> dict:
+    """把更新服务状态翻译成前端可直接展示的阶段与进度百分比。"""
+    status = text_value(payload.get("status"))
+    target_sha = text_value(payload.get("targetSha")).lower()
+    current_sha = text_value(payload.get("currentSha")).lower()
+    phase = status or "idle"
+    progress = 0
+    message = "尚未开始更新。"
+    if status in {"queued", "pending"}:
+        phase, progress = "queued", 12
+        message = "已进入更新队列，等待部署进程开始。"
+    elif status in {"running", "deploying", "building"}:
+        phase, progress = "running", 55
+        message = "正在拉取代码、构建前端并重启服务。"
+    elif status in {"completed", "success", "deployed"}:
+        phase, progress = "completed", 100
+        message = "更新完成，请刷新页面加载新版本。"
+    elif status == "update_available":
+        message = "发现可用版本，尚未开始更新。"
+    elif status in {"no_releases", "no_release_available"}:
+        message = "没有可用的发布版本。"
+    elif status == "up_to_date":
+        if target_sha and current_sha and target_sha == current_sha:
+            phase, progress = "completed", 100
+            message = "更新完成，请刷新页面加载新版本。"
+        else:
+            message = "当前已是最新版本。"
+    result = dict(payload)
+    result["phase"] = phase
+    result["progress"] = progress
+    result["message"] = message
+    return result
+
+
 def request_update_service(
     target_sha: str = "",
     repository_url: str = "",
@@ -6405,6 +6439,17 @@ class AppHandler(SimpleHTTPRequestHandler):
             context = require_auth(self)
             require_permission(context, "system_updates", "update")
             self.send_json(cached_update_status())
+            return
+
+        if parsed.path == "/api/updates/progress" and self.command == "GET":
+            context = require_auth(self)
+            require_permission(context, "system_updates", "update")
+            stored_url = text_value(settings_payload().get("update_repository_url"))
+            update_payload = request_update_service(
+                repository_url=normalize_update_repository_url(stored_url),
+                release_channel=DEFAULT_UPDATE_RELEASE_CHANNEL,
+            )
+            self.send_json(decorate_update_progress(update_payload))
             return
 
         if parsed.path == "/api/updates/check" and self.command == "POST":

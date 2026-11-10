@@ -3037,12 +3037,91 @@ class AssetService:
         self._store_idempotency_result("computer.return", idempotency_key, payload, response)
         return response
 
+    def _receipt_resolve_model(self, payload: dict, context: dict) -> int:
+        """入库允许直接填写类型 / 品牌 / 型号，缺失的目录层级自动创建。
+
+        返回可用的 model_id；类型、品牌、型号都已存在时直接复用，不做覆盖。
+        """
+        type_name = self.db.text(payload.get("typeName"))[:64]
+        brand_name = self.db.text(payload.get("brandName"))[:64]
+        model_name = self.db.text(payload.get("modelName"))[:128]
+        if not type_name or not brand_name or not model_name:
+            raise self.api_error("请选择库存型号，或填写物资类型、品牌与型号。")
+
+        type_id = self.db.integer(
+            self.db.scalar(
+                "SELECT non_asset_type_id FROM non_asset_type "
+                f"WHERE is_active = 1 AND type_name = {self.db.quote(type_name)} "
+                "ORDER BY non_asset_type_id LIMIT 1;"
+            ),
+            0,
+        )
+        if type_id <= 0:
+            type_code = self.db.text(payload.get("typeCode"))[:48] or _catalog_code(type_name)
+            unit = self.db.text(payload.get("unit"))[:16] or "件"
+            created = self._save_inventory_type(
+                None, {"code": type_code, "name": type_name, "unit": unit}, context
+            )
+            type_id = self.db.integer((created.get("inventoryType") or {}).get("id"), 0)
+        if type_id <= 0:
+            raise self.api_error("无法创建物资类型。")
+
+        brand_id = self.db.integer(
+            self.db.scalar(
+                "SELECT brand_id FROM it_inventory_brand "
+                f"WHERE is_active = 1 AND non_asset_type_id = {type_id} "
+                f"AND brand_name = {self.db.quote(brand_name)} LIMIT 1;"
+            ),
+            0,
+        )
+        if brand_id <= 0:
+            created = self._save_inventory_brand(
+                None,
+                {"typeId": str(type_id), "name": brand_name, "sortOrder": 1000},
+                context,
+            )
+            brand_id = self.db.integer((created.get("inventoryBrand") or {}).get("id"), 0)
+        if brand_id <= 0:
+            raise self.api_error("无法创建物资品牌。")
+
+        model_id = self.db.integer(
+            self.db.scalar(
+                "SELECT model_id FROM it_inventory_model "
+                f"WHERE is_active = 1 AND brand_id = {brand_id} "
+                f"AND model_name = {self.db.quote(model_name)} LIMIT 1;"
+            ),
+            0,
+        )
+        if model_id <= 0:
+            created = self._save_inventory_model(
+                None,
+                {
+                    "typeId": str(type_id),
+                    "brandId": str(brand_id),
+                    "name": model_name,
+                    "batchKey": self.db.text(payload.get("batchKey"))[:64],
+                    "inboundDate": self.db.text(payload.get("inboundDate")),
+                    "cpu": self.db.text(payload.get("cpu"))[:128],
+                    "memory": self.db.text(payload.get("memory"))[:64],
+                    "storage": self.db.text(payload.get("storage"))[:128],
+                    "gpu": self.db.text(payload.get("gpu"))[:128],
+                    "sortOrder": 1000,
+                },
+                context,
+            )
+            model_id = self.db.integer((created.get("inventoryModel") or {}).get("id"), 0)
+        if model_id <= 0:
+            raise self.api_error("无法创建物资型号。")
+        return model_id
+
     def receive_inventory(self, payload: dict, context: dict, idempotency_key: str = "") -> dict:
         cached = self._idempotency_result("inventory.receipt", idempotency_key, payload)
         if cached:
             return cached
         self._assert_inventory_issue_scope(context)
         model_id = self.db.integer(payload.get("modelId"), 0)
+        if model_id <= 0:
+            model_id = self._receipt_resolve_model(payload, context)
         quantity = self.db.integer(payload.get("quantity"), 0)
         if model_id <= 0 or quantity <= 0:
             raise self.api_error("Inventory receipt requires a model and a positive quantity.")

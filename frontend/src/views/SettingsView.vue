@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { useRoute } from "vue-router";
 import { ElMessage } from "element-plus";
 import { api } from "../api/client";
@@ -13,6 +13,7 @@ import {
   DATA_SCOPES,
   DEFAULT_UPDATE_RELEASE_CHANNEL,
   downloadBackup,
+  getUpdateProgress,
   GITHUB_UPDATE_REPOSITORY_URL,
   loadAccessControl,
   loadBackups,
@@ -32,6 +33,7 @@ import {
   type AppSettings,
   type BackupRow,
   type PermissionEntry,
+  type UpdateProgress,
   type UpdateStatus,
   type UpdateVersion,
   type UserRow,
@@ -787,10 +789,16 @@ async function submitUpdateApply(): Promise<void> {
     });
     updateStatus.value = payload;
     updateSelectedSha.value = payload.targetSha || target.sha;
+    const targetSha = String(payload.targetSha || target.sha);
     if (payload.status === "queued" || payload.status === "running") {
-      ElMessage.success(`版本 ${payload.targetVersion ?? label} 已进入手动更新队列，稍后请刷新页面。`);
+      startUpdatePolling(targetSha);
+      ElMessage.success(`版本 ${payload.targetVersion ?? label} 已进入更新队列，正在显示进度。`);
+    } else if (payload.status === "up_to_date") {
+      markUpdateDone();
+      ElMessage.success("目标版本已经部署完成。");
     } else {
-      ElMessage.success("版本更新请求已完成。");
+      startUpdatePolling(targetSha);
+      ElMessage.success("版本更新请求已提交。");
     }
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "执行版本更新失败。");
@@ -798,6 +806,105 @@ async function submitUpdateApply(): Promise<void> {
     updateApplying.value = false;
   }
 }
+
+// ---- 更新执行进度：点击更新后轮询部署状态，完成后提示刷新页面 ----
+const updateProgress = ref<UpdateProgress | null>(null);
+const updatePolling = ref(false);
+const updateReloadReady = ref(false);
+const updateTargetSha = ref("");
+const updateStartedAt = ref(0);
+const updateElapsed = ref(0);
+let updatePollTimer: number | null = null;
+let updateElapsedTimer: number | null = null;
+
+const updateProgressPercent = computed(() => {
+  const value = Number(updateProgress.value?.progress ?? 0);
+  return Math.min(100, Math.max(0, Number.isFinite(value) ? value : 0));
+});
+const updateProgressPhase = computed(() => {
+  if (updateReloadReady.value) return "completed";
+  const phase = String(updateProgress.value?.phase ?? "").trim();
+  return phase || (updateApplying.value ? "queued" : "idle");
+});
+const updateProgressText = computed(() => {
+  if (updateReloadReady.value) return "更新完成，刷新页面即可使用新版本。";
+  return String(updateProgress.value?.message ?? "").trim() || "正在获取更新进度…";
+});
+const updateElapsedText = computed(() => {
+  if (!updateStartedAt.value) return "";
+  const seconds = Math.max(0, updateElapsed.value);
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return minutes ? `已用时 ${minutes} 分 ${rest} 秒` : `已用时 ${rest} 秒`;
+});
+
+function stopUpdatePolling(): void {
+  if (updatePollTimer !== null) {
+    window.clearInterval(updatePollTimer);
+    updatePollTimer = null;
+  }
+  if (updateElapsedTimer !== null) {
+    window.clearInterval(updateElapsedTimer);
+    updateElapsedTimer = null;
+  }
+  updatePolling.value = false;
+}
+
+function markUpdateDone(): void {
+  stopUpdatePolling();
+  updateReloadReady.value = true;
+  // 让「检查版本 / 更新」按钮重新可用，避免状态停在 queued 一直灰着。
+  if (updateStatus.value) {
+    updateStatus.value = { ...updateStatus.value, status: "up_to_date" };
+  }
+  updateProgress.value = {
+    ...(updateProgress.value ?? {}),
+    phase: "completed",
+    progress: 100,
+    message: "更新完成，刷新页面即可使用新版本。",
+  };
+}
+
+async function pollUpdateProgress(): Promise<void> {
+  try {
+    const payload = await getUpdateProgress();
+    updateProgress.value = payload;
+    if (String(payload.phase ?? "") === "completed") {
+      markUpdateDone();
+      return;
+    }
+    const target = updateTargetSha.value.toLowerCase();
+    const current = String(payload.currentSha ?? "").toLowerCase();
+    if (target && current && target === current) {
+      markUpdateDone();
+    }
+  } catch {
+    // 部署过程中服务会短暂重启，这一两轮轮询失败属于正常现象，继续等待。
+  }
+}
+
+function startUpdatePolling(targetSha: string): void {
+  stopUpdatePolling();
+  updateTargetSha.value = targetSha || "";
+  updateReloadReady.value = false;
+  updateProgress.value = { phase: "queued", progress: 8, message: "已提交更新请求，正在排队执行。" };
+  updateStartedAt.value = Date.now();
+  updateElapsed.value = 0;
+  updatePolling.value = true;
+  updateElapsedTimer = window.setInterval(() => {
+    updateElapsed.value = Math.floor((Date.now() - updateStartedAt.value) / 1000);
+  }, 1000);
+  void pollUpdateProgress();
+  updatePollTimer = window.setInterval(() => {
+    void pollUpdateProgress();
+  }, 3000);
+}
+
+function reloadPage(): void {
+  window.location.reload();
+}
+
+onBeforeUnmount(stopUpdatePolling);
 
 async function loadNavLinks(): Promise<void> {
   try {
@@ -1431,6 +1538,27 @@ onMounted(async () => {
                 更新到所选版本
               </el-button>
             </div>
+            <template v-if="updatePolling || updateReloadReady">
+              <el-alert
+                :type="updateReloadReady ? 'success' : 'info'"
+                :closable="false"
+                show-icon
+                :title="updateProgressText"
+                class="oa-mb-3"
+              />
+              <el-progress
+                :percentage="updateProgressPercent"
+                :status="updateReloadReady ? 'success' : undefined"
+                :stroke-width="14"
+                text-inside
+                class="oa-mb-3"
+              />
+              <div class="oa-flex-between oa-mb-3">
+                <span class="oa-hint">{{ updateElapsedText }}</span>
+                <el-button v-if="updateReloadReady" type="primary" @click="reloadPage">刷新页面</el-button>
+                <span v-else class="oa-hint">部署期间服务可能短暂重启，进度会自动继续。</span>
+              </div>
+            </template>
           </el-form>
         </template>
 

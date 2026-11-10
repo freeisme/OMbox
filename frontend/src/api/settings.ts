@@ -331,3 +331,19 @@ export async function applyUpdate(payload: {
 }): Promise<UpdateStatus> {
   return api<UpdateStatus>("/api/updates/apply", { method: "POST", body: payload });
 }
+
+/** 更新执行期间轮询的真实部署状态（不走 30 分钟缓存）。 */
+export interface UpdateProgress {
+  status?: string;
+  phase?: string;
+  progress?: number;
+  message?: string;
+  targetSha?: string;
+  targetVersion?: string;
+  currentSha?: string;
+  currentVersion?: string;
+}
+
+export async function getUpdateProgress(): Promise<UpdateProgress> {
+  return api<UpdateProgress>("/api/updates/progress");
+}
