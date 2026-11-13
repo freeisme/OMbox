@@ -12,7 +12,10 @@ ENV COREPACK_NPM_REGISTRY=${NPM_REGISTRY} \
 RUN corepack enable
 
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+# pnpm 不认 npm_config_registry，必须落到 .npmrc 或显式 --registry，
+# 否则仍会去 registry.npmjs.org 拉依赖（内网直接超时）导致构建失败。
+RUN printf 'registry=%s\n' "${NPM_REGISTRY}" > /frontend/.npmrc
+RUN pnpm install --frozen-lockfile --registry="${NPM_REGISTRY}"
 
 COPY frontend/ ./
 COPY VERSION /VERSION

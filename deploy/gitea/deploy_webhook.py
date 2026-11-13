@@ -662,6 +662,28 @@ def _update_snapshot(
 ) -> dict:
     repository_url = _normalize_repository_url(repository_url)
     release_channel = _normalize_release_channel(release_channel)
+    with state_lock:
+        deployment_active = deployment_running
+        deployment_queued = deployment_pending
+        deployment_target = pending_sha
+    if deployment_active:
+        # 部署期间绝不抢 git_lock：镜像构建可能几十分钟，抢锁会把状态查询一起堵住，
+        # 应用侧 12 秒超时后就报「无法连接服务器更新服务」，进度条也永远不动。
+        return {
+            "ok": True,
+            "repository": DEPLOY_REPO,
+            "repositoryUrl": repository_url,
+            "releaseChannel": release_channel,
+            "branch": DEPLOY_BRANCH,
+            "status": "running",
+            "targetSha": deployment_target,
+            "currentSha": "",
+            "currentVersion": "",
+            "latestVersion": "",
+            "availableVersions": [],
+            "deploymentRunning": True,
+            "deploymentPending": deployment_queued,
+        }
     with git_lock:
         branch_ref = _fetch_update_source(repository_url)
         current_sha = _current_sha()
