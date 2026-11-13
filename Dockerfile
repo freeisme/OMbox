@@ -3,6 +3,12 @@ FROM node:22-alpine AS frontend
 
 WORKDIR /frontend
 
+# 服务器/内网环境常无法直连 registry.npmjs.org（构建时会 ETIMEDOUT），
+# 默认走国内镜像；需要官方源时用 --build-arg NPM_REGISTRY=https://registry.npmjs.org 覆盖。
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+ENV COREPACK_NPM_REGISTRY=${NPM_REGISTRY} \
+    npm_config_registry=${NPM_REGISTRY}
+
 RUN corepack enable
 
 COPY frontend/package.json frontend/pnpm-lock.yaml ./

@@ -842,6 +842,11 @@ const updateElapsedText = computed(() => {
   return minutes ? `已用时 ${minutes} 分 ${rest} 秒` : `已用时 ${rest} 秒`;
 });
 
+/** 超过 5 分钟还没完成：给出可操作的排查提示，而不是一直转圈。 */
+const updateStaleVisible = computed(
+  () => !updateReloadReady.value && updatePolling.value && updateElapsed.value >= 300,
+);
+
 function stopUpdatePolling(): void {
   if (updatePollTimer !== null) {
     window.clearInterval(updatePollTimer);
@@ -872,16 +877,24 @@ function markUpdateDone(): void {
 async function pollUpdateProgress(): Promise<void> {
   try {
     const payload = await getUpdateProgress();
-    updateProgress.value = payload;
-    if (String(payload.phase ?? "") === "completed") {
+    const target = updateTargetSha.value.toLowerCase();
+    const current = String(payload.currentSha ?? "").toLowerCase();
+    if (String(payload.phase ?? "") === "completed" || (target && current && target === current)) {
       markUpdateDone();
       return;
     }
-    const target = updateTargetSha.value.toLowerCase();
-    const current = String(payload.currentSha ?? "").toLowerCase();
-    if (target && current && target === current) {
-      markUpdateDone();
+    // 部署服务在构建镜像期间 HEAD 还没移动，只会返回 update_available；
+    // 只要目标版本还没变成当前版本，就说明部署正在进行，别显示成"尚未开始"。
+    if (target && current && current !== target) {
+      updateProgress.value = {
+        ...payload,
+        phase: "running",
+        progress: Math.max(Number(payload.progress ?? 0), 45),
+        message: "正在拉取代码、构建镜像并重启服务，构建通常需要几分钟。",
+      };
+      return;
     }
+    updateProgress.value = payload;
   } catch {
     // 部署过程中服务会短暂重启，这一两轮轮询失败属于正常现象，继续等待。
   }
@@ -1562,6 +1575,14 @@ onMounted(async () => {
                 <el-button v-if="updateReloadReady" type="primary" @click="reloadPage">刷新页面</el-button>
                 <span v-else class="oa-hint">部署期间服务可能短暂重启，进度会自动继续。</span>
               </div>
+              <el-alert
+                v-if="updateStaleVisible"
+                type="warning"
+                :closable="false"
+                show-icon
+                class="oa-mb-3"
+                title="部署已等待超过 5 分钟仍未完成。常见原因是服务器无法拉取镜像依赖（如 npm 源超时），请到服务器查看 office-asset-gitea-webhook 日志中的构建输出。"
+              />
             </template>
           </el-form>
         </template>
