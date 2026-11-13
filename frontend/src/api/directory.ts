@@ -29,6 +29,10 @@ export interface LeftEmployeeRow {
   leaveRemark: string;
   archivedAt: string;
   devices: LeftDeviceRow[];
+  deviceCount?: number;
+  /** 离职时按「异常待处理」归档、尚未结清的项数。 */
+  exceptionCount?: number;
+  exceptionLabels?: string[];
 }
 
 export interface OrgNode {

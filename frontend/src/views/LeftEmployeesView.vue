@@ -12,8 +12,10 @@ import {
   type LeftEmployeeRow,
 } from "../api/directory";
 import DataPanel from "../components/ui/DataPanel.vue";
+import ExportMenu from "../components/ui/ExportMenu.vue";
 import FilterBar from "../components/ui/FilterBar.vue";
 import PageHeader from "../components/ui/PageHeader.vue";
+import { asText } from "../api/exports";
 import { formatDateTimeText } from "../labels";
 
 const router = useRouter();
@@ -108,6 +110,47 @@ function resetFilters(): void {
   keyword.value = "";
 }
 
+/** 离职人员导出列：与列表展示字段一致，附带设备快照与异常项。 */
+const LEFT_EMPLOYEE_EXPORT_HEADER = [
+  "人员编号",
+  "姓名",
+  "原组织路径",
+  "部门",
+  "岗位",
+  "邮箱",
+  "手机号",
+  "离职日期",
+  "离职原因",
+  "离职备注",
+  "归档时间",
+  "资产数量",
+  "异常待处理数",
+  "离职设备快照",
+];
+
+const leftEmployeeExportRows = computed(() =>
+  sorted.value.map((row) => [
+    asText(row.employeeNo),
+    asText(row.name),
+    asText(row.orgPath),
+    asText(row.department),
+    asText(row.position),
+    asText(row.email),
+    asText(row.mobile),
+    asText(row.leaveDate),
+    asText(row.leaveInfo),
+    asText(row.leaveRemark),
+    asText(formatDateTimeText(row.archivedAt)),
+    asText((row.devices ?? []).length),
+    asText(row.exceptionCount ?? 0),
+    asText(deviceSummary(row.devices)),
+  ]),
+);
+
+const leftEmployeeExportName = computed(
+  () => "离职人员-" + new Date().toISOString().slice(0, 16).replace(/[-:T]/g, ""),
+);
+
 async function loadRows(): Promise<void> {
   loading.value = true;
   try {
@@ -137,6 +180,15 @@ onMounted(loadRows);
     description="离职人员已从组织树移出，保留离职时间、说明、备注与离职时设备快照"
   >
     <template #actions>
+      <el-button @click="loadRows">刷新</el-button>
+      <ExportMenu
+        :file-name="leftEmployeeExportName"
+        sheet-name="离职人员"
+        :header="LEFT_EMPLOYEE_EXPORT_HEADER"
+        :rows="leftEmployeeExportRows"
+        label="导出当前结果"
+        :disabled="!sorted.length"
+      />
       <el-button @click="router.push('/employees')">返回使用人员</el-button>
     </template>
     <template #filters>
@@ -185,6 +237,18 @@ onMounted(loadRows);
       <el-table-column label="离职设备快照" min-width="240" show-overflow-tooltip>
         <template #default="{ row }">{{ deviceSummary(row.devices) }}</template>
       </el-table-column>
+      <el-table-column label="异常项" width="130">
+        <template #default="{ row }">
+          <el-tooltip
+            v-if="row.exceptionCount"
+            :content="(row.exceptionLabels ?? []).join('、')"
+            placement="top"
+          >
+            <el-tag type="danger" size="small">异常待处理 {{ row.exceptionCount }}</el-tag>
+          </el-tooltip>
+          <span v-else class="oa-cell-sub">—</span>
+        </template>
+      </el-table-column>
       <el-table-column label="操作" width="150" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="openDetail(row)">查看详情</el-button>
@@ -226,6 +290,14 @@ onMounted(loadRows);
       <el-descriptions-item label="离职信息">{{ detail.leaveInfo || "—" }}</el-descriptions-item>
       <el-descriptions-item label="备注">{{ detail.leaveRemark || "—" }}</el-descriptions-item>
     </el-descriptions>
+    <el-alert
+      v-if="detail?.exceptionCount"
+      type="warning"
+      :closable="false"
+      show-icon
+      class="oa-mb-3"
+      :title="`有 ${detail.exceptionCount} 项资产按「异常待处理」归档，尚未结清：${(detail.exceptionLabels ?? []).join('、')}`"
+    />
     <div class="oa-drawer-section">
       <h4>离职时设备快照（{{ (detail?.devices ?? []).length }} 条）</h4>
       <el-descriptions v-if="(detail?.devices ?? []).length" :column="1" border size="small">

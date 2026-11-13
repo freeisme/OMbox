@@ -1969,6 +1969,50 @@ class AssetService:
         self._assert_warehouse_access(context, warehouse, "warehouse_management")
         return self._warehouse_stock_rows(self.db.integer(warehouse.get("id"), 0))
 
+    def _release_assignment_statements(
+        self, computer_id: int, context: dict, note: str
+    ) -> list[str]:
+        """把设备当前的在用分配退回（状态改为闲置/维修/丢失/待报废时用）。
+
+        复用离职办理里的写法：先结束在用分配，再补一条退回历史，
+        这样列表里由分配推导出的"在用"状态才会真正消失。
+        """
+        actor_sql = str(self._actor_id(context)) if self._actor_id(context) > 0 else "NULL"
+        release_note = self.db.quote(note)
+        return [
+            f"""
+            UPDATE computer_assignment
+            SET returned_at = CURRENT_TIMESTAMP,
+                assignment_status = 'returned',
+                notes = CONCAT_WS(' ', notes, {release_note})
+            WHERE computer_id = {computer_id}
+              AND returned_at IS NULL
+              AND assignment_status = 'active'
+            """,
+            f"""
+            INSERT INTO computer_assignment_history (
+              computer_id, device_name, employee_id, employee_no, employee_name,
+              assigned_at, returned_at, assignment_status, notes, returned_by
+            )
+            SELECT
+              assignment.computer_id, asset.device_name, assignment.employee_id,
+              employee.employee_no, employee.employee_name, assignment.assigned_at,
+              CURRENT_TIMESTAMP, 'returned', assignment.notes, {actor_sql}
+            FROM computer_assignment assignment
+            JOIN computer_asset asset ON asset.computer_id = assignment.computer_id
+            JOIN employee ON employee.employee_id = assignment.employee_id
+            WHERE assignment.computer_id = {computer_id}
+              AND assignment.returned_at IS NOT NULL
+            ORDER BY assignment.assignment_id DESC
+            LIMIT 1
+            ON DUPLICATE KEY UPDATE
+              returned_at = VALUES(returned_at),
+              assignment_status = VALUES(assignment_status),
+              notes = VALUES(notes),
+              returned_by = VALUES(returned_by)
+            """,
+        ]
+
     def _save_computer(self, resource_id: object | None, payload: dict, context: dict) -> dict:
         device_name = self.db.text(payload.get("deviceName"))
         if not device_name:
@@ -2132,6 +2176,16 @@ class AssetService:
                       {self.db.quote(self.db.text(payload.get('statusReason')))}, {self._actor_id(context)}
                     )
                     """
+                )
+            if status != "in_use":
+                # 状态改为非在用（闲置/维修/丢失/待报废）时自动退回分配，
+                # 否则列表会用"有使用人"把状态重新推导成在用，改状态看上去没生效。
+                statements.extend(
+                    self._release_assignment_statements(
+                        computer_id,
+                        context,
+                        f"状态调整为{status}，设备已自动退回",
+                    )
                 )
             statements.append(
                 self._audit_sql(
@@ -5655,6 +5709,23 @@ class AssetService:
                 )
         return items
 
+    def _offboarding_stale_item_count(self, current_items: list[dict], raw_items: object) -> int:
+        """统计前端清单中已不在当前台账里的条目数（用于给出可读的过期提示）。"""
+        if not isinstance(raw_items, list):
+            return 0
+        current_keys = {self.db.text(item.get("key")) for item in current_items}
+        stale = 0
+        for raw_item in raw_items:
+            if not isinstance(raw_item, dict):
+                continue
+            item_type = self.db.text(raw_item.get("itemType") or raw_item.get("category")).replace("-", "_")
+            if item_type == "nonasset":
+                item_type = "non_asset"
+            item_id = self.db.integer(raw_item.get("itemId") or raw_item.get("id"), 0)
+            if f"{item_type}:{item_id}" not in current_keys:
+                stale += 1
+        return stale
+
     def _normalize_offboarding_plan(
         self,
         employee_id: int,
@@ -5820,6 +5891,12 @@ class AssetService:
             raise self.conflict_error("该人员已经办理离职。")
         self.scope.assert_org_access(context, employee.get("orgId"))
         current_items = self._offboarding_items(employee_id_int)
+        # 前端清单可能已过期（资产被别人退回/转交）：先按 key 比对一次，给出能看懂的提示。
+        stale_count = self._offboarding_stale_item_count(current_items, payload.get("items"))
+        if stale_count > 0:
+            raise self.conflict_error(
+                f"离职资产清单已变化，请刷新后重新办理（有 {stale_count} 项资产已不在该人员名下）。"
+            )
         plan = self._normalize_offboarding_plan(employee_id_int, current_items, payload.get("items"), context)
 
         snapshot = []
@@ -6554,7 +6631,9 @@ class AssetService:
         processed_items = self.db.integer(result[2] if len(result) > 2 else 0, 0)
         unbound_accounts = self.db.integer(result[3] if len(result) > 3 else 0, 0)
         if success != 1 or (archive_id <= 0 and not shared_employee):
-            raise self.conflict_error("离职资产清单已变化，请刷新后重新办理。")
+            raise self.conflict_error(
+                self._offboarding_conflict_message(employee_id_int, plan, processed_items)
+            )
 
         response = {
             "archiveId": str(archive_id),
@@ -6568,6 +6647,33 @@ class AssetService:
         }
         self._store_idempotency_result("employee.offboard", idempotency_key, payload, response)
         return response
+
+    def _offboarding_conflict_message(
+        self, employee_id: int, plan: list[dict], processed_items: int
+    ) -> str:
+        """清单与服务器不一致时，指名道姓告诉用户哪几项没处理成功。"""
+        try:
+            remaining = {
+                self.db.text(item.get("key")) for item in self._offboarding_items(employee_id)
+            }
+        except Exception:  # noqa: BLE001 - 诊断信息不能盖住真正的失败原因
+            remaining = set()
+        changed = [
+            self.db.text(item.get("label")) or "未命名项"
+            for item in plan
+            if f"{self.db.text(item.get('itemType'))}:{self.db.integer(item.get('id'), 0)}"
+            not in remaining
+        ]
+        details: list[str] = []
+        if changed:
+            shown = "、".join(changed[:5]) + ("…" if len(changed) > 5 else "")
+            details.append(f"未处理成功：{shown}")
+        if processed_items < len(plan):
+            details.append(f"已处理 {processed_items}/{len(plan)} 项")
+        elif not changed:
+            details.append("清单校验未通过（接收人或回收仓库已变更）")
+        suffix = f"（{'；'.join(details)}）" if details else ""
+        return f"离职资产清单已变化，请刷新后重新办理{suffix}。"
 
     def _recovery_records_since(
         self,

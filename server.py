@@ -2133,6 +2133,13 @@ def normalize_left_employee_devices(devices: list[dict]) -> list[dict]:
 def normalize_left_employees(left_employees: list[dict]) -> list[dict]:
     normalized: list[dict] = []
     for item in left_employees or []:
+        devices = normalize_left_employee_devices(item.get("devices") or [])
+        # 离职时选了「异常待处理」的资产：允许离职，但要在列表里显著标出未结清。
+        exception_labels = [
+            text_value(device.get("label")) or text_value(device.get("detail")) or "未命名资产"
+            for device in devices
+            if text_value(device.get("action")) == "exception"
+        ]
         normalized.append(
             {
                 "id": text_value(item.get("id")),
@@ -2150,7 +2157,10 @@ def normalize_left_employees(left_employees: list[dict]) -> list[dict]:
                 "leaveInfo": text_value(item.get("leaveInfo")),
                 "leaveRemark": text_value(item.get("leaveRemark")),
                 "archivedAt": text_value(item.get("archivedAt")),
-                "devices": normalize_left_employee_devices(item.get("devices") or []),
+                "devices": devices,
+                "deviceCount": len(devices),
+                "exceptionCount": len(exception_labels),
+                "exceptionLabels": exception_labels,
             }
         )
     return normalized
