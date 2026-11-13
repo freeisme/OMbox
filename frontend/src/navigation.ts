@@ -81,7 +81,21 @@ export const NAV_ITEMS: NavItem[] = [
     modules: SERVICE_MODULES,
   },
   { page: "governance", path: "/governance", title: "同步与质量", group: "服务管理", modules: ["sync"] },
-  { page: "settings", path: "/settings", title: "设置", group: "服务管理", modules: ["system_settings"] },
+  {
+    page: "settings",
+    path: "/settings",
+    title: "设置",
+    group: "服务管理",
+    // 页面里每个页签都有自己的权限：只给了「系统更新」或「备份」的用户也要能进来，
+    // 否则顶栏的「立即更新」跳转会因整页被拦而静默失败。
+    modules: [
+      "system_settings",
+      "system_updates",
+      "backups",
+      "user_management",
+      "role_management",
+    ],
+  },
 ];
 
 export const NAV_GROUPS = ["资产台账", "机房管理", "巡检管理", "资源与审计", "系统", "服务管理"];

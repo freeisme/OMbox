@@ -49,10 +49,31 @@ async function checkUpdateBanner(): Promise<void> {
   }
 }
 
+/** 版本号本身已带 v（如 v4.0.9），避免显示成 vv4.0.9。 */
+const updateVersionLabel = computed(() => {
+  const raw = String(updateBanner.value?.latestVersion ?? "").trim();
+  if (!raw) return "";
+  return /^v/i.test(raw) ? raw : `v${raw}`;
+});
+
 function goToUpdates(): void {
   const target = updateBanner.value;
+  if (!canViewPage("settings")) {
+    // 之前这里会静默跳转失败：路由守卫把没有「系统设置」的账号弹回首页，
+    // 用户只觉得"点了没反应"。现在直接说明原因。
+    ElMessage.warning("当前账号没有「设置」权限，无法打开发布更新页，请联系管理员。");
+    return;
+  }
   dismissUpdateBanner();
   void router.push({ path: PATH_BY_PAGE.settings, query: { tab: target?.targetTab ?? "updates" } });
+}
+
+function goToSettings(): void {
+  if (!canViewPage("settings")) {
+    ElMessage.warning("当前账号没有「设置」权限，请联系管理员。");
+    return;
+  }
+  void router.push(PATH_BY_PAGE.settings);
 }
 
 function openExternalLink(link: NavLink): void {
@@ -217,7 +238,7 @@ onBeforeUnmount(() => {
           </el-badge>
           <el-button text @click="toggleTheme">{{ theme === "dark" ? "日间" : "夜间" }}</el-button>
           <el-button text @click="reloadData">重新加载</el-button>
-          <el-button text @click="router.push(PATH_BY_PAGE.settings)">设置</el-button>
+          <el-button text @click="goToSettings">设置</el-button>
           <el-button text type="danger" @click="signOut">退出</el-button>
         </div>
       </header>
@@ -225,7 +246,7 @@ onBeforeUnmount(() => {
       <div v-if="updateBanner" class="oa-update-banner">
         <el-alert type="warning" :closable="true" show-icon @close="dismissUpdateBanner">
           <template #title>
-            发现可用版本 <strong>v{{ updateBanner.latestVersion }}</strong>，是否立即更新？
+            发现可用版本 <strong>{{ updateVersionLabel }}</strong>，是否立即更新？
           </template>
           <el-button type="primary" size="small" @click="goToUpdates">立即更新</el-button>
           <el-button size="small" @click="dismissUpdateBanner">稍后</el-button>

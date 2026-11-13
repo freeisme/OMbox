@@ -771,7 +771,11 @@ async function submitUpdateCheck(): Promise<void> {
 async function submitUpdateApply(): Promise<void> {
   const target = selectedVersion.value;
   if (!target) {
-    ElMessage.warning("请先检查并选择一个目标版本。");
+    ElMessage.warning(
+      selectableVersions.value.length
+        ? "请先在「目标版本」下拉里选择一个版本。"
+        : "请先点上面的「检查版本」，等出现可更新版本后再选择。",
+    );
     return;
   }
   const label = target.version || target.tag || target.shortSha || target.sha.slice(0, 7);
@@ -1532,7 +1536,7 @@ onMounted(async () => {
               <el-button
                 type="primary"
                 :loading="updateApplying"
-                :disabled="updateBusy || !selectedVersion"
+                :disabled="updateBusy"
                 @click="submitUpdateApply"
               >
                 更新到所选版本
