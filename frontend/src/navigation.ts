@@ -82,6 +82,27 @@ export const NAV_ITEMS: NavItem[] = [
   },
   { page: "governance", path: "/governance", title: "同步与质量", group: "服务管理", modules: ["sync"] },
   {
+    page: "lineguard",
+    path: "/lineguard",
+    title: "工控机总览",
+    group: "产线设备",
+    modules: ["lineguard"],
+  },
+  {
+    page: "lineguardDevices",
+    path: "/lineguard/devices",
+    title: "工控机台账",
+    group: "产线设备",
+    modules: ["lineguard"],
+  },
+  {
+    page: "lineguardAlerts",
+    path: "/lineguard/alerts",
+    title: "工控机告警",
+    group: "产线设备",
+    modules: ["lineguard"],
+  },
+  {
     page: "settings",
     path: "/settings",
     title: "设置",
@@ -98,7 +119,7 @@ export const NAV_ITEMS: NavItem[] = [
   },
 ];
 
-export const NAV_GROUPS = ["资产台账", "机房管理", "巡检管理", "资源与审计", "系统", "服务管理"];
+export const NAV_GROUPS = ["资产台账", "机房管理", "巡检管理", "产线设备", "资源与审计", "系统", "服务管理"];
 
 export const PAGE_BY_PATH: Record<string, string> = Object.fromEntries(
   NAV_ITEMS.map((item) => [item.path, item.page]),

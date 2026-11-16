@@ -7,6 +7,9 @@ from urllib.parse import ParseResult
 from .asset_service import AssetService
 from .company import CompanyService
 from .inspection import InspectionService
+from .lineguard.api import LineGuardRouter
+from .lineguard.config import load_config as load_lineguard_config
+from .lineguard.db import LineGuardDb
 from .rack_layout import RackLayoutService
 from .device_topology import DeviceTopologyService
 from .datacenter_devices import DatacenterDeviceService
@@ -30,6 +33,8 @@ class ApiDependencies:
     require_csrf: Callable[[object, dict], None]
     # 导出 Excel 时附带的公司 Logo（PNG 字节）；没上传或没开启导出附带时返回 None。
     export_logo: Callable[[], bytes | None] = lambda: None
+    # 返回字典行的查询（带列名）。工控机模块沿用参数化查询写法，需要它做适配。
+    query_rows: Callable[[str], list[dict]] | None = None
 
 
 class DomainApiRouter:
@@ -95,6 +100,21 @@ class DomainApiRouter:
             deps.conflict_error,
             deps.forbidden_error,
         )
+        self.lineguard = LineGuardRouter(
+            LineGuardDb(
+                query_rows=deps.query_rows or (lambda sql: []),  # 由 server.py 注入，已绑定数据库
+                execute=deps.db.execute,
+                quote=deps.db.quote,
+            ),
+            self.scope,
+            load_lineguard_config(),
+            deps.api_error,
+            deps.conflict_error,
+            deps.forbidden_error,
+            self._read_context,
+            self._write_context,
+            self._payload,
+        )
 
     def _authenticated(self, handler: object) -> dict:
         return self.deps.require_auth(handler)
@@ -132,6 +152,9 @@ class DomainApiRouter:
         path = parsed.path.rstrip("/") or "/"
         method = str(getattr(handler, "command", "GET")).upper()
         send_json = getattr(handler, "send_json")
+
+        if path.startswith("/api/lineguard"):
+            return self.lineguard.dispatch(handler, path, method, params)
 
         if path == "/api/tickets" and method == "GET":
             send_json({"tickets": self.tickets.list_tickets(self._read_context(handler, "tickets"), params)})

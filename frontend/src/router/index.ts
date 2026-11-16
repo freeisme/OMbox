@@ -24,6 +24,9 @@ const VIEW_LOADERS: Record<string, () => Promise<unknown>> = {
   topology: () => import("../views/TopologyView.vue"),
   meetingRooms: () => import("../views/MeetingRoomView.vue"),
   organizations: () => import("../views/OrganizationsView.vue"),
+  lineguard: () => import("../views/LineGuardDashboardView.vue"),
+  lineguardDevices: () => import("../views/LineGuardDevicesView.vue"),
+  lineguardAlerts: () => import("../views/LineGuardAlertsView.vue"),
 };
 
 const vueRoutes = NAV_ITEMS.filter((item) => VIEW_LOADERS[item.page]).map((item) => ({

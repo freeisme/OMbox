@@ -9,6 +9,10 @@
 * [机房巡检](Inspection)
 * [会议室](Meeting-Rooms)
 
+**产线设备**
+
+* [产线工控机](LineGuard)
+
 **项目**
 
 * [Home](Home)

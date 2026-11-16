@@ -4787,3 +4787,67 @@ if __name__ == "__main__":
     import unittest
 
     unittest.main()
+
+class LineGuardModuleTests(TestCase):
+    """产线工控机模块：SQL 适配层与公司过滤的纯逻辑回归。"""
+
+    def _db(self, captured: list) -> object:
+        from office_asset.lineguard.db import LineGuardDb
+
+        def quote(value):
+            return "'" + str(value).replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+        return LineGuardDb(
+            query_rows=lambda sql: (captured.append(sql) or []),
+            execute=lambda sql: "",
+            quote=quote,
+        )
+
+    def test_render_inlines_parameters_with_escaping(self) -> None:
+        captured = []
+        db = self._db(captured)
+        db.query("SELECT id FROM lg_device WHERE asset_no = %s AND probe_port = %s", ("JG-1'x", 445))
+        self.assertEqual(len(captured), 1)
+        self.assertIn("JG-1\\'x", captured[0])
+        self.assertIn("445", captured[0])
+        self.assertNotIn("%s", captured[0])
+
+    def test_render_rejects_placeholder_mismatch(self) -> None:
+        db = self._db([])
+        with self.assertRaises(ValueError):
+            db.query("SELECT %s, %s", ("only-one",))
+
+    def test_numeric_columns_are_coerced(self) -> None:
+        from office_asset.lineguard.db import _coerce
+
+        self.assertEqual(_coerce("probe_interval", "60"), 60)
+        self.assertEqual(_coerce("device_id", "7"), 7)
+        self.assertEqual(_coerce("last_probe_ok", "1"), 1)
+        self.assertEqual(_coerce("cpu_percent", "42.5"), 42.5)
+        self.assertEqual(_coerce("asset_no", "007"), "007")
+        self.assertIsNone(_coerce("ip", None))
+
+    def test_company_clause_scopes_devices(self) -> None:
+        from office_asset.lineguard.assets import AssetService
+
+        unrestricted = AssetService(SimpleNamespace(), None)
+        self.assertEqual(unrestricted._company_sql("d")[0], "")
+
+        scoped = AssetService(SimpleNamespace(), [3, 1])
+        self.assertIn("d.company_id IN (1, 3)", scoped._company_sql("d")[0])
+
+        empty = AssetService(SimpleNamespace(), [])
+        self.assertIn("1=0", empty._company_sql("d")[0])
+
+    def test_scan_network_parses_cidr_and_range(self) -> None:
+        from office_asset.lineguard.scanner import parse_network
+
+        # 用 TEST-NET-2 文档网段，避免示例里出现内网地址
+        self.assertEqual(len(parse_network("198.51.100.0/30")), 2)
+        self.assertEqual(
+            parse_network("198.51.100.10-198.51.100.12"),
+            ["198.51.100.10", "198.51.100.11", "198.51.100.12"],
+        )
+        with self.assertRaises(ValueError):
+            parse_network("198.51.100.0/8")
+

@@ -31,6 +31,10 @@ from office_asset.xlsx import map_headers as map_sheet_headers
 from office_asset.xlsx import normalise_header as normalise_sheet_header
 from office_asset.xlsx import read_upload_rows
 from office_asset.jobs import finish_job_execution, job_run_key, run_periodic_job, start_job_execution
+from office_asset.lineguard.assets import AssetService as LineGuardAssetService
+from office_asset.lineguard.config import load_config as load_lineguard_config
+from office_asset.lineguard.db import LineGuardDb
+from office_asset.lineguard.monitor import Monitor as LineGuardMonitor
 from office_asset.permissions import PermissionService
 from office_asset.sql import SqlGateway, parse_bool
 
@@ -1651,6 +1655,60 @@ def run_mysql(sql: str, *, database: str | None = None) -> str:
             raise ConflictError("数据唯一标识已存在，请检查重复的名称、编码或编号。")
         raise InternalServerError("数据库操作失败。")
     return completed.stdout.strip()
+
+
+def run_mysql_rows(sql: str, *, database: str | None = None) -> list[dict]:
+    """执行查询并返回字典行（带列名）。
+
+    与 run_mysql 的区别：不做 --skip-column-names，而是按 TAB 解析首行表头。
+    供工控机模块（LineGuard）使用——它沿用「参数化查询 + 字典行」的写法，
+    而生产环境不能访问 PyPI 装 Python 驱动，只能复用 mysql CLI。
+    """
+    if not DB_PASSWORD:
+        raise InternalServerError("数据库连接未配置。")
+    args = [
+        MYSQL_BIN,
+        "--protocol=tcp",
+        f"--host={DB_HOST}",
+        f"--port={DB_PORT}",
+        f"--user={DB_USER}",
+        "--default-character-set=utf8mb4",
+        "--batch",
+        "--raw",
+    ]
+    if database:
+        args.append(f"--database={database}")
+    env = os.environ.copy()
+    env["MYSQL_PWD"] = DB_PASSWORD
+    completed = subprocess.run(
+        args,
+        input=sql,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+        cwd=str(ROOT_DIR),
+    )
+    if completed.returncode != 0:
+        message = completed.stderr.strip() or completed.stdout.strip() or "Unknown MySQL error"
+        print(f"MySQL command failed: {message[:512]}", flush=True)
+        if "Duplicate entry" in message:
+            raise ConflictError("数据唯一标识已存在，请检查重复的名称、编码或编号。")
+        raise InternalServerError("数据库操作失败。")
+    lines = [line for line in completed.stdout.split("\n") if line != ""]
+    if not lines:
+        return []
+    header = lines[0].split("\t")
+    rows: list[dict] = []
+    for line in lines[1:]:
+        cells = line.split("\t")
+        row: dict = {}
+        for index, cell in enumerate(cells):
+            key = header[index] if index < len(header) else f"c{index}"
+            row[key] = None if cell == "NULL" else cell
+        rows.append(row)
+    return rows
 
 
 def backup_setting_enabled(value: object | None) -> bool:
@@ -5812,8 +5870,21 @@ DOMAIN_ROUTER = DomainApiRouter(
         require_permission=require_permission,
         require_csrf=require_csrf,
         export_logo=export_logo_bytes,
+        query_rows=lambda sql: run_mysql_rows(sql, database=DB_NAME),
     )
 )
+
+# ---------------------------------------------------------------- 产线工控机
+# 数据访问复用上面的 mysql 网关；探测循环作为后台线程运行（不依赖 Agent）。
+LINEGUARD_CONFIG = load_lineguard_config()
+LINEGUARD_DB = LineGuardDb(
+    query_rows=lambda sql: run_mysql_rows(sql, database=DB_NAME),
+    execute=DOMAIN_DB.execute,
+    quote=DOMAIN_DB.quote,
+)
+LINEGUARD_ASSETS = LineGuardAssetService(LINEGUARD_DB)
+LINEGUARD_MONITOR = LineGuardMonitor(LINEGUARD_DB, LINEGUARD_ASSETS, LINEGUARD_CONFIG)
+DOMAIN_ROUTER.lineguard.monitor = LINEGUARD_MONITOR
 
 
 class AppHandler(SimpleHTTPRequestHandler):
@@ -6902,6 +6973,8 @@ def main() -> None:
         daemon=True,
     )
     scheduler.start()
+    # 产线工控机探测循环：每轮按设备自己的 probe_interval 到期探测，结果批量回写。
+    LINEGUARD_MONITOR.start()
     print(f"Serving web app on http://{SERVER_HOST}:{SERVER_PORT}")
     print(f"Using MySQL {DB_USER}@{DB_HOST}:{DB_PORT}/{DB_NAME}")
     server.serve_forever()
