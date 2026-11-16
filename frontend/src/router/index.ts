@@ -8,20 +8,16 @@ const VIEW_LOADERS: Record<string, () => Promise<unknown>> = {
   computers: () => import("../views/ComputersView.vue"),
   dictionary: () => import("../views/DictionaryView.vue"),
   employees: () => import("../views/EmployeesView.vue"),
-  flowControl: () => import("../views/FlowControlView.vue"),
-  inventory: () => import("../views/InventoryView.vue"),
   governance: () => import("../views/GovernanceView.vue"),
   inspection: () => import("../views/InspectionView.vue"),
   leftEmployees: () => import("../views/LeftEmployeesView.vue"),
-  scrapRecords: () => import("../views/ScrapRecordsView.vue"),
   serviceManagement: () => import("../views/ServiceManagementView.vue"),
   tickets: () => import("../views/TicketsView.vue"),
   settings: () => import("../views/SettingsView.vue"),
   audit: () => import("../views/AuditView.vue"),
-  datacenterDevices: () => import("../views/DatacenterDeviceView.vue"),
-  rackLayout: () => import("../views/RackLayoutView.vue"),
-  devicePanel: () => import("../views/DevicePanelView.vue"),
-  topology: () => import("../views/TopologyView.vue"),
+  // 机房四合一（页内页签）与物资三合一（页内页签）
+  datacenter: () => import("../views/DatacenterView.vue"),
+  inventoryHub: () => import("../views/InventoryHubView.vue"),
   meetingRooms: () => import("../views/MeetingRoomView.vue"),
   organizations: () => import("../views/OrganizationsView.vue"),
   lineguard: () => import("../views/LineGuardDashboardView.vue"),
@@ -35,6 +31,17 @@ const vueRoutes = NAV_ITEMS.filter((item) => VIEW_LOADERS[item.page]).map((item)
   component: VIEW_LOADERS[item.page],
   meta: { title: item.title, page: item.page },
 })) as RouteRecordRaw[];
+
+/** 机房/物资合并后保留的旧入口，一律跳到新页面的对应页签。 */
+const LEGACY_REDIRECTS: RouteRecordRaw[] = [
+  { path: "/datacenter-devices", redirect: () => ({ path: "/datacenter", query: { tab: "devices" } }) },
+  { path: "/rack-layout", redirect: () => ({ path: "/datacenter", query: { tab: "racks" } }) },
+  { path: "/device-panel", redirect: () => ({ path: "/datacenter", query: { tab: "panel" } }) },
+  { path: "/topology", redirect: () => ({ path: "/datacenter", query: { tab: "topology" } }) },
+  { path: "/inventory", redirect: () => ({ path: "/inventory-hub", query: { tab: "catalog" } }) },
+  { path: "/flow-control", redirect: () => ({ path: "/inventory-hub", query: { tab: "flow" } }) },
+  { path: "/scrap-records", redirect: () => ({ path: "/inventory-hub", query: { tab: "scrap" } }) },
+] as RouteRecordRaw[];
 
 const routes: RouteRecordRaw[] = [
   {
@@ -50,6 +57,8 @@ const routes: RouteRecordRaw[] = [
     meta: { title: "集团/公司初始化" },
   },
   { path: "/", redirect: PATH_BY_PAGE.dashboard },
+  // 合并前的旧地址：收藏夹、外链、别人发的链接都还能用，自动落到对应页签。
+  ...LEGACY_REDIRECTS,
   ...vueRoutes,
   { path: "/:pathMatch(.*)*", redirect: PATH_BY_PAGE.dashboard },
 ];

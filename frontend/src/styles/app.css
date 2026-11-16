@@ -208,10 +208,13 @@ body {
   border-radius: var(--oa-radius-md);
 }
 
-/* 选中项：Element Plus 只改文字色，底色仍要自己给 */
+/* 选中项：Element Plus 只改文字色，底色仍要自己给。
+   用「左侧色条 + 半透明底」而不是整块主色：红底面积太大时会和危险操作抢注意力。 */
 .oa-rail .oa-nav .el-menu-item.is-active {
-  background: var(--el-color-primary, #409eff);
+  background: rgba(255, 255, 255, 0.1);
   color: #fff;
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--el-color-primary, #409eff);
 }
 
 .oa-nav-group {
@@ -227,6 +230,136 @@ body {
   font-size: 12px;
   line-height: 1.5;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* ---------------- 侧栏：图标 / 分组折叠 / 图标栏 ---------------- */
+
+.oa-rail-toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #9fb0c4;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.oa-rail-toggle:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.oa-rail-toggle svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* 菜单图标：描边风格，跟随文字颜色，选中/悬停自动变色 */
+.oa-nav-icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  margin-right: 10px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.oa-rail.is-collapsed .oa-nav-icon {
+  margin-right: 0;
+}
+
+/* 分组标题可点击收起；收起后只剩标题行 */
+.oa-nav-group {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  border-radius: var(--oa-radius-md);
+}
+
+.oa-nav-group:hover {
+  color: #c9d6e4;
+}
+
+.oa-nav-group:focus-visible {
+  outline: 2px solid var(--el-color-primary, #409eff);
+  outline-offset: 2px;
+}
+
+.oa-nav-group.is-static {
+  cursor: default;
+}
+
+.oa-nav-caret {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.15s ease;
+}
+
+.oa-nav-caret.is-collapsed {
+  transform: rotate(-90deg);
+}
+
+.oa-nav-divider {
+  height: 1px;
+  margin: 8px 10px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* 收起成图标栏：只留图标，品牌与版本信息收起，悬停出提示由 Element Plus 提供 */
+.oa-rail.is-collapsed {
+  padding-left: 4px;
+  padding-right: 4px;
+}
+
+.oa-rail.is-collapsed .oa-brand {
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.oa-rail.is-collapsed .oa-rail-toggle {
+  margin-left: 0;
+}
+
+/* 合并页（机房 / 物资管理）：页签吸顶，内容区占满剩余高度 */
+.oa-hub {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+.oa-hub-tabs .el-tabs__header {
+  margin-bottom: 12px;
+}
+
+.oa-hub-body {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .oa-main {
@@ -398,6 +531,11 @@ html.dark .oa-topbar {
 }
 
 @media (max-width: 767px) {
+  /* 顶部横条模式下没有"收起"概念，隐藏按钮 */
+  .oa-rail-toggle {
+    display: none;
+  }
+
   /* 导航改为顶部横向条，内容区独占剩余高度 */
   .oa-shell {
     flex-direction: column;

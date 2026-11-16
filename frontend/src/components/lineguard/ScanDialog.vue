@@ -19,7 +19,7 @@ const stationOptions = computed(() => props.stations.filter((item) => String(ite
 const addable = computed(() => (result.value?.candidates || []).filter((item) => item.alive && !item.known_device_id));
 
 async function run(): Promise<void> {
-  if (!cidr.value.trim()) { ElMessage.warning("请填写网段，例如 192.168.10.0/24"); return; }
+  if (!cidr.value.trim()) { ElMessage.warning("请填写网段，例如 192.0.2.0/24"); return; }
   busy.value = true;
   try {
     const payload = await scanNetwork({
@@ -63,7 +63,7 @@ async function commit(): Promise<void> {
              @update:model-value="emit('update:modelValue', $event)">
     <el-form label-width="90px">
       <el-form-item label="网段">
-        <el-input v-model="cidr" placeholder="192.168.10.0/24，或 192.168.10.10-192.168.10.60" class="oa-full-width" />
+        <el-input v-model="cidr" placeholder="192.0.2.0/24，或 192.0.2.10-192.0.2.60（示例地址段）" class="oa-full-width" />
       </el-form-item>
       <el-form-item label="探测端口">
         <el-input v-model="ports" placeholder="逗号分隔；留空则用 ICMP" />

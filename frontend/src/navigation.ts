@@ -24,16 +24,9 @@ export const NAV_ITEMS: NavItem[] = [
   { page: "employees", path: "/employees", title: "使用人员", group: "资产台账", modules: ["employees"] },
   { page: "leftEmployees", path: "/left-employees", title: "离职人员", group: "资产台账", modules: ["employees"] },
   { page: "organizations", path: "/organizations", title: "组织架构", group: "资产台账", modules: ["organizations"] },
-  {
-    page: "datacenterDevices",
-    path: "/datacenter-devices",
-    title: "网络设备/服务器",
-    group: "机房管理",
-    modules: ["rack_layout"],
-  },
-  { page: "rackLayout", path: "/rack-layout", title: "机柜视图", group: "机房管理", modules: ["rack_layout"] },
-  { page: "devicePanel", path: "/device-panel", title: "设备面板", group: "机房管理", modules: ["rack_layout"] },
-  { page: "topology", path: "/topology", title: "网络拓扑", group: "机房管理", modules: ["rack_layout"] },
+  // 机房四合一：设备清单 / 机柜视图 / 设备面板 / 网络拓扑 收进一个页面，
+  // 页内用页签切换（见 views/DatacenterView.vue），旧地址在 router 里保留跳转。
+  { page: "datacenter", path: "/datacenter", title: "机房", group: "机房管理", modules: ["rack_layout"] },
   // 巡检独立成一个模块：机房 / 弱电间 / 会议室都要巡检，不再挂在"机房管理"下。
   {
     page: "inspection",
@@ -49,26 +42,14 @@ export const NAV_ITEMS: NavItem[] = [
     group: "巡检管理",
     modules: ["inspection_management"],
   },
+  // 物资三合一：台账 / 流转记录 / 报废记录 收进一个页面（见 views/InventoryHubView.vue）。
+  // 入口可见性取三个模块的并集，页内页签再按各自权限过滤。
   {
-    page: "inventory",
-    path: "/inventory",
-    title: "IT物资",
+    page: "inventoryHub",
+    path: "/inventory-hub",
+    title: "物资管理",
     group: "资源与审计",
-    modules: ["inventory_catalog", "warehouse_management"],
-  },
-  {
-    page: "flowControl",
-    path: "/flow-control",
-    title: "物资流转记录",
-    group: "资源与审计",
-    modules: ["inventory_operations"],
-  },
-  {
-    page: "scrapRecords",
-    path: "/scrap-records",
-    title: "报废记录",
-    group: "资源与审计",
-    modules: ["scrap_management"],
+    modules: ["inventory_catalog", "warehouse_management", "inventory_operations", "scrap_management"],
   },
   { page: "dictionary", path: "/dictionary", title: "基础字典", group: "资源与审计", modules: ["organizations"] },
   { page: "audit", path: "/audit", title: "操作日志", group: "服务管理", modules: ["audit_logs"] },

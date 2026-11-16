@@ -347,7 +347,7 @@ class LineGuardRouter:
             body = self._payload(handler)
             cidr = str(body.get("cidr") or "").strip()
             if not cidr:
-                raise self.api_error("请填写要扫描的网段，例如 192.168.10.0/24")
+                raise self.api_error("请填写要扫描的网段，例如 192.0.2.0/24")
             if not self._scan_lock.acquire(blocking=False):
                 raise self.conflict_error("已有扫描任务在运行，请稍后再试。")
             try:

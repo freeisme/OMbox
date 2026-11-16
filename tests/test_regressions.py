@@ -1281,8 +1281,11 @@ class ScrapManagementRegressionTests(TestCase):
         self.assertIn("待报废", scrap_view)
         self.assertIn("scrapModelLabel", scrap_view)
         self.assertNotIn("IT物资", scrap_view)
-        self.assertIn('page: "scrapRecords"', navigation)
-        self.assertIn('modules: ["scrap_management"]', navigation)
+        # v4.1.1 起物资三合一：报废记录是「物资管理」页的一个页签
+        hub = (ROOT / "frontend" / "src" / "views" / "InventoryHubView.vue").read_text(encoding="utf-8")
+        self.assertIn("ScrapRecordsView", hub)
+        self.assertIn('page: "inventoryHub"', navigation)
+        self.assertIn('"scrap_management"', navigation)
 
     def test_scrap_release_documents_no_stock_return(self):
         """报废不回补库存这条业务规则要留在迁移脚本与页面文案里。
@@ -1839,8 +1842,11 @@ class RackLayoutRegressionTests(TestCase):
         view = (ROOT / "frontend" / "src" / "views" / "RackLayoutView.vue").read_text(encoding="utf-8")
         api_client = (ROOT / "frontend" / "src" / "api" / "datacenter.ts").read_text(encoding="utf-8")
 
-        # 机柜视图只存在于 Vue 前端，旧前端已整体删除。
-        self.assertIn('page: "rackLayout", path: "/rack-layout"', navigation)
+        # 机柜视图只存在于 Vue 前端，旧前端已整体删除；
+        # v4.1.1 起机房四项合并为一个「机房」页，机柜视图是其中一个页签。
+        self.assertIn('page: "datacenter", path: "/datacenter"', navigation)
+        hub = (ROOT / "frontend" / "src" / "views" / "DatacenterView.vue").read_text(encoding="utf-8")
+        self.assertIn("RackLayoutView", hub)
         self.assertFalse((ROOT / "web" / "app.js").exists())
         self.assertIn("onPointerDown", view)
         self.assertIn("placeAt", view)
@@ -2155,8 +2161,12 @@ class RackViewSiteAndRackSelectorsTests(TestCase):
         flows = (ROOT / "frontend" / "src" / "api" / "flows.ts").read_text(encoding="utf-8")
         scrap = (ROOT / "frontend" / "src" / "api" / "scrap.ts").read_text(encoding="utf-8")
 
-        self.assertIn('flowControl: () => import("../views/FlowControlView.vue"),', router)
-        self.assertIn('scrapRecords: () => import("../views/ScrapRecordsView.vue"),', router)
+        # v4.1.1 起两个页面并入「物资管理」，路由由 hub 承载，旧地址保留跳转
+        hub = (ROOT / "frontend" / "src" / "views" / "InventoryHubView.vue").read_text(encoding="utf-8")
+        self.assertIn("FlowControlView", hub)
+        self.assertIn("ScrapRecordsView", hub)
+        self.assertIn('path: "/flow-control"', router)
+        self.assertIn('path: "/scrap-records"', router)
         # 备注修正与报废记录接口
         self.assertIn("/note-corrections", flows)
         self.assertIn("/api/scrap-records?", scrap)
@@ -2179,7 +2189,9 @@ class RackViewSiteAndRackSelectorsTests(TestCase):
         view = (ROOT / "frontend" / "src" / "views" / "InventoryView.vue").read_text(encoding="utf-8")
         api_module = (ROOT / "frontend" / "src" / "api" / "inventory.ts").read_text(encoding="utf-8")
 
-        self.assertIn('inventory: () => import("../views/InventoryView.vue"),', router)
+        hub = (ROOT / "frontend" / "src" / "views" / "InventoryHubView.vue").read_text(encoding="utf-8")
+        self.assertIn("InventoryView", hub)
+        self.assertIn('path: "/inventory"', router)
         # 入库/调拨/仓库维护复用既有接口
         self.assertIn("/api/inventory/receipts", api_module)
         self.assertIn("/api/inventory/transfers", api_module)
@@ -2374,12 +2386,14 @@ class DevicePanelTopologyRegressionTests(TestCase):
         navigation = (ROOT / "frontend" / "src" / "navigation.ts").read_text(encoding="utf-8")
         router = (ROOT / "frontend" / "src" / "router" / "index.ts").read_text(encoding="utf-8")
 
-        self.assertIn('page: "rackLayout", path: "/rack-layout"', navigation)
-        self.assertIn('page: "devicePanel", path: "/device-panel"', navigation)
-        self.assertIn('page: "topology", path: "/topology"', navigation)
-        self.assertIn("RackLayoutView", router)
-        self.assertIn("DevicePanelView", router)
-        self.assertIn("TopologyView", router)
+        # v4.1.1：四个机房页面合并为「机房」一页，页面组件由 hub 引用
+        self.assertIn('page: "datacenter", path: "/datacenter"', navigation)
+        hub = (ROOT / "frontend" / "src" / "views" / "DatacenterView.vue").read_text(encoding="utf-8")
+        for component in ("DatacenterDeviceView", "RackLayoutView", "DevicePanelView", "TopologyView"):
+            self.assertIn(component, hub)
+        # 旧地址保留跳转，收藏夹与外链不会失效
+        for legacy in ("/datacenter-devices", "/rack-layout", "/device-panel", "/topology"):
+            self.assertIn(f'path: "{legacy}"', router)
         self.assertIn("VIEW_LOADERS", router)
         for name in ("RackLayoutView.vue", "DevicePanelView.vue", "TopologyView.vue"):
             self.assertTrue((ROOT / "frontend" / "src" / "views" / name).exists(), name)
@@ -3198,17 +3212,18 @@ class DatacenterDeviceLedgerRegressionTests(TestCase):
         self.assertIn("self.datacenter_devices.", router_py)
         # 机房管理分组：四个页面 + 设备台账
         self.assertIn('group: "机房管理"', navigation)
-        self.assertIn('page: "datacenterDevices"', navigation)
-        self.assertIn('path: "/datacenter-devices"', navigation)
+        # v4.1.1 机房四合一：入口变成「机房」，设备台账是第一个页签
+        self.assertIn('page: "datacenter"', navigation)
+        self.assertIn('path: "/datacenter"', navigation)
         # 巡检已独立成"巡检管理"分组（v3.0.18），不再挂在机房管理下
         self.assertIn('title: "巡检中心"', navigation)
         self.assertIn('group: "巡检管理"', navigation)
         self.assertNotIn('title: "机房巡检"', navigation)
         self.assertIn('"机房管理", "巡检管理"', navigation)
-        self.assertIn("DatacenterDeviceView", vue_router)
-        self.assertTrue(
-            (ROOT / "frontend" / "src" / "views" / "DatacenterDeviceView.vue").exists()
-        )
+        self.assertIn("DatacenterView", vue_router)
+        self.assertTrue((ROOT / "frontend" / "src" / "views" / "DatacenterDeviceView.vue").exists())
+        hub = (ROOT / "frontend" / "src" / "views" / "DatacenterView.vue").read_text(encoding="utf-8")
+        self.assertIn("DatacenterDeviceView", hub)
         self.assertNotIn('page: "inspection", path: "/inspection", title: "机房巡检", group: "资源与审计"', navigation)
 
 
