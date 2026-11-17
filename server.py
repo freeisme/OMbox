@@ -1004,10 +1004,54 @@ def cookie_value(handler: SimpleHTTPRequestHandler, name: str) -> str:
     return ""
 
 
+# ---------------------------------------------------------------- 会话上下文缓存
+# 每个请求都要「校验会话 + 带出用户/员工/组织/超管标记」，在 mysql CLI 访问模式下这条
+# 查询约 0.3s，是 /api/state 这类高频接口的固定开销。同一令牌在短窗口内复用结果，
+# 写请求开始时整体失效，保证权限/组织一改立刻生效；TTL 也远小于无操作超时。
+AUTH_CONTEXT_TTL_SECONDS = float(os.environ.get("OA_AUTH_CONTEXT_TTL", "20"))
+AUTH_CONTEXT_CACHE: dict[str, dict] = {}
+AUTH_CONTEXT_CACHE_LOCK = threading.Lock()
+
+
+def invalidate_auth_context(token: str = "") -> None:
+    """令牌级失效（登出）；不传令牌时整体失效（权限、角色、组织变更后）。"""
+    with AUTH_CONTEXT_CACHE_LOCK:
+        if token:
+            AUTH_CONTEXT_CACHE.pop(token, None)
+        else:
+            AUTH_CONTEXT_CACHE.clear()
+
+
+def refresh_session_cookie(handler: SimpleHTTPRequestHandler) -> None:
+    """只把会话/CSRF Cookie 续期下发给浏览器，不写数据库。"""
+    session_token = cookie_value(handler, AUTH_COOKIE_NAME)
+    csrf_token = cookie_value(handler, CSRF_COOKIE_NAME)
+    if session_token and csrf_token:
+        handler.session_cookie_refresh = (session_token, csrf_token)
+
+
 def current_auth_context(handler: SimpleHTTPRequestHandler) -> dict | None:
     token = cookie_value(handler, AUTH_COOKIE_NAME)
     if not token:
         return None
+    cached_at = time.monotonic()
+    if AUTH_CONTEXT_TTL_SECONDS > 0:
+        touch_due = False
+        with AUTH_CONTEXT_CACHE_LOCK:
+            entry = AUTH_CONTEXT_CACHE.get(token)
+            if entry and cached_at - float(entry.get("cachedAt") or 0) < AUTH_CONTEXT_TTL_SECONDS:
+                context = entry.get("context")
+                touch_due = cached_at - float(entry.get("touchedAt") or 0) >= 60
+                if touch_due:
+                    entry["touchedAt"] = cached_at
+            else:
+                context = None
+        if context:
+            if touch_due:
+                touch_auth_session(handler, context)
+            else:
+                refresh_session_cookie(handler)
+            return context
     idle_hours = configured_session_hours()
     context = json_query_one(
         f"""
@@ -1055,6 +1099,13 @@ def current_auth_context(handler: SimpleHTTPRequestHandler) -> dict | None:
     )
     if context:
         touch_auth_session(handler, context)
+        if AUTH_CONTEXT_TTL_SECONDS > 0:
+            with AUTH_CONTEXT_CACHE_LOCK:
+                AUTH_CONTEXT_CACHE[token] = {
+                    "cachedAt": time.monotonic(),
+                    "touchedAt": time.monotonic(),
+                    "context": context,
+                }
     return context
 
 
@@ -1078,10 +1129,7 @@ def touch_auth_session(handler: SimpleHTTPRequestHandler, context: dict) -> None
         """,
         database=DB_NAME,
     )
-    session_token = cookie_value(handler, AUTH_COOKIE_NAME)
-    csrf_token = cookie_value(handler, CSRF_COOKIE_NAME)
-    if session_token and csrf_token:
-        handler.session_cookie_refresh = (session_token, csrf_token)
+    refresh_session_cookie(handler)
 
 
 def require_auth(handler: SimpleHTTPRequestHandler) -> dict:
@@ -3859,6 +3907,36 @@ def query_audit_logs(params: dict[str, list[str]]) -> dict:
     }
 
 
+# ---------------------------------------------------------------- 状态快照缓存
+# build_state_payload() 与用户无关（一次取回全部集合，之后才按权限裁剪），
+# 所以在写请求之外可以整包复用。TTL 取小值兜底，任何写请求都会立刻失效。
+STATE_CACHE_TTL_SECONDS = float(os.environ.get("OA_STATE_CACHE_TTL", "3"))
+STATE_CACHE: dict[str, object] = {"at": 0.0, "payload": None}
+STATE_CACHE_LOCK = threading.Lock()
+
+
+def invalidate_state_cache() -> None:
+    with STATE_CACHE_LOCK:
+        STATE_CACHE["payload"] = None
+        STATE_CACHE["at"] = 0.0
+
+
+def build_state_payload_cached(include_audit_logs: bool = True) -> dict:
+    """带短 TTL 的状态快照；只缓存完整包（审计日志裁剪版单独构建）。"""
+    if include_audit_logs and STATE_CACHE_TTL_SECONDS > 0:
+        now = time.monotonic()
+        with STATE_CACHE_LOCK:
+            cached = STATE_CACHE.get("payload")
+            if isinstance(cached, dict) and now - float(STATE_CACHE["at"] or 0) < STATE_CACHE_TTL_SECONDS:
+                return cached
+    payload = build_state_payload(include_audit_logs=include_audit_logs)
+    if include_audit_logs and STATE_CACHE_TTL_SECONDS > 0:
+        with STATE_CACHE_LOCK:
+            STATE_CACHE["payload"] = payload
+            STATE_CACHE["at"] = time.monotonic()
+    return payload
+
+
 def build_state_payload(include_audit_logs: bool = True) -> dict:
     # 工作台汇总不需要审计日志（它是整包里最大的一块），按需跳过。
     audit_logs_query = (
@@ -4697,14 +4775,28 @@ def workbench_summary_cached(context: dict, refresh: bool = False) -> dict:
 
 
 def permission_map(context: dict) -> dict[str, dict]:
+    """按上下文缓存：同一会话的多次请求不必重复拉权限矩阵。"""
+    memo = context.get("_permissionMap")
+    if isinstance(memo, dict):
+        return memo
     result: dict[str, dict] = {}
     for item in PERMISSIONS.permissions(context):
         if text_value(item.get("actionCode")) == "view":
             result[text_value(item.get("moduleCode"))] = item
+    context["_permissionMap"] = result
     return result
 
 
 def scoped_org_ids_for_state(context: dict) -> set[str]:
+    memo = context.get("_orgScopeIds")
+    if isinstance(memo, set):
+        return memo
+    result = _scoped_org_ids_uncached(context)
+    context["_orgScopeIds"] = result
+    return result
+
+
+def _scoped_org_ids_uncached(context: dict) -> set[str]:
     user_id = sql_int(context.get("id"), 0)
     if user_id <= 0:
         return set()
@@ -4802,6 +4894,9 @@ def user_company_ids_for_context(context: dict) -> set[str]:
 
 def scoped_company_ids_for_state(context: dict) -> set[str]:
     """公司数据范围：组织范围推导的公司 + 本人任职公司（多公司任职可跨公司管理）。"""
+    memo = context.get("_companyScopeIds")
+    if isinstance(memo, set):
+        return memo
     result: set[str] = set()
     org_ids = scoped_org_ids_for_state(context)
     if org_ids:
@@ -4820,6 +4915,7 @@ def scoped_company_ids_for_state(context: dict) -> set[str]:
         )
         result |= {str(sql_int(v, 0)) for v in (rows or []) if sql_int(v, 0) > 0}
     result |= user_company_ids_for_context(context)
+    context["_companyScopeIds"] = result
     return result
 
 
@@ -5978,6 +6074,10 @@ class AppHandler(SimpleHTTPRequestHandler):
 
     def handle_api(self) -> None:
         parsed = urlparse(self.path)
+        # 写请求可能改权限/角色/组织范围：先清空会话上下文缓存，后续读请求立刻看到新状态。
+        if self.command not in {"GET", "HEAD"}:
+            invalidate_auth_context()
+            invalidate_state_cache()
         params = parse_qs(parsed.query, keep_blank_values=True)
         path = parsed.path.rstrip("/") or "/"
         if not module_datacenter_enabled() and (
@@ -6191,6 +6291,8 @@ class AppHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == "/api/auth/logout" and self.command == "POST":
+            # 登出后立刻让该令牌的会话缓存失效，避免 20s 内仍能读到旧上下文
+            invalidate_auth_context(cookie_value(self, AUTH_COOKIE_NAME))
             self.read_json(allow_empty=True)
             token = cookie_value(self, AUTH_COOKIE_NAME)
             if token:
@@ -6689,11 +6791,28 @@ class AppHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == "/api/state" and self.command == "GET":
+            trace_state = os.environ.get("OA_STATE_TRACE") == "1"
+            t_start = time.perf_counter()
             context = require_auth(self)
+            t_auth = time.perf_counter()
             with DB_LOCK:
-                payload = filter_state_payload(build_state_payload(), context)
+                built = build_state_payload_cached()
+            t_build = time.perf_counter()
+            payload = filter_state_payload(built, context)
+            t_filter = time.perf_counter()
             payload = filter_state_by_company(payload, (params.get("companyId") or [""])[0])
-            self.send_json(filter_state_include(payload, (params.get("include") or [""])[0]))
+            final = filter_state_include(payload, (params.get("include") or [""])[0])
+            t_done = time.perf_counter()
+            if trace_state:
+                print(
+                    f"[state-trace] auth={(t_auth - t_start) * 1000:.0f}ms "
+                    f"build={(t_build - t_auth) * 1000:.0f}ms "
+                    f"filter={(t_filter - t_build) * 1000:.0f}ms "
+                    f"include={(t_done - t_filter) * 1000:.0f}ms "
+                    f"bytes={len(json.dumps(final, ensure_ascii=False))}",
+                    flush=True,
+                )
+            self.send_json(final)
             return
 
         if parsed.path.startswith("/api/list/") and self.command == "GET":
