@@ -5859,6 +5859,15 @@ def require_permission(context: dict, module_code: str, action_code: str) -> Non
     PERMISSIONS.require(context, module_code, action_code)
 
 
+def permission_allows(context: dict, module_code: str, action_code: str) -> bool:
+    """布尔版权限判断：需要"有条件返回字段"时用，避免抛异常控制流程。"""
+    try:
+        require_permission(context, module_code, action_code)
+    except ForbiddenError:
+        return False
+    return True
+
+
 DOMAIN_ROUTER = DomainApiRouter(
     ApiDependencies(
         db=DOMAIN_DB,
@@ -6239,11 +6248,17 @@ class AppHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/access-control" and self.command == "GET":
             context = require_auth(self)
             require_permission(context, "role_management", "view")
+            # 只有能管用户的账号才返回账号清单：只读角色即使能看权限矩阵，
+            # 也不该顺带拿到全公司用户名（最小权限 / 信息暴露收敛）。
             self.send_json(
                 {
                     **PERMISSIONS.catalog(),
                     "roles": PERMISSIONS.list_roles(),
-                    "users": list_users(),
+                    "users": list_users()
+                    # 口径用 update 而不是 view：只读角色即便能看权限矩阵，
+                    # 也不该拿到全公司账号清单（viewer 只授了 view）。
+                    if permission_allows(context, "user_management", "update")
+                    else [],
                 }
             )
             return

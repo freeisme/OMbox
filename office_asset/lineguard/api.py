@@ -353,7 +353,11 @@ class LineGuardRouter:
             try:
                 known = {str(row["ip"]): int(row["id"]) for row in self.db.query(
                     "SELECT id, ip FROM lg_device WHERE ip <> ''" + self._company_sql("lg_device", company_ids))}
-                result = scan_network(cidr, self.config, known_ips=known, probe_ports=body.get("ports"))
+                try:
+                    result = scan_network(cidr, self.config, known_ips=known, probe_ports=body.get("ports"))
+                except ValueError as exc:
+                    # 网段/端口写错属于输入问题：必须回 400，不能让 ipaddress 抛到 500
+                    raise self.api_error(f"网段或端口格式不正确：{cidr}（{exc}）") from exc
                 self.db.execute(
                     "INSERT INTO lg_scan_task (cidr, status, total_hosts, alive_hosts, operator, result, finished_at) "
                     "VALUES (%s, 'done', %s, %s, %s, %s, NOW())",
