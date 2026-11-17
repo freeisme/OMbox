@@ -32,6 +32,19 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(appVersion),
     __APP_BUILD_TIME__: JSON.stringify(new Date().toISOString()),
   },
+  // 开发模式：把 /api 转发到本地后端（默认 python server.py 监听 8000），
+  // 否则 dev server 会把接口请求当成静态资源返回 404，登录与列表都加载不出来。
+  server: {
+    host: "127.0.0.1",
+    port: 5173,
+    strictPort: true,
+    proxy: {
+      "/api": {
+        target: process.env.OA_DEV_API ?? "http://127.0.0.1:8000",
+        changeOrigin: true,
+      },
+    },
+  },
   build: {
     outDir: "../web/app",
     emptyOutDir: true,
