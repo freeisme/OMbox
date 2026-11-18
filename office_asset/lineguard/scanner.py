@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import ipaddress
+import shutil
 import socket
 import subprocess
 import sys
@@ -25,12 +26,24 @@ KNOWN_PORTS: dict[int, str] = {
     5985: "WinRM",
     5986: "WinRM-HTTPS",
     135: "RPC",
+    139: "NetBIOS",
     22: "SSH",
+    23: "Telnet",
     80: "HTTP",
+    443: "HTTPS",
     102: "S7",          # 西门子 PLC
     502: "Modbus",
     44818: "EtherNet/IP",
+    4840: "OPC-UA",
 }
+
+# 扫描时默认探测的端口：Windows 主机特征 + 常见工业协议
+DEFAULT_SCAN_PORTS: list[int] = [445, 3389, 5985, 22, 135, 139, 80, 443, 23, 102, 502, 44818]
+
+
+def icmp_available() -> bool:
+    """当前环境能否执行 ICMP 探测（容器里没装 iputils-ping 时会返回 False）。"""
+    return shutil.which("ping") is not None
 
 
 @dataclass
@@ -133,10 +146,11 @@ def scan_network(
 ) -> dict:
     """扫描网段，返回 {cidr, total, alive, candidates, started_at, finished_at, duration_ms}。"""
     known_ips = known_ips or {}
-    ports = probe_ports or [445, 3389, 5985, 22]
+    ports = probe_ports or DEFAULT_SCAN_PORTS
     hosts = parse_network(cidr)
     arp = _arp_table()
     started = time.time()
+    icmp_ok = icmp_available()
 
     def probe(ip: str) -> Candidate:
         cand = Candidate(ip=ip)
@@ -149,6 +163,8 @@ def scan_network(
         cand.mac = arp.get(ip, "")
         if cand.alive:
             cand.hostname = _resolve_hostname(ip)
+        if not alive and not open_ports and not icmp_ok:
+            cand.reason = "ICMP 不可用且无常见端口开放（可能被防火墙拦截）"
         # 疑似工控机判定：开放了 SMB/RDP/WinRM（Windows 主机特征）或工业协议口
         windows_marks = {445, 3389, 5985, 5986, 135}
         if windows_marks & set(open_ports):
@@ -178,6 +194,12 @@ def scan_network(
     return {
         "cidr": cidr,
         "total": len(hosts),
+        "icmp_available": icmp_ok,
+        "icmp_note": (
+            "已启用 ICMP 探测，开机主机都能被发现"
+            if icmp_ok
+            else "当前环境没有 ping 命令，只能靠 TCP 端口发现；未开放常见端口的主机会被漏掉"
+        ),
         "alive_count": len(alive),
         "may_add_count": sum(1 for c in alive if not c["known"]),
         "candidates": alive,

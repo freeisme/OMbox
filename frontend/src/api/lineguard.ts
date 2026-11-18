@@ -76,7 +76,16 @@ export interface LgTreeStation extends LgStation { devices: LgDevice[] }
 export interface LgTreeLine extends LgLine { stations: LgTreeStation[]; unassigned: LgDevice[]; stats: Record<string, number>; device_count: number }
 export interface LgTreeWorkshop extends LgWorkshop { lines: LgTreeLine[] }
 export interface LgScanCandidate { ip: string; alive: boolean; latency_ms: number | null; mac: string; hostname: string; open_ports: number[]; known_device_id: number | null; reason: string }
-export interface LgScanResult { cidr: string; total: number; alive_count: number; may_add_count: number; candidates: LgScanCandidate[] }
+export interface LgScanResult {
+  cidr: string;
+  total: number;
+  alive_count: number;
+  may_add_count: number;
+  /** 当前环境能否执行 ICMP 探测；false 时只能靠 TCP 端口发现主机。 */
+  icmp_available?: boolean;
+  icmp_note?: string;
+  candidates: LgScanCandidate[];
+}
 
 export function getMeta(): Promise<{ statuses: Record<string, string>; offline_seconds: number; probe_interval_seconds: number; probe_modes: Record<string, string> }> {
   return api(withCompanyQuery("/api/lineguard/meta"));

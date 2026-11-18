@@ -10,7 +10,11 @@ const emit = defineEmits<{ (e: "update:modelValue", v: boolean): void; (e: "done
 const cidr = ref("");
 const ports = ref("445,3389,5985,22");
 const busy = ref(false);
-const result = ref<{ cidr: string; total: number; alive_count: number; candidates: LgScanCandidate[] } | null>(null);
+const result = ref<{
+  cidr: string; total: number; alive_count: number;
+  icmp_available?: boolean; icmp_note?: string;
+  candidates: LgScanCandidate[];
+} | null>(null);
 const selected = ref<string[]>([]);
 const lineId = ref("");
 const stationId = ref("");
@@ -80,6 +84,15 @@ async function commit(): Promise<void> {
         </div>
       </el-form-item>
     </el-form>
+
+    <el-alert
+      v-if="result && result.icmp_available === false"
+      type="warning"
+      :closable="false"
+      show-icon
+      class="oa-mb-2"
+      :title="result.icmp_note || '当前环境无法执行 ICMP 探测，只能靠开放端口发现主机。'"
+    />
 
     <div class="oa-flex-row oa-mb-2">
       <el-button type="primary" :loading="busy" @click="run">开始扫描</el-button>

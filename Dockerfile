@@ -26,8 +26,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# iputils-ping：工控机网段扫描与在线探测都要用 ICMP；
+# 没有它只能退化成 TCP 端口探测，会漏掉只开业务端口的主机。
+# Docker 默认能力集已包含 NET_RAW，因此无需额外 cap_add。
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends default-mysql-client \
+    && apt-get install --yes --no-install-recommends default-mysql-client iputils-ping \
     && rm -rf /var/lib/apt/lists/*
 
 COPY server.py ./

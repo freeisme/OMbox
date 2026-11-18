@@ -4854,6 +4854,14 @@ class LineGuardModuleTests(TestCase):
         empty = AssetService(SimpleNamespace(), [])
         self.assertIn("1=0", empty._company_sql("d")[0])
 
+    def test_scan_defaults_include_industrial_ports(self) -> None:
+        from office_asset.lineguard.scanner import DEFAULT_SCAN_PORTS, KNOWN_PORTS, icmp_available
+
+        for port in (445, 3389, 102, 502, 44818):
+            self.assertIn(port, DEFAULT_SCAN_PORTS)
+        self.assertIn(4840, KNOWN_PORTS)
+        self.assertIsInstance(icmp_available(), bool)
+
     def test_scan_network_parses_cidr_and_range(self) -> None:
         from office_asset.lineguard.scanner import parse_network
 
