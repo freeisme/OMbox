@@ -1307,9 +1307,10 @@ def cached_update_status() -> dict:
     cached_at = float(_UPDATE_STATUS_CACHE.get("at") or 0)
     if isinstance(cached_payload, dict) and now - cached_at < 1800:
         return dict(cached_payload)
-    stored_url = text_value(settings_payload().get("update_repository_url"))
+    # 更新地址固定使用部署服务自身的 origin（服务器内部 Gitea）；
+    # 不再读取历史遗留的自定义地址，保证界面与后台口径一致。
     update_payload = request_update_service(
-        repository_url=normalize_update_repository_url(stored_url),
+        repository_url="",
         release_channel=DEFAULT_UPDATE_RELEASE_CHANNEL,
     )
     status = text_value(update_payload.get("status"))
@@ -5145,6 +5146,35 @@ def _subtree_org_ids(orgs: list[dict], root_id: str) -> set[str]:
     return result
 
 
+def _spec_normalize(value: object | None) -> str:
+    """把配置文本归一化：8GB / 8 G / 8gb 都变成 8g，便于互相匹配。"""
+    text = "".join(str(value or "").split()).lower()
+    return text.replace("gb", "g").replace("tb", "t")
+
+
+def _match_computer_spec(spec: str, row: dict) -> bool:
+    """配置查询：命中 CPU / 内存 / 存储 / 显卡 / 型号 / 设备名 任一项即可。
+
+    多个条件用空格分隔，必须同时命中（例如 "8g i5"）。
+    """
+    haystack = _spec_normalize(
+        " ".join(
+            [
+                text_value(row.get("cpu")),
+                text_value(row.get("memory")),
+                text_value(row.get("storage")),
+                text_value(row.get("gpu")),
+                text_value(row.get("model")),
+                text_value(row.get("deviceName")),
+            ]
+        )
+    )
+    for term in spec.split():
+        if _spec_normalize(term) not in haystack:
+            return False
+    return True
+
+
 def paginate_computers(payload: dict, params: dict[str, list[str]]) -> dict:
     """服务端分页：GET /api/list/computers。
 
@@ -5169,6 +5199,7 @@ def paginate_computers(payload: dict, params: dict[str, list[str]]) -> dict:
     org_id = param("orgId").strip()
     scope = _subtree_org_ids(orgs, org_id) if org_id else None
     keyword = param("keyword").strip().lower()
+    spec = param("spec").strip().lower()
     status = param("status").strip()
     user_id = param("userId").strip()
     unassigned = parse_bool(param("unassigned"))
@@ -5203,6 +5234,8 @@ def paginate_computers(payload: dict, params: dict[str, list[str]]) -> dict:
             ).lower()
             if keyword not in haystack:
                 continue
+        if spec and not _match_computer_spec(spec, row):
+            continue
         rows.append(row)
 
     if param("fields").strip() == "names":

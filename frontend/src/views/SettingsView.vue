@@ -14,7 +14,6 @@ import {
   DEFAULT_UPDATE_RELEASE_CHANNEL,
   downloadBackup,
   getUpdateProgress,
-  GITHUB_UPDATE_REPOSITORY_URL,
   loadAccessControl,
   loadBackups,
   loadSettings,
@@ -27,7 +26,6 @@ import {
   saveTargetPermissions,
   saveUser,
   importUsers,
-  UPDATE_SOURCES,
   type AccessModule,
   type AccessRole,
   type AppSettings,
@@ -149,8 +147,8 @@ const roleEditDialog = reactive({
   isSuperAdmin: false,
 });
 
-const updateSource = ref("github");
-const updateRepositoryUrl = ref("");
+// 更新地址固定走服务器内部 Gitea：留空即由部署服务使用自身 origin，
+// 界面上不再展示、也不再允许填写仓库地址。
 const updateReleaseChannel = ref(DEFAULT_UPDATE_RELEASE_CHANNEL);
 const updateStatus = ref<UpdateStatus | null>(null);
 const updateSelectedSha = ref("");
@@ -724,16 +722,13 @@ function updateStatusDetail(status: string | undefined): string {
 }
 
 function effectiveUpdateRepositoryUrl(): string {
-  return updateSource.value === "github" ? GITHUB_UPDATE_REPOSITORY_URL : updateRepositoryUrl.value.trim();
+  // 空字符串 = 交给部署服务用自身 origin（服务器上的内部 Gitea）
+  return "";
 }
 
 async function submitUpdateCheck(): Promise<void> {
   if (!canUpdate.value) {
     ElMessage.warning("当前账号没有系统更新权限。");
-    return;
-  }
-  if (updateSource.value === "custom" && !updateRepositoryUrl.value.trim()) {
-    ElMessage.warning("请填写自定义项目地址。");
     return;
   }
   updateChecking.value = true;
@@ -742,7 +737,7 @@ async function submitUpdateCheck(): Promise<void> {
     const payload = await checkForUpdate({
       repositoryUrl,
       releaseChannel: updateReleaseChannel.value,
-      persistRepositoryUrl: updateSource.value === "custom",
+      persistRepositoryUrl: false,
     });
     updateStatus.value = payload;
     updateReleaseChannel.value = payload.releaseChannel || updateReleaseChannel.value;
@@ -1483,31 +1478,6 @@ onMounted(async () => {
 
         <template v-else-if="tab.key === 'updates'">
           <el-form label-position="top" style="max-width: 760px">
-            <el-form-item label="更新来源">
-              <el-select v-model="updateSource" :disabled="updateBusy" class="oa-full-width">
-                <el-option
-                  v-for="(label, value) in UPDATE_SOURCES"
-                  :key="value"
-                  :label="label"
-                  :value="value"
-                />
-              </el-select>
-            </el-form-item>
-            <el-form-item v-if="updateSource === 'custom'" label="自定义项目地址">
-              <el-input
-                v-model="updateRepositoryUrl"
-                :disabled="updateBusy"
-                placeholder="填写 GitHub 或内网 Git 仓库地址"
-              />
-            </el-form-item>
-            <el-alert
-              v-else
-              type="info"
-              :closable="false"
-              show-icon
-              :title="`内置地址：${GITHUB_UPDATE_REPOSITORY_URL}`"
-              class="oa-mb-3"
-            />
             <el-descriptions :column="2" border class="oa-mb-3">
               <el-descriptions-item label="当前版本">{{ currentVersionText }}</el-descriptions-item>
               <el-descriptions-item label="来源最新发布版本">{{ latestVersionText }}</el-descriptions-item>
@@ -1527,14 +1497,6 @@ onMounted(async () => {
                 />
               </el-select>
             </el-form-item>
-            <el-form-item label="版本更新说明">
-              <el-input
-                :model-value="releaseNotes || '该版本暂无匹配的 VERSION_NOTES.md 说明。'"
-                type="textarea"
-                :rows="8"
-                readonly
-              />
-            </el-form-item>
             <el-alert
               type="warning"
               :closable="false"
@@ -1544,7 +1506,7 @@ onMounted(async () => {
             />
             <div class="oa-flex-row">
               <el-button :loading="updateChecking" :disabled="updateBusy" @click="submitUpdateCheck">
-                {{ updateSource === "github" ? "从 GitHub 检查更新" : "检查版本" }}
+                检查版本
               </el-button>
               <el-button
                 type="primary"

@@ -227,7 +227,7 @@ const MOVEMENT_TAG_TYPES: Record<string, "primary" | "success" | "info" | "warni
   status_changed: "info",
 };
 
-const filters = reactive({ keyword: "", status: "", orgId: "" });
+const filters = reactive({ keyword: "", spec: "", status: "", orgId: "" });
 const selectedIds = ref<string[]>([]);
 const page = ref(1);
 const pageSize = ref(50);
@@ -317,6 +317,7 @@ async function loadRows(): Promise<void> {
       page: page.value,
       pageSize: pageSize.value,
       keyword: filters.keyword.trim(),
+      spec: filters.spec.trim(),
       status: filters.status,
       orgId: filters.orgId,
     });
@@ -337,7 +338,7 @@ function scheduleReload(): void {
 }
 
 watch(
-  () => filters.keyword,
+  () => [filters.keyword, filters.spec] as const,
   () => scheduleReload(),
 );
 
@@ -483,6 +484,7 @@ async function selectAllFiltered(): Promise<void> {
     const payload = await fetchComputerPage({
       pageSize: 0,
       keyword: filters.keyword.trim(),
+      spec: filters.spec.trim(),
       status: filters.status,
       orgId: filters.orgId,
     });
@@ -503,6 +505,7 @@ function clearSelection(): void {
 
 function clearFilters(): void {
   filters.keyword = "";
+  filters.spec = "";
   filters.status = "";
   filters.orgId = "";
   page.value = 1;
@@ -553,7 +556,7 @@ onMounted(async () => {
       </el-button>
     </template>
     <template #filters>
-      <FilterBar :summary="`匹配 ${total} 台 · 本页 ${rows.length} 台`" :resettable="Boolean(filters.keyword || filters.status || filters.orgId)" @reset="clearFilters">
+      <FilterBar :summary="`匹配 ${total} 台 · 本页 ${rows.length} 台`" :resettable="Boolean(filters.keyword || filters.spec || filters.status || filters.orgId)" @reset="clearFilters">
         <el-form label-position="top" class="oa-filter-form" @submit.prevent>
       <el-row :gutter="12">
         <el-col :xs="24" :sm="12" :md="8">
@@ -561,6 +564,15 @@ onMounted(async () => {
             <el-input
               v-model="filters.keyword"
               placeholder="设备名、型号、固资编码、SN/ST、组织或使用人"
+              clearable
+            />
+          </el-form-item>
+        </el-col>
+        <el-col :xs="24" :sm="12" :md="5">
+          <el-form-item label="配置查询">
+            <el-input
+              v-model="filters.spec"
+              placeholder="如 8G、16G、i5、512G"
               clearable
             />
           </el-form-item>

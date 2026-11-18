@@ -1305,10 +1305,10 @@ class ScrapManagementRegressionTests(TestCase):
         self.assertIn("不回收、不回补库存", view)
 
 
-class UpdateSourceSelectionTests(TestCase):
-    """更新按钮内置 GitHub 来源，并提供自定义地址入口。"""
+class UpdateSourceTests(TestCase):
+    """更新地址固定走服务器内部仓库（部署服务 origin），界面只保留更新按钮。"""
 
-    def test_update_panel_has_builtin_github_and_custom_source(self):
+    def test_update_panel_hides_repository_address(self):
         settings_api = (ROOT / "frontend" / "src" / "api" / "settings.ts").read_text(
             encoding="utf-8"
         )
@@ -1316,26 +1316,27 @@ class UpdateSourceSelectionTests(TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn(
-            'export const GITHUB_UPDATE_REPOSITORY_URL = "https://github.com/freeisme/OMbox.git";',
-            settings_api,
-        )
-        self.assertIn('const updateSource = ref("github");', view)
-        self.assertIn('updateSource.value === "github" ? GITHUB_UPDATE_REPOSITORY_URL', view)
-        self.assertIn('<el-select v-model="updateSource"', view)
-        self.assertIn("自定义项目地址", view)
-        self.assertIn('"从 GitHub 检查更新"', view)
-        self.assertIn("updateSource === 'custom'", view)
+        # 源码里不再出现任何外部仓库地址常量，地址由服务器内部决定
+        self.assertNotIn("GITHUB_UPDATE_REPOSITORY_URL", settings_api)
+        self.assertNotIn("GITHUB_UPDATE_REPOSITORY_URL", view)
+        self.assertNotIn("github.com/freeisme/OMbox", view)
+        # 界面不再展示/允许填写更新地址，也不再展示更新公告
+        self.assertNotIn("更新来源", view)
+        self.assertNotIn("自定义项目地址", view)
+        self.assertNotIn("版本更新说明", view)
+        self.assertIn("检查版本", view)
 
-    def test_only_custom_source_persists_the_repository_url(self):
+    def test_update_requests_use_internal_origin(self):
         view = (ROOT / "frontend" / "src" / "views" / "SettingsView.vue").read_text(
             encoding="utf-8"
         )
         server_source = (ROOT / "server.py").read_text(encoding="utf-8")
 
-        self.assertIn('persistRepositoryUrl: updateSource.value === "custom",', view)
-        self.assertIn('payload.get("persistRepositoryUrl", True)', server_source)
-        self.assertIn("if \"repositoryUrl\" in payload and parse_bool(", server_source)
+        # 前端固定发送空地址：部署服务用自己的 origin（内部 Gitea）
+        self.assertIn("交给部署服务用自身 origin", view)
+        self.assertIn("persistRepositoryUrl: false,", view)
+        # 后端顶栏状态同样固定用空地址
+        self.assertIn("更新地址固定使用部署服务自身的 origin", server_source)
 
 
 class SharedEmployeeStatusTests(TestCase):

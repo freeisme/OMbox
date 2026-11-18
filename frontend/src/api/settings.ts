@@ -1,15 +1,8 @@
 import { api, downloadFile } from "./client";
 import type { ImportSummary } from "./datacenter";
 
-/** 系统更新来源与通道，取值必须与后端保持一致。 */
-export const UPDATE_SOURCES: Record<string, string> = {
-  github: "GitHub 官方更新",
-  custom: "自定义更新地址",
-};
-
 /** 更新通道只保留发行版（稳定标签）；beta 通道已下线，界面上不再提供选项。 */
 export const DEFAULT_UPDATE_RELEASE_CHANNEL = "release";
-export const GITHUB_UPDATE_REPOSITORY_URL = "https://github.com/freeisme/OMbox.git";
 
 export const ROLE_CATEGORIES: Record<string, string> = {
   admin: "管理员",
