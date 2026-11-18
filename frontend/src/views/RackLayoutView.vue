@@ -287,6 +287,13 @@ async function savePlacement(): Promise<void> {
   }
 }
 
+/** 跳到机房「文件库」页签，直接定位到这台设备的文件夹。 */
+function openConfigFiles(): void {
+  const deviceId = String(selected.value?.datacenterDeviceId ?? "");
+  if (!deviceId) return;
+  void router.push({ path: "/datacenter", query: { tab: "files", device: deviceId } });
+}
+
 async function unlinkPlacement(): Promise<void> {
   const placement = selected.value;
   if (!placement || !rack.value) return;
@@ -719,6 +726,15 @@ onMounted(async () => {
           <template #header>
             <div class="side-head">
               <strong>设备属性</strong>
+              <el-button
+                v-if="selected && selected.sourceKind === 'datacenter' && selected.datacenterDeviceId"
+                link
+                type="primary"
+                size="small"
+                @click="openConfigFiles"
+              >
+                配置文件
+              </el-button>
               <el-button
                 v-if="selected && canDelete"
                 link

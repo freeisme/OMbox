@@ -16,8 +16,10 @@ export interface RackSummary {
 export interface Placement {
   id: string;
   rackId: string;
-  sourceKind: "computer" | "custom";
+  sourceKind: "computer" | "custom" | "datacenter";
   computerId?: string;
+  /** 机房设备（sourceKind=datacenter 时使用），文件库跳转按它定位设备文件夹。 */
+  datacenterDeviceId?: string;
   inventoryModelId?: string;
   name: string;
   brandModel: string;

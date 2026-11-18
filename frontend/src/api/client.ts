@@ -19,6 +19,11 @@ function readCookie(name: string): string {
   return "";
 }
 
+/** 读当前会话的 CSRF 令牌（文件上传这类裸 fetch 请求要用）。 */
+export function readCsrfToken(): string {
+  return readCookie("oa_csrf");
+}
+
 type UnauthorizedHandler = () => void;
 
 let unauthorizedHandler: UnauthorizedHandler | null = null;

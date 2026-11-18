@@ -5,13 +5,15 @@ import DatacenterDeviceView from "./DatacenterDeviceView.vue";
 import RackLayoutView from "./RackLayoutView.vue";
 import DevicePanelView from "./DevicePanelView.vue";
 import TopologyView from "./TopologyView.vue";
+import FileLibraryView from "./FileLibraryView.vue";
 
-/** 机房四合一：四个原页面各自独立取数，这里只负责页签与地址同步。 */
+/** 机房页签：各页面独立取数，这里只负责页签与地址同步。 */
 const TABS = [
   { key: "devices", label: "网络设备/服务器", component: DatacenterDeviceView },
   { key: "racks", label: "机柜视图", component: RackLayoutView },
   { key: "panel", label: "设备面板", component: DevicePanelView },
   { key: "topology", label: "网络拓扑", component: TopologyView },
+  { key: "files", label: "文件库", component: FileLibraryView },
 ];
 
 const route = useRoute();

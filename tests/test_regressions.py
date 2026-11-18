@@ -4875,3 +4875,39 @@ class LineGuardModuleTests(TestCase):
         with self.assertRaises(ValueError):
             parse_network("198.51.100.0/8")
 
+class FileLibraryTests(TestCase):
+    """机房文件库：路径安全与扩展名归一化。"""
+
+    def _service(self):
+        import tempfile
+        from pathlib import Path as _Path
+
+        from office_asset.file_library import FileLibraryService
+
+        captured = []
+        db = SimpleNamespace(
+            execute=lambda sql: (captured.append(sql) or ""),
+            json=lambda sql, default=None: default,
+            quote=lambda value: "'" + str(value).replace("'", "\\'") + "'",
+            json_value=lambda value: "'{}'",
+        )
+        scope = SimpleNamespace(scoped_company_ids=lambda context: None)
+        service = FileLibraryService(
+            db, scope, RuntimeError, RuntimeError, RuntimeError, _Path(tempfile.mkdtemp())
+        )
+        return service, captured
+
+    def test_absolute_rejects_path_traversal(self):
+        service, _ = self._service()
+        with self.assertRaises(RuntimeError):
+            service._absolute("../../etc/passwd")
+
+    def test_safe_extension_filters_weird_characters(self):
+        service, _ = self._service()
+        self.assertEqual(service._safe_extension("switch.cfg"), ".cfg")
+        self.assertEqual(service._safe_extension("a.b'c"), ".b_c")
+
+    def test_default_size_limit_is_50mb(self):
+        service, _ = self._service()
+        self.assertEqual(service.max_bytes, 50 * 1024 * 1024)
+

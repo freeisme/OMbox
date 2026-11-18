@@ -69,10 +69,13 @@ services:
       UPDATE_CONTROL_TOKEN: ${UPDATE_CONTROL_TOKEN:-}
       UPDATE_SERVICE_CA_FILE: ${UPDATE_SERVICE_CA_FILE:-}
       UPDATE_SERVICE_ALLOW_HTTP: ${UPDATE_SERVICE_ALLOW_HTTP:-false}
+      FILE_LIBRARY_ROOT: /app/file-library
+      FILE_LIBRARY_MAX_BYTES: ${FILE_LIBRARY_MAX_BYTES:-52428800}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - backup-data:/app/backups
+      - file-library-data:/app/file-library
       - ${UPDATE_SERVICE_CERTS_DIR:-./secrets/update-service}:/run/office-asset-mgmt/update-service:ro
     ports:
       - "${APP_PORT:-8000}:8000"
@@ -95,3 +98,4 @@ services:
 volumes:
   mysql-data:
   backup-data:
+  file-library-data:

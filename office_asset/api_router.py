@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 from urllib.parse import ParseResult
 
 from .asset_service import AssetService
 from .company import CompanyService
+from .file_library import FileLibraryService
 from .inspection import InspectionService
 from .lineguard.api import LineGuardRouter
 from .lineguard.config import load_config as load_lineguard_config
@@ -100,6 +103,14 @@ class DomainApiRouter:
             deps.conflict_error,
             deps.forbidden_error,
         )
+        self.file_library = FileLibraryService(
+            deps.db,
+            self.scope,
+            deps.api_error,
+            deps.conflict_error,
+            deps.forbidden_error,
+            Path(os.environ.get("FILE_LIBRARY_ROOT", str(Path(__file__).resolve().parents[1] / "file-library"))),
+        )
         self.lineguard = LineGuardRouter(
             LineGuardDb(
                 query_rows=deps.query_rows or (lambda sql: []),  # 由 server.py 注入，已绑定数据库
@@ -152,6 +163,60 @@ class DomainApiRouter:
         path = parsed.path.rstrip("/") or "/"
         method = str(getattr(handler, "command", "GET")).upper()
         send_json = getattr(handler, "send_json")
+
+        if path == "/api/file-library/tree" and method == "GET":
+            context = self._read_context(handler, "rack_layout")
+            send_json(self.file_library.tree(context))
+            return True
+
+        if path == "/api/file-library/files" and method == "GET":
+            self._read_context(handler, "rack_layout")
+            folder_id = self.deps.db.integer((params.get("folderId") or ["0"])[0], 0)
+            if folder_id <= 0:
+                raise self.deps.api_error("请选择一个文件夹。")
+            send_json(self.file_library.list_files(folder_id))
+            return True
+
+        if path == "/api/file-library/files" and method == "POST":
+            # 原始字节流上传：不走 JSON 解析，直接按 Content-Length 落盘。
+            context = self._write_context(handler, "rack_layout", "create")
+            headers = getattr(handler, "headers", None)
+            length = self.deps.db.integer(headers.get("Content-Length") if headers else 0, 0)
+            folder_id = self.deps.db.integer((params.get("folderId") or ["0"])[0], 0)
+            file_name = str((params.get("fileName") or [""])[0])
+            description = str((params.get("description") or [""])[0])
+            content_type = str(headers.get("Content-Type") or "") if headers else ""
+            if folder_id <= 0:
+                raise self.deps.api_error("请选择一个文件夹。")
+            result = self.file_library.save_stream(
+                context, folder_id, file_name, description, handler.rfile, length, content_type
+            )
+            send_json(result, status=201)
+            return True
+
+        if path.startswith("/api/file-library/files/"):
+            parts = path.split("/")
+            if len(parts) >= 5 and parts[4].isdigit():
+                file_id = int(parts[4])
+                if len(parts) == 6 and parts[5] == "download" and method == "GET":
+                    context = self._read_context(handler, "rack_layout")
+                    info = self.file_library.download(file_id, context)
+                    handler.send_file_as(info["path"], info["name"], info["contentType"])
+                    return True
+                if len(parts) == 5 and method == "PUT":
+                    context = self._write_context(handler, "rack_layout", "update")
+                    send_json(self.file_library.update_file(file_id, self._payload(handler), context))
+                    return True
+                if len(parts) == 5 and method == "DELETE":
+                    context = self._write_context(handler, "rack_layout", "delete")
+                    send_json(self.file_library.delete_file(file_id, context))
+                    return True
+
+        if path == "/api/file-library/events" and method == "GET":
+            self._read_context(handler, "rack_layout")
+            folder_id = self.deps.db.integer((params.get("folderId") or ["0"])[0], 0)
+            send_json({"events": self.file_library.events(folder_id) if folder_id else []})
+            return True
 
         if path.startswith("/api/lineguard"):
             return self.lineguard.dispatch(handler, path, method, params)
@@ -743,7 +808,12 @@ class DomainApiRouter:
             return True
         if path == "/api/datacenter-devices" and method == "POST":
             context = self._write_context(handler, "rack_layout", "create")
-            send_json(self.datacenter_devices.create_device(self._payload(handler), context), status=201)
+            created = self.datacenter_devices.create_device(self._payload(handler), context)
+            device_id = self.deps.db.integer((created or {}).get("id"), 0)
+            if device_id > 0:
+                # 建档即建目录：文件库里立刻能看到这台设备的文件夹
+                self.file_library.ensure_device_folder(device_id)
+            send_json(created, status=201)
             return True
         if path.startswith("/api/datacenter-devices/"):
             parts = path.split("/")

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
+import { useRouter } from "vue-router";
 import { companyScope } from "../companyScope";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
@@ -23,6 +24,8 @@ import ExportMenu from "../components/ui/ExportMenu.vue";
 import { hasPermission } from "../session";
 import { loadOrgTree, transferAsset, type Company } from "../api/company";
 
+
+const router = useRouter();
 
 const loading = ref(false);
 const devices = ref<DatacenterDeviceSummary[]>([]);
@@ -153,6 +156,11 @@ async function loadDeviceTypes(): Promise<void> {
   } catch {
     deviceTypes.value = [];
   }
+}
+
+/** 跳到机房「文件库」页签，定位到这台设备。 */
+function openConfigFiles(row: { id: string }): void {
+  void router.push({ path: "/datacenter", query: { tab: "files", device: String(row.id) } });
 }
 
 function openDialog(device: DatacenterDeviceSummary | null): void {
@@ -566,6 +574,7 @@ onMounted(async () => {
           <el-button v-if="hasPermission('asset_transfer', 'create')" link size="small" @click="openTransfer(row)">
             调拨
           </el-button>
+          <el-button link size="small" @click="openConfigFiles(row)">配置文件</el-button>
           <el-button v-if="canUpdate" link size="small" @click="openDialog(row)">编辑</el-button>
           <el-button v-if="canCreate" link size="small" @click="copyDevice(row)">复制</el-button>
           <el-dropdown v-if="canUpdate" @command="(command: string) => changeStatus(row, command)">

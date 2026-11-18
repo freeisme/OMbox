@@ -6063,6 +6063,24 @@ class AppHandler(SimpleHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+    def send_file_as(self, file_path: Path, download_name: str, content_type: str) -> None:
+        """按指定 MIME 流式发送磁盘文件（文件库下载用）。"""
+        ascii_name = re.sub(r"[^A-Za-z0-9._-]", "_", download_name) or "download"
+        quoted = quote(download_name, safe="")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type or "application/octet-stream")
+        self.send_header(
+            "Content-Disposition", f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted}"
+        )
+        self.send_header("Content-Length", str(file_path.stat().st_size))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            with file_path.open("rb") as source:
+                shutil.copyfileobj(source, self.wfile, length=1024 * 1024)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def send_bytes(self, data: bytes, content_type: str, download_name: str) -> None:
         """内存里的文件（例如导出的 xlsx）：文件名用 RFC 5987 的 filename* 保留中文。"""
         ascii_name = re.sub(r"[^A-Za-z0-9._-]", "_", download_name) or "download"
