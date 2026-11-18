@@ -494,6 +494,26 @@ class DomainApiRouter:
             context = self._read_context(handler, "scrap_management")
             send_json({"record": self.assets.get_scrap_record(parts[3], context)})
             return True
+        if path.startswith("/api/scrap-records/") and method == "PUT":
+            parts = path.split("/")
+            if len(parts) != 4 or not parts[3]:
+                raise self.deps.api_error("Invalid scrap record path.")
+            context = self._write_context(handler, "scrap_management", "update")
+            send_json(
+                {
+                    "record": self.assets.update_scrap_record_notes(
+                        parts[3], self._payload(handler), context
+                    )
+                }
+            )
+            return True
+        if path.startswith("/api/scrap-records/") and method == "DELETE":
+            parts = path.split("/")
+            if len(parts) != 4 or not parts[3]:
+                raise self.deps.api_error("Invalid scrap record path.")
+            context = self._write_context(handler, "scrap_management", "delete")
+            send_json(self.assets.delete_scrap_record(parts[3], context))
+            return True
 
         # 巡检管理：机房、弱电间、机柜、巡检模板与巡检任务。
         if path == "/api/inspection/sites" and method == "GET":
@@ -936,6 +956,21 @@ class DomainApiRouter:
             context = self._read_context(handler, "employees", "update")
             self.deps.require_permission(context, "warehouse_management", "view")
             send_json(self.assets.offboarding_preview(parts[3], context))
+            return True
+
+        # 离职人员备注编辑
+        if path.startswith("/api/left-employees/") and method == "PUT":
+            parts = path.split("/")
+            if len(parts) != 4 or not parts[3].isdigit():
+                raise self.deps.api_error("Invalid left employee archive path.")
+            context = self._write_context(handler, "employees", "update")
+            send_json(
+                {
+                    "record": self.assets.update_left_employee_remark(
+                        parts[3], self._payload(handler), context
+                    )
+                }
+            )
             return True
 
         # 离职人员档案删除

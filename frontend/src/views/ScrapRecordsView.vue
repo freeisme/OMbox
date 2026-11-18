@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import {
+  deleteScrapRecord,
   fetchAssetScrapRecords,
+  updateScrapRecordNotes,
   scrapConfigLabel,
   scrapModelLabel,
   SCRAP_STATUS_LABEL,
@@ -10,6 +12,7 @@ import {
   scrapRecordsToRows,
   type ScrapRecord,
 } from "../api/scrap";
+import { hasPermission } from "../session";
 import { deviceTypeLabel, statusLabel } from "../labels";
 import DataPanel from "../components/ui/DataPanel.vue";
 import FilterBar from "../components/ui/FilterBar.vue";
@@ -23,6 +26,12 @@ const page = ref(1);
 const pageSize = ref(50);
 const detail = ref<ScrapRecord | null>(null);
 const detailVisible = ref(false);
+const canEdit = computed(() => hasPermission("scrap_management", "update"));
+const canDelete = computed(() => hasPermission("scrap_management", "delete"));
+const noteDialogVisible = ref(false);
+const noteSaving = ref(false);
+const noteTarget = ref<ScrapRecord | null>(null);
+const noteDraft = ref("");
 
 const filtered = computed(() => {
   const key = keyword.value.trim().toLowerCase();
@@ -72,6 +81,49 @@ const scrapExportName = computed(
 function openDetail(record: ScrapRecord): void {
   detail.value = record;
   detailVisible.value = true;
+}
+
+function openNoteDialog(record: ScrapRecord): void {
+  noteTarget.value = record;
+  noteDraft.value = record.notes ?? "";
+  noteDialogVisible.value = true;
+}
+
+async function saveNote(): Promise<void> {
+  const target = noteTarget.value;
+  if (!target) return;
+  noteSaving.value = true;
+  try {
+    const updated = await updateScrapRecordNotes(target, noteDraft.value.trim());
+    target.notes = updated?.notes ?? noteDraft.value.trim();
+    ElMessage.success("备注已保存。");
+    noteDialogVisible.value = false;
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "备注保存失败。");
+  } finally {
+    noteSaving.value = false;
+  }
+}
+
+async function removeRecord(record: ScrapRecord): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `确定删除「${record.deviceName || "该设备"}」的报废记录吗？删除后不可恢复，操作日志里会留痕。`,
+      "删除报废记录",
+      { type: "warning", confirmButtonText: "删除", cancelButtonText: "取消" },
+    );
+  } catch {
+    return;
+  }
+  try {
+    await deleteScrapRecord(record);
+    records.value = records.value.filter(
+      (item) => !(item.kind === record.kind && item.id === record.id),
+    );
+    ElMessage.success("报废记录已删除。");
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "删除失败。");
+  }
 }
 
 onMounted(load);
@@ -160,9 +212,11 @@ onMounted(load);
         <template #default="{ row }">{{ row.reason || "未填写" }}</template>
       </el-table-column>
       <el-table-column prop="operatedByName" label="操作人" width="110" />
-      <el-table-column label="操作" width="80" fixed="right">
+      <el-table-column label="操作" width="200" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="openDetail(row)">详情</el-button>
+          <el-button v-if="canEdit" link type="primary" @click="openNoteDialog(row)">编辑备注</el-button>
+          <el-button v-if="canDelete" link type="danger" @click="removeRecord(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -175,6 +229,21 @@ onMounted(load);
       class="oa-pagination"
     />
   </DataPanel>
+
+  <FormDialog v-model="noteDialogVisible" title="编辑报废备注" size="sm" :loading="noteSaving" @confirm="saveNote">
+    <el-form label-width="70px">
+      <el-form-item label="备注">
+        <el-input
+          v-model="noteDraft"
+          type="textarea"
+          :rows="4"
+          maxlength="500"
+          show-word-limit
+          placeholder="补充处置说明、存放位置或后续跟进事项（最多 500 字）"
+        />
+      </el-form-item>
+    </el-form>
+  </FormDialog>
 
   <FormDialog
     v-model="detailVisible"

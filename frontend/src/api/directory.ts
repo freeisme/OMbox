@@ -122,6 +122,14 @@ export async function saveOrganization(
   await api("/api/resources/organization", { method: "POST", body: payload });
 }
 
+/** 修改离职人员备注：只允许改 leave_remark，其余归档信息不动。 */
+export async function updateLeftEmployeeRemark(archiveId: string, remark: string): Promise<void> {
+  await api(`/api/left-employees/${encodeURIComponent(archiveId)}`, {
+    method: "PUT",
+    body: { remark },
+  });
+}
+
 export async function saveInventoryType(
   payload: { code: string; name: string; unit: string },
   typeId = "",

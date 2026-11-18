@@ -16,6 +16,7 @@ import ExportMenu from "../components/ui/ExportMenu.vue";
 import FilterBar from "../components/ui/FilterBar.vue";
 import PageHeader from "../components/ui/PageHeader.vue";
 import { asText } from "../api/exports";
+import { updateLeftEmployeeRemark } from "../api/directory";
 import { formatDateTimeText } from "../labels";
 
 const router = useRouter();
@@ -104,6 +105,33 @@ function deviceSummary(devices: LeftDeviceRow[] | undefined): string {
 function openDetail(row: LeftEmployeeRow): void {
   detail.value = row;
   detailVisible.value = true;
+}
+
+const remarkDialogVisible = ref(false);
+const remarkSaving = ref(false);
+const remarkTarget = ref<LeftEmployeeRow | null>(null);
+const remarkDraft = ref("");
+
+function openRemarkDialog(row: LeftEmployeeRow): void {
+  remarkTarget.value = row;
+  remarkDraft.value = row.leaveRemark ?? "";
+  remarkDialogVisible.value = true;
+}
+
+async function saveRemark(): Promise<void> {
+  const target = remarkTarget.value;
+  if (!target) return;
+  remarkSaving.value = true;
+  try {
+    await updateLeftEmployeeRemark(target.id, remarkDraft.value.trim());
+    target.leaveRemark = remarkDraft.value.trim();
+    ElMessage.success("离职备注已保存。");
+    remarkDialogVisible.value = false;
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "离职备注保存失败。");
+  } finally {
+    remarkSaving.value = false;
+  }
 }
 
 function resetFilters(): void {
@@ -249,9 +277,17 @@ onMounted(loadRows);
           <span v-else class="oa-cell-sub">—</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="150" fixed="right">
+      <el-table-column label="操作" width="230" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="openDetail(row)">查看详情</el-button>
+          <el-button
+            v-if="hasPermission('employees', 'update')"
+            link
+            type="primary"
+            @click="openRemarkDialog(row)"
+          >
+            编辑备注
+          </el-button>
           <el-button
             v-if="hasPermission('employees', 'delete')"
             link
@@ -274,6 +310,27 @@ onMounted(loadRows);
       />
     </template>
   </DataPanel>
+
+  <FormDialog
+    v-model="remarkDialogVisible"
+    title="编辑离职备注"
+    size="sm"
+    :loading="remarkSaving"
+    @confirm="saveRemark"
+  >
+    <el-form label-width="70px">
+      <el-form-item label="备注">
+        <el-input
+          v-model="remarkDraft"
+          type="textarea"
+          :rows="4"
+          maxlength="500"
+          show-word-limit
+          placeholder="补充交接情况、遗留事项等（最多 500 字）"
+        />
+      </el-form-item>
+    </el-form>
+  </FormDialog>
 
   <DetailDrawer v-model="detailVisible" :title="`${detail?.name ?? ''} · 离职人员档案`" size="md">
     <el-descriptions v-if="detail" :column="1" border>

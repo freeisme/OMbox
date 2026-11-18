@@ -7,6 +7,7 @@ import base64
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Callable
+from urllib.parse import unquote
 
 from .scope import OrganizationScopeService
 from .sql import SqlGateway, parse_bool
@@ -1002,6 +1003,52 @@ class AssetService:
         )
         return {"id": archive, "deleted": True}
 
+    def update_left_employee_remark(self, archive_id: object, payload: dict, context: dict) -> dict:
+        """只更新离职备注；离职日期、原因与设备快照属于归档留痕，不在这里改。"""
+        archive = self.db.integer(archive_id, 0)
+        if archive <= 0:
+            raise self.api_error("离职档案不存在。")
+        row = self.db.json(
+            f"""
+            SELECT JSON_OBJECT(
+              'id', CAST(archive_id AS CHAR),
+              'name', employee_name,
+              'orgId', COALESCE(CAST(org_unit_id AS CHAR), ''),
+              'remark', COALESCE(leave_remark, '')
+            )
+            FROM left_employee_archive
+            WHERE archive_id = {archive}
+            """,
+            None,
+        )
+        if not row:
+            raise self.api_error("离职档案不存在。")
+        permitted = self.scope.permitted_org_ids(context)
+        if permitted is not None and self.db.integer(row.get("orgId"), 0) not in permitted:
+            raise self.forbidden_error("当前账号无权修改该离职记录。")
+        remark = self.db.text(payload.get("remark")).strip()
+        if len(remark) > 500:
+            raise self.api_error("离职备注最多 500 个字符。")
+        self.db.execute(
+            f"""
+            START TRANSACTION;
+            UPDATE left_employee_archive
+            SET leave_remark = {self.db.quote(remark)}
+            WHERE archive_id = {archive};
+            {self._audit_sql(
+                "left_employee_remark_updated",
+                "left_employee_archive",
+                archive,
+                self.db.text(row.get("name")),
+                "修改离职备注",
+                context,
+                old_value={"remark": self.db.text(row.get("remark"))},
+                new_value={"remark": remark},
+            )};
+            COMMIT;
+            """
+        )
+        return {"id": str(archive), "remark": remark}
     # ------------------------------------------------- 使用人员 / 办公终端批量导入
 
     def _read_import_rows(self, payload: dict) -> tuple[str, list[list[str]]]:
@@ -5259,6 +5306,90 @@ class AssetService:
                     raise self.forbidden_error("当前账号无权访问该报废记录。")
                 return row
         raise self.api_error("报废记录不存在。")
+
+    _SCRAP_TABLES = {"inventory": "inventory_scrap_record", "asset": "asset_scrap_record"}
+
+    def _parse_scrap_record_id(self, record_id: object) -> tuple[str, int]:
+        # 路径里的冒号可能被调用方做过百分号编码（asset%3A1），这里统一还原
+        raw = unquote(self.db.text(record_id)).strip()
+        kind, _, identifier = raw.partition(":")
+        kind = kind.strip().lower()
+        identifier = identifier.strip()
+        if kind not in self._SCRAP_TABLES or not identifier.isdigit():
+            raise self.api_error("报废记录标识无效，请使用 inventory:<id> 或 asset:<id>。")
+        return kind, int(identifier)
+
+    def _visible_scrap_record(self, kind: str, identifier: int, context: dict) -> dict:
+        rows = self._inventory_scrap_rows(2000) if kind == "inventory" else self._asset_scrap_rows(2000)
+        for row in rows:
+            if self.db.text(row.get("id")) == str(identifier):
+                if not self._scope_scrap_rows([row], context):
+                    raise self.forbidden_error("当前账号无权修改该报废记录。")
+                return row
+        raise self.api_error("报废记录不存在。")
+
+    def _scrap_record_title(self, row: dict) -> str:
+        title = self.db.text(row.get("deviceName") or row.get("typeName") or "").strip()
+        if not title:
+            title = self.db.text(row.get("modelName") or row.get("brandName") or "").strip()
+        return (title or "报废记录")[:120]
+
+    def update_scrap_record_notes(self, record_id: object, payload: dict, context: dict) -> dict:
+        """只更新备注：报废时间、原因、设备快照属于留痕信息，不在这里改。"""
+        kind, identifier = self._parse_scrap_record_id(record_id)
+        row = self._visible_scrap_record(kind, identifier, context)
+        notes = self.db.text(payload.get("notes")).strip()
+        if len(notes) > 500:
+            raise self.api_error("备注最多 500 个字符。")
+        old_notes = self.db.text(row.get("notes"))
+        table = self._SCRAP_TABLES[kind]
+        self.db.execute(
+            f"""
+            START TRANSACTION;
+            UPDATE {table} SET notes = {self.db.quote(notes)} WHERE scrap_id = {identifier};
+            {self._audit_sql(
+                "scrap_record_note_updated",
+                "scrap_record",
+                f"{kind}:{identifier}",
+                self._scrap_record_title(row),
+                "修改报废记录备注",
+                context,
+                old_value={"notes": old_notes},
+                new_value={"notes": notes},
+            )};
+            COMMIT;
+            """
+        )
+        return {"id": f"{kind}:{identifier}", "kind": kind, "notes": notes}
+
+    def delete_scrap_record(self, record_id: object, context: dict) -> dict:
+        """真删除一条报废记录，并在操作日志里留下删除前的关键信息。"""
+        kind, identifier = self._parse_scrap_record_id(record_id)
+        row = self._visible_scrap_record(kind, identifier, context)
+        table = self._SCRAP_TABLES[kind]
+        self.db.execute(
+            f"""
+            START TRANSACTION;
+            DELETE FROM {table} WHERE scrap_id = {identifier};
+            {self._audit_sql(
+                "scrap_record_deleted",
+                "scrap_record",
+                f"{kind}:{identifier}",
+                self._scrap_record_title(row),
+                "删除报废记录",
+                context,
+                old_value={
+                    "deviceName": self.db.text(row.get("deviceName")),
+                    "typeName": self.db.text(row.get("typeName")),
+                    "reason": self.db.text(row.get("reason")),
+                    "scrapAt": self.db.text(row.get("scrapAt")),
+                    "notes": self.db.text(row.get("notes")),
+                },
+            )};
+            COMMIT;
+            """
+        )
+        return {"id": f"{kind}:{identifier}", "kind": kind, "deleted": True}
 
     def _recovery_catalog_sql(
         self,

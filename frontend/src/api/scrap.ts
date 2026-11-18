@@ -37,6 +37,25 @@ export async function fetchAssetScrapRecords(limit = 500): Promise<ScrapRecord[]
   return Array.isArray(payload.records) ? payload.records : [];
 }
 
+/** 修改报废记录备注：只允许改备注，报废时间/原因/设备快照是留痕信息。 */
+export async function updateScrapRecordNotes(
+  record: { kind: string; id: string },
+  notes: string,
+): Promise<ScrapRecord | null> {
+  const payload = await api<{ record?: ScrapRecord }>(
+    `/api/scrap-records/${record.kind}:${encodeURIComponent(record.id)}`,
+    { method: "PUT", body: { notes } },
+  );
+  return payload.record ?? null;
+}
+
+/** 删除报废记录（真删除）：删除前由页面二次确认。 */
+export async function deleteScrapRecord(record: { kind: string; id: string }): Promise<void> {
+  await api(`/api/scrap-records/${record.kind}:${encodeURIComponent(record.id)}`, {
+    method: "DELETE",
+  });
+}
+
 /** 办公终端点「报废」后状态显示为「待报废」（设备已归档，实际处置前仍可追溯）。 */
 export const SCRAP_STATUS_LABEL = "待报废";
 

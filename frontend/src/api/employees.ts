@@ -324,7 +324,8 @@ export const EMPLOYEE_EXPORT_HEADER = [
   "手机",
   "状态",
   "办公终端",
-  "显示屏 / 非资产物资",
+  "显示屏",
+  "其他非资产物资",
 ];
 
 /** 导出用的二维表：CSV 与 Excel 共用同一份数据。 */
@@ -343,6 +344,8 @@ export function employeesToRows(
     row.mobile,
     row.status,
     computerNamesOf(row.id).join("；"),
-    [...(row.monitors ?? []), ...(row.nonAssetItems ?? [])].map(employeeUsageLabel).join("；"),
+    // 显示屏（显示器）与其他非资产物资分开导出，便于按类别核对
+    (row.monitors ?? []).map(employeeUsageLabel).join("；"),
+    (row.nonAssetItems ?? []).map(employeeUsageLabel).join("；"),
   ]);
 }
