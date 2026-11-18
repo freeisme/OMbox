@@ -93,6 +93,8 @@ export interface BackupRow {
   fileName: string;
   fileSize: number | string;
   backupType: string;
+  /** database=数据库备份，files=文件库卷归档。 */
+  scope?: "database" | "files";
   requestedByName?: string;
   status: string;
   fileAvailable: boolean;

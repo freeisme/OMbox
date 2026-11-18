@@ -11,6 +11,7 @@ import re
 import secrets
 import ssl
 import shutil
+import tarfile
 import subprocess
 import threading
 import traceback
@@ -1842,6 +1843,78 @@ def database_backup_record(backup_id: str) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
+def backup_scope_of(file_name: object) -> str:
+    """备份范围：database=数据库dump，files=文件库卷归档。"""
+    return "files" if "_files_" in text_value(file_name) else "database"
+
+
+def file_library_root() -> Path:
+    return Path(
+        os.environ.get("FILE_LIBRARY_ROOT", str(ROOT_DIR / "file-library"))
+    ).expanduser()
+
+
+def create_file_library_backup(
+    timestamp: str, backup_type: str, actor_id: str, actor_name: str
+) -> dict | None:
+    """把文件库目录打成 tar.gz，与数据库备份同批登记。
+
+    文件库为空或目录不存在时直接跳过；归档失败只记日志，
+    不能让数据库备份跟着失败（数据库备份才是关键路径）。
+    """
+    root = file_library_root()
+    if not root.is_dir():
+        return None
+    try:
+        has_file = any(item.is_file() for item in root.rglob("*"))
+    except OSError:
+        has_file = False
+    if not has_file:
+        return None
+
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    file_name = f"{DB_NAME}_{timestamp}_{backup_type}_files_{secrets.token_hex(4)}.tar.gz"
+    final_path = BACKUP_DIR / file_name
+    temporary_path = BACKUP_DIR / f".{file_name}.tmp"
+    try:
+        with tarfile.open(temporary_path, "w:gz") as archive:
+            archive.add(str(root), arcname="file-library")
+        if not temporary_path.exists() or temporary_path.stat().st_size < 32:
+            temporary_path.unlink(missing_ok=True)
+            return None
+        checksum = file_sha256(temporary_path)
+        temporary_path.replace(final_path)
+        run_mysql(
+            f"""
+            INSERT INTO database_backup (
+              file_name, file_path, file_size, checksum_sha256, backup_type,
+              requested_by, requested_by_name, status
+            ) VALUES (
+              {sql_quote(file_name)},
+              {sql_quote(str(final_path))},
+              {final_path.stat().st_size},
+              {sql_quote(checksum)},
+              {sql_quote(backup_type)},
+              {sql_quote(actor_id) if actor_id else 'NULL'},
+              {sql_quote(actor_name)},
+              'completed'
+            );
+            """,
+            database=DB_NAME,
+        )
+        backup_id = run_mysql(
+            f"SELECT CAST(backup_id AS CHAR) FROM database_backup "
+            f"WHERE file_name = {sql_quote(file_name)} ORDER BY backup_id DESC LIMIT 1;",
+            database=DB_NAME,
+        ).strip()
+        return database_backup_record(backup_id)
+    except Exception as exc:  # noqa: BLE001 - 归档失败不影响数据库备份
+        temporary_path.unlink(missing_ok=True)
+        final_path.unlink(missing_ok=True)
+        print(f"File library backup skipped: {exc}", flush=True)
+        return None
+
+
 def serialize_database_backup(record: dict) -> dict:
     file_available = False
     try:
@@ -1859,6 +1932,7 @@ def serialize_database_backup(record: dict) -> dict:
         "fileSize": max(0, sql_int(record.get("fileSize"), 0)),
         "checksumSha256": text_value(record.get("checksumSha256")),
         "backupType": text_value(record.get("backupType")) or "manual",
+        "scope": backup_scope_of(record.get("fileName")),
         "requestedByName": text_value(record.get("requestedByName")),
         "status": text_value(record.get("status")) or "completed",
         "createdAt": text_value(record.get("createdAt")),
@@ -2068,6 +2142,12 @@ def create_database_backup(backup_type: str, context: dict | None = None) -> dic
         record = database_backup_record(backup_id)
         if not record:
             raise InternalServerError("备份已生成，但无法读取备份记录。")
+
+        # 文件库卷一起归档：文件不在数据库里，不一起备份就恢复不回来。
+        try:
+            create_file_library_backup(timestamp, backup_type, actor_id, actor_name)
+        except Exception as exc:  # noqa: BLE001 - 归档异常不影响数据库备份
+            print(f"File library backup skipped: {exc}", flush=True)
 
         try:
             cleanup_expired_database_backups(

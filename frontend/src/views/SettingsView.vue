@@ -1247,9 +1247,12 @@ onMounted(async () => {
           />
           <el-table :data="backups" size="small" border empty-text="尚无数据库备份记录">
             <el-table-column prop="createdAt" label="创建时间" width="170" />
-            <el-table-column label="类型" width="100">
+            <el-table-column label="类型" width="150">
               <template #default="{ row }">
-                {{ row.backupType === "scheduled" ? "定时备份" : "手动备份" }}
+                {{ row.backupType === "scheduled" ? "定时" : "手动" }}
+                <el-tag size="small" effect="plain" :type="row.scope === 'files' ? 'warning' : 'primary'">
+                  {{ row.scope === "files" ? "文件库" : "数据库" }}
+                </el-tag>
               </template>
             </el-table-column>
             <el-table-column prop="fileName" label="备份文件" min-width="220" show-overflow-tooltip />

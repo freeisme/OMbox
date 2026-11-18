@@ -4875,6 +4875,17 @@ class LineGuardModuleTests(TestCase):
         with self.assertRaises(ValueError):
             parse_network("198.51.100.0/8")
 
+class BackupScopeTests(TestCase):
+    """备份范围：文件名里带 _files_ 的是文件库卷归档。"""
+
+    def test_backup_scope_labels_file_library_archive(self):
+        import server
+
+        self.assertEqual(server.backup_scope_of("ombox_20261118_020000_scheduled_ab12.sql.gz"), "database")
+        self.assertEqual(server.backup_scope_of("ombox_20261118_020000_scheduled_files_ab12.tar.gz"), "files")
+        self.assertEqual(server.backup_scope_of(""), "database")
+
+
 class FileLibraryTests(TestCase):
     """机房文件库：路径安全与扩展名归一化。"""
 
