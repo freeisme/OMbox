@@ -1028,6 +1028,16 @@ class DomainApiRouter:
             send_json(self.assets.offboarding_preview(parts[3], context))
             return True
 
+        # 工号体检与按规则重排（只动不合规/重复的工号）
+        if path == "/api/employees/number-audit" and method == "GET":
+            context = self._read_context(handler, "employees")
+            send_json(self.assets.employee_number_audit(context))
+            return True
+        if path == "/api/employees/number-audit/renumber" and method == "POST":
+            context = self._write_context(handler, "employees", "update")
+            send_json(self.assets.renumber_employees(self._payload(handler, allow_empty=True), context))
+            return True
+
         # 离职异常项结清 / 撤销结清
         if path.startswith("/api/left-employees/") and "/exceptions/" in path and method == "POST":
             parts = path.split("/")

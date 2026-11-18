@@ -2823,25 +2823,51 @@ def employee_prefix_for_org(org_id: object | None, orgs_by_id: dict[str, dict]) 
     return "-".join(path) or "ORG"
 
 
+# 合规工号：大写字母/数字分段 + 三位序号，例如 DEMO1-HQ2-DEV3-LAB4-001
+EMPLOYEE_NO_PATTERN = re.compile(r"^(?:[A-Z0-9]+-)+[0-9]{3}$")
+
+
 def normalize_employee_numbers(employees: list[dict], orgs: list[dict]) -> list[dict]:
+    """补齐并规范化工号。
+
+    规则：
+    - 合规工号（分段 + 三位序号）原样保留，不因部门调整而改写；
+    - 不合规工号（少位、缺分段，如 CLKF-01）按当前组织路径重新生成；
+    - 序号取该组织「最大号 + 1」，不再复用空号，避免号码倒回；
+    - 生成结果与全表已有工号去重，冲突时继续向上取号。
+    """
     normalized = [dict(employee) for employee in employees]
     orgs_by_id = {text_value(org.get("id")): org for org in orgs}
     used_by_org: dict[str, set[int]] = {}
+    taken: set[str] = set()
     for employee in normalized:
-        org_id = text_value(employee.get("orgId"))
-        match = re.search(r"-(\d+)$", text_value(employee.get("employeeNo")))
+        number = text_value(employee.get("employeeNo")).upper()
+        if not number:
+            continue
+        taken.add(number)
+        # 只有合规工号的序号才占用号段；脏号（如 CLKF-01）不占号，重算时不会被它顶走
+        if not EMPLOYEE_NO_PATTERN.match(number):
+            continue
+        match = re.search(r"-(\d+)$", number)
         if match:
-            used_by_org.setdefault(org_id, set()).add(int(match.group(1)))
+            used_by_org.setdefault(text_value(employee.get("orgId")), set()).add(int(match.group(1)))
     for employee in normalized:
-        if text_value(employee.get("employeeNo")):
+        raw = text_value(employee.get("employeeNo"))
+        if raw and EMPLOYEE_NO_PATTERN.match(raw.upper()):
             continue
         org_id = text_value(employee.get("orgId"))
         used = used_by_org.setdefault(org_id, set())
-        sequence = 1
-        while sequence in used:
+        prefix = employee_prefix_for_org(org_id, orgs_by_id)
+        sequence = (max(used) + 1) if used else 1
+        candidate = f"{prefix}-{sequence:03d}"
+        while candidate.upper() in taken or sequence in used:
             sequence += 1
-        employee["employeeNo"] = f"{employee_prefix_for_org(org_id, orgs_by_id)}-{sequence:03d}"
+            candidate = f"{prefix}-{sequence:03d}"
+        if raw:
+            taken.discard(raw.upper())
+        employee["employeeNo"] = candidate
         used.add(sequence)
+        taken.add(candidate.upper())
     return normalized
 
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { companyScope } from "../companyScope";
 import {
   EMPLOYEE_STATUS_OPTIONS,
@@ -39,6 +39,7 @@ import {
 } from "../api/lists";
 import { statusLabel, statusTagType } from "../labels";
 import { hasPermission } from "../session";
+import { auditEmployeeNumbers, renumberEmployees, type EmployeeNumberAudit } from "../api/employeeNumbers";
 import { confirmAction } from "../composables/useConfirm";
 import { listPositions, loadOrgTree, savePositions, type Company, type Position } from "../api/company";
 
@@ -86,6 +87,49 @@ const pageSize = ref(50);
 
 const formVisible = ref(false);
 const editingId = ref("");
+const numberAuditVisible = ref(false);
+const numberAudit = ref<EmployeeNumberAudit | null>(null);
+const numberAuditLoading = ref(false);
+
+async function openNumberAudit(): Promise<void> {
+  numberAuditVisible.value = true;
+  numberAuditLoading.value = true;
+  try {
+    numberAudit.value = await auditEmployeeNumbers();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "工号体检失败。");
+  } finally {
+    numberAuditLoading.value = false;
+  }
+}
+
+async function fixNumberIssues(): Promise<void> {
+  const suspicious =
+    (numberAudit.value?.malformed?.length ?? 0) + (numberAudit.value?.duplicated?.length ?? 0);
+  if (!suspicious) {
+    ElMessage.info("没有需要修正的不合规或重复工号。");
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      "将把不合规与重复的工号按「当前组织前缀 + 顺序号」重排，其他工号不动。确定继续？",
+      "修正工号",
+      { type: "warning" },
+    );
+  } catch {
+    return;
+  }
+  try {
+    const result = await renumberEmployees();
+    ElMessage.success("已修正 " + result.updated + " 个工号。");
+    await openNumberAudit();
+    invalidateEmployeesCache();
+    await load(true);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "修正失败。");
+  }
+}
+
 const form = reactive<EmployeeFormPayload>(emptyEmployeeForm());
 const importDialog = ref(false);
 
@@ -972,7 +1016,8 @@ onMounted(async () => {
           :label="`导出选中 ${selectedIds.length}`"
           :disabled="!selectedIds.length"
         />
-        <el-button v-if="hasPermission('employees', 'create')" @click="importDialog = true">
+        <el-button v-if="hasPermission('employees', 'update')" @click="openNumberAudit">工号体检</el-button>
+      <el-button v-if="hasPermission('employees', 'create')" @click="importDialog = true">
           导入 Excel
         </el-button>
         <el-button v-if="hasPermission('employees', 'create')" type="primary" @click="openCreate">
@@ -1736,6 +1781,34 @@ onMounted(async () => {
     :import-fn="importEmployees"
     @imported="invalidateEmployeesCache(); load(true)"
   />
+  <el-dialog v-model="numberAuditVisible" title="工号体检" width="820px">
+    <div v-loading="numberAuditLoading">
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        class="oa-mb-3"
+        title="规则：工号 = 组织路径（不含最顶层）- 三位序号。部门调整不会改写已有工号，所以前缀与当前组织不一致属于正常历史；这里只修「格式不合规」与「重复」。"
+      />
+      <el-descriptions :column="3" border size="small" class="oa-mb-3">
+        <el-descriptions-item label="员工总数">{{ numberAudit?.total ?? 0 }}</el-descriptions-item>
+        <el-descriptions-item label="格式不合规">{{ numberAudit?.malformed?.length ?? 0 }}</el-descriptions-item>
+        <el-descriptions-item label="工号重复">{{ numberAudit?.duplicated?.length ?? 0 }}</el-descriptions-item>
+      </el-descriptions>
+      <el-table :data="[...(numberAudit?.malformed ?? []), ...(numberAudit?.duplicated ?? [])]" size="small" border max-height="320">
+        <el-table-column prop="name" label="姓名" width="120" />
+        <el-table-column prop="no" label="当前工号" width="200" />
+        <el-table-column prop="reason" label="问题" min-width="200" />
+      </el-table>
+      <p v-if="numberAudit?.mismatchedCount" class="oa-hint oa-mt-2">
+        另有 {{ numberAudit?.mismatchedCount }} 条前缀与当前组织不一致（历史遗留，默认不改）。
+      </p>
+    </div>
+    <template #footer>
+      <el-button @click="numberAuditVisible = false">关闭</el-button>
+      <el-button type="primary" @click="fixNumberIssues">修正不合规/重复工号</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <style scoped>

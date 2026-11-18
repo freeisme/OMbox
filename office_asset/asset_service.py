@@ -988,6 +988,134 @@ class AssetService:
         )
         return {"id": org_id, "deleted": True}
 
+    # ---------------------------------------------------- 工号体检与重排
+    EMPLOYEE_NO_PATTERN = re.compile(r"^(?:[A-Z0-9]+-)+[0-9]{3}$")
+
+    def _org_prefix_map(self) -> tuple[dict[str, dict], dict[int, str]]:
+        orgs = self.db.json(
+            """
+            SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
+              'id', CAST(org_unit_id AS CHAR), 'code', org_code, 'name', org_name,
+              'parentId', COALESCE(CAST(parent_org_unit_id AS CHAR), '')
+            )), JSON_ARRAY())
+            FROM org_unit WHERE is_active = 1
+            """,
+            [],
+        ) or []
+        by_id = {self.db.text(org.get("id")): org for org in orgs if isinstance(org, dict)}
+        prefixes: dict[int, str] = {}
+        for org in orgs:
+            if not isinstance(org, dict):
+                continue
+            path: list[str] = []
+            current = org
+            seen: set[str] = set()
+            while current and self.db.text(current.get("id")) not in seen:
+                seen.add(self.db.text(current.get("id")))
+                path.append(self.db.text(current.get("code")) or "ORG")
+                current = by_id.get(self.db.text(current.get("parentId")))
+            path.reverse()
+            if len(path) > 1:
+                path.pop(0)
+            prefixes[self.db.integer(org.get("id"), 0)] = "-".join(path) or "ORG"
+        return by_id, prefixes
+
+    def employee_number_audit(self, context: dict) -> dict:
+        """工号体检：列出不合规、重复、以及与当前组织前缀不一致的记录。"""
+        _, prefixes = self._org_prefix_map()
+        rows = self.db.json(
+            """
+            SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
+              'id', CAST(employee_id AS CHAR), 'no', employee_no, 'name', employee_name,
+              'orgId', CAST(COALESCE(org_unit_id, 0) AS CHAR)
+            )), JSON_ARRAY())
+            FROM employee
+            """,
+            [],
+        ) or []
+        seen: dict[str, int] = {}
+        malformed: list[dict] = []
+        duplicated: list[dict] = []
+        mismatched: list[dict] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            number = self.db.text(row.get("no"))
+            if not number:
+                malformed.append({**row, "reason": "工号为空"})
+                continue
+            key = number.upper()
+            seen[key] = seen.get(key, 0) + 1
+            if not self.EMPLOYEE_NO_PATTERN.match(key):
+                malformed.append({**row, "reason": "格式不合规（应为 分段-三位序号）"})
+            org_id = self.db.integer(row.get("orgId"), 0)
+            prefix = prefixes.get(org_id, "")
+            if prefix and not key.startswith(prefix.upper() + "-"):
+                mismatched.append({**row, "reason": f"前缀与当前组织不一致（应为 {prefix}-NNN）"})
+        for row in rows:
+            if isinstance(row, dict):
+                key = self.db.text(row.get("no")).upper()
+                if key and seen.get(key, 0) > 1 and not any(
+                    item.get("id") == row.get("id") for item in duplicated
+                ):
+                    duplicated.append({**row, "reason": "工号重复"})
+        return {
+            "total": len([item for item in rows if isinstance(item, dict)]),
+            "malformed": malformed,
+            "duplicated": duplicated,
+            "mismatched": mismatched,
+            "mismatchedCount": len(mismatched),
+        }
+
+    def renumber_employees(self, payload: dict, context: dict) -> dict:
+        """把不合规 / 重复的工号按当前规则重排；prefix 不一致的默认不动。"""
+        targets = {self.db.text(item) for item in (payload.get("employeeIds") or []) if self.db.text(item)}
+        audit = self.employee_number_audit(context)
+        fixes: list[dict] = []
+        for bucket in (audit["malformed"], audit["duplicated"]):
+            for item in bucket:
+                employee_id = self.db.text(item.get("id"))
+                if employee_id and (not targets or employee_id in targets):
+                    fixes.append(item)
+        unique_fixes = {self.db.text(item.get("id")): item for item in fixes if self.db.text(item.get("id"))}
+        if not unique_fixes:
+            return {"updated": 0, "changes": []}
+        _, prefixes = self._org_prefix_map()
+        used = self.db.json(
+            "SELECT COALESCE(JSON_ARRAYAGG(UPPER(employee_no)), JSON_ARRAY()) FROM employee WHERE employee_no <> ''",
+            [],
+        ) or []
+        taken = {self.db.text(value).upper() for value in used}
+        org_max: dict[int, int] = {}
+        for item in unique_fixes.values():
+            org_id = self.db.integer(item.get("orgId"), 0)
+            prefix = prefixes.get(org_id, "ORG")
+            sequence = org_max.get(org_id, 0) + 1
+            candidate = f"{prefix}-{sequence:03d}"
+            while candidate.upper() in taken:
+                sequence += 1
+                candidate = f"{prefix}-{sequence:03d}"
+            org_max[org_id] = sequence
+            taken.add(candidate.upper())
+            old_no = self.db.text(item.get("no"))
+            taken.discard(old_no.upper())
+            self.db.execute(
+                "UPDATE employee SET employee_no = " + self.db.quote(candidate)
+                + f" WHERE employee_id = {self.db.integer(item.get('id'), 0)}"
+            )
+            self.db.execute(
+                "INSERT INTO audit_log (action_type, entity_type, entity_id, entity_name, summary, actor, source) "
+                "VALUES ("
+                + self.db.quote("employee_no_renumbered") + ", " + self.db.quote("employee")
+                + ", " + self.db.quote(self.db.text(item.get("id"))) + ", "
+                + self.db.quote(self.db.text(item.get("name"))) + ", "
+                + self.db.quote("工号修正：" + (old_no or "(空)") + " → " + candidate) + ", "
+                + self.db.quote(self.db.text(context.get("username"))) + ", "
+                + self.db.quote("web") + ")"
+            )
+            fixes.append({"id": item.get("id"), "name": item.get("name"), "old": old_no, "new": candidate})
+        return {"updated": len(unique_fixes), "changes": fixes[-len(unique_fixes):]}
+
     def save_left_exception(
         self,
         archive_id: str,

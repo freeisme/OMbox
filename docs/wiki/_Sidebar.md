@@ -11,6 +11,8 @@
 
 * [离职与异常结清](Offboarding)
 
+* [员工工号规则](Employee-Numbers)
+
 **产线设备**
 
 * [产线工控机](LineGuard)

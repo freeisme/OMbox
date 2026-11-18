@@ -4875,6 +4875,44 @@ class LineGuardModuleTests(TestCase):
         with self.assertRaises(ValueError):
             parse_network("198.51.100.0/8")
 
+class EmployeeNumberRuleTests(TestCase):
+    """工号规则：合规保留、非法重算、顺序号不复用、重复避让。"""
+
+    ORGS = [
+        {"id": "1", "code": "DEMO1", "parentId": ""},
+        {"id": "2", "code": "HQ2", "parentId": "1"},
+        {"id": "3", "code": "DEV3", "parentId": "2"},
+        {"id": "4", "code": "LAB4", "parentId": "3"},
+    ]
+
+    def _normalize(self, employees):
+        import server
+
+        return server.normalize_employee_numbers(employees, self.ORGS)
+
+    def test_valid_number_is_kept(self):
+        rows = self._normalize([{"orgId": "4", "employeeNo": "HQ2-DEV3-LAB4-003"}])
+        self.assertEqual(rows[0]["employeeNo"], "HQ2-DEV3-LAB4-003")
+
+    def test_two_digit_number_is_rewritten(self):
+        rows = self._normalize([{"orgId": "4", "employeeNo": "LAB4-01"}])
+        self.assertEqual(rows[0]["employeeNo"], "HQ2-DEV3-LAB4-001")
+
+    def test_sequence_continues_from_max_and_skips_duplicates(self):
+        rows = self._normalize([
+            {"orgId": "4", "employeeNo": "HQ2-DEV3-LAB4-001"},
+            {"orgId": "4", "employeeNo": "HQ2-DEV3-LAB4-005"},
+            {"orgId": "4", "employeeNo": ""},
+            {"orgId": "4", "employeeNo": ""},
+        ])
+        self.assertEqual(rows[2]["employeeNo"], "HQ2-DEV3-LAB4-006")
+        self.assertEqual(rows[3]["employeeNo"], "HQ2-DEV3-LAB4-007")
+
+    def test_blank_number_uses_new_prefix(self):
+        rows = self._normalize([{"orgId": "3", "employeeNo": ""}])
+        self.assertEqual(rows[0]["employeeNo"], "HQ2-DEV3-001")
+
+
 class LeftExceptionSettlementTests(TestCase):
     """离职异常项结清：处理方式取值与配置查询字段映射。"""
 
