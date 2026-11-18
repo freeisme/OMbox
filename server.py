@@ -2317,16 +2317,76 @@ def normalize_left_employee_devices(devices: list[dict]) -> list[dict]:
     return normalized
 
 
-def normalize_left_employees(left_employees: list[dict]) -> list[dict]:
+LEFT_EXCEPTION_RESOLUTION_LABELS = {
+    "recovered": "已找回",
+    "scrapped": "已报废",
+    "compensated": "已赔付",
+    "other": "其他",
+}
+
+
+def left_exception_map() -> dict[int, dict[int, dict]]:
+    """读取未撤销的异常结清记录：archive_id → {item_index: 结清信息}。
+
+    归一化也用于纯离线场景（生成同步 SQL、单元测试），此时没有数据库连接，
+    读不到就当作「都没有结清」，不能因此报错。
+    """
+    try:
+        rows = json_query_one(
+        """
+        SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
+          'archiveId', CAST(archive_id AS CHAR),
+          'itemIndex', item_index,
+          'resolution', resolution,
+          'note', note,
+          'resolvedBy', resolved_by,
+          'resolvedAt', DATE_FORMAT(resolved_at, '%Y-%m-%d %H:%i:%s')
+        )), JSON_ARRAY())
+        FROM left_employee_exception
+            WHERE revoked_at IS NULL
+            """,
+            [],
+        )
+    except Exception:  # noqa: BLE001 - 无数据库时归零处理
+        return {}
+    result: dict[int, dict[int, dict]] = {}
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        archive_id = sql_int(row.get("archiveId"), 0)
+        index = sql_int(row.get("itemIndex"), -1)
+        if archive_id <= 0 or index < 0:
+            continue
+        result.setdefault(archive_id, {})[index] = row
+    return result
+
+
+def normalize_left_employees(left_employees: list[dict], exceptions: dict[int, dict[int, dict]] | None = None) -> list[dict]:
     normalized: list[dict] = []
     for item in left_employees or []:
         devices = normalize_left_employee_devices(item.get("devices") or [])
+        archive_id = sql_int(item.get("id"), 0)
+        resolved_map = (exceptions or {}).get(archive_id, {})
         # 离职时选了「异常待处理」的资产：允许离职，但要在列表里显著标出未结清。
-        exception_labels = [
-            text_value(device.get("label")) or text_value(device.get("detail")) or "未命名资产"
-            for device in devices
-            if text_value(device.get("action")) == "exception"
-        ]
+        exception_labels: list[str] = []
+        exception_open_labels: list[str] = []
+        for index, device in enumerate(devices):
+            if text_value(device.get("action")) != "exception":
+                continue
+            label = text_value(device.get("label")) or text_value(device.get("detail")) or "未命名资产"
+            info = resolved_map.get(index) or {}
+            device["exceptionIndex"] = index
+            device["resolved"] = bool(info)
+            device["resolution"] = text_value(info.get("resolution"))
+            device["resolutionLabel"] = LEFT_EXCEPTION_RESOLUTION_LABELS.get(
+                text_value(info.get("resolution")), ""
+            )
+            device["resolutionNote"] = text_value(info.get("note"))
+            device["resolvedBy"] = text_value(info.get("resolvedBy"))
+            device["resolvedAt"] = text_value(info.get("resolvedAt"))
+            exception_labels.append(label)
+            if not info:
+                exception_open_labels.append(label)
         normalized.append(
             {
                 "id": text_value(item.get("id")),
@@ -2347,7 +2407,9 @@ def normalize_left_employees(left_employees: list[dict]) -> list[dict]:
                 "devices": devices,
                 "deviceCount": len(devices),
                 "exceptionCount": len(exception_labels),
+                "exceptionOpenCount": len(exception_open_labels),
                 "exceptionLabels": exception_labels,
+                "exceptionOpenLabels": exception_open_labels,
             }
         )
     return normalized
@@ -2692,7 +2754,9 @@ def normalize_payload(payload: dict) -> dict:
         "inventoryPurchaseLogs": normalize_inventory_purchase_logs(payload.get("inventoryPurchaseLogs") or []),
         "stateRevision": max(0, sql_int(payload.get("stateRevision"), 0)),
         "employees": employees,
-        "leftEmployees": normalize_left_employees(payload.get("leftEmployees") or []),
+        "leftEmployees": normalize_left_employees(
+            payload.get("leftEmployees") or [], left_exception_map()
+        ),
         "computers": normalize_computers(payload.get("computers") or [], employee_ids),
     }
 
@@ -4584,7 +4648,7 @@ def build_state_payload(include_audit_logs: bool = True) -> dict:
             }
         )
 
-    archived_records = normalize_left_employees(left_employees)
+    archived_records = normalize_left_employees(left_employees, left_exception_map())
     archived_keys = {
         left_employee_source_key(item)
         for item in archived_records
@@ -5232,23 +5296,30 @@ def _spec_normalize(value: object | None) -> str:
     return text.replace("gb", "g").replace("tb", "t")
 
 
-def _match_computer_spec(spec: str, row: dict) -> bool:
-    """配置查询：命中 CPU / 内存 / 存储 / 显卡 / 型号 / 设备名 任一项即可。
+# 配置查询可限定的字段：前端下拉框的取值
+SPEC_FIELDS = {
+    "cpu": ("cpu",),
+    "memory": ("memory",),
+    "storage": ("storage",),
+    "gpu": ("gpu",),
+    "model": ("model", "deviceName"),
+}
+
+
+def _match_computer_spec(spec: str, row: dict, field: str = "") -> bool:
+    """配置查询：默认在 CPU/内存/存储/显卡/型号/设备名 里找，指定字段时只看该字段。
 
     多个条件用空格分隔，必须同时命中（例如 "8g i5"）。
     """
-    haystack = _spec_normalize(
-        " ".join(
-            [
-                text_value(row.get("cpu")),
-                text_value(row.get("memory")),
-                text_value(row.get("storage")),
-                text_value(row.get("gpu")),
-                text_value(row.get("model")),
-                text_value(row.get("deviceName")),
-            ]
-        )
+    keys = SPEC_FIELDS.get(field) or (
+        "cpu",
+        "memory",
+        "storage",
+        "gpu",
+        "model",
+        "deviceName",
     )
+    haystack = _spec_normalize(" ".join(text_value(row.get(key)) for key in keys))
     for term in spec.split():
         if _spec_normalize(term) not in haystack:
             return False
@@ -5280,6 +5351,7 @@ def paginate_computers(payload: dict, params: dict[str, list[str]]) -> dict:
     scope = _subtree_org_ids(orgs, org_id) if org_id else None
     keyword = param("keyword").strip().lower()
     spec = param("spec").strip().lower()
+    spec_field = param("specField").strip().lower()
     status = param("status").strip()
     user_id = param("userId").strip()
     unassigned = parse_bool(param("unassigned"))
@@ -5314,7 +5386,7 @@ def paginate_computers(payload: dict, params: dict[str, list[str]]) -> dict:
             ).lower()
             if keyword not in haystack:
                 continue
-        if spec and not _match_computer_spec(spec, row):
+        if spec and not _match_computer_spec(spec, row, spec_field):
             continue
         rows.append(row)
 

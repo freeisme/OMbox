@@ -16,7 +16,11 @@ import ExportMenu from "../components/ui/ExportMenu.vue";
 import FilterBar from "../components/ui/FilterBar.vue";
 import PageHeader from "../components/ui/PageHeader.vue";
 import { asText } from "../api/exports";
-import { updateLeftEmployeeRemark } from "../api/directory";
+import {
+  resolveLeftException,
+  revokeLeftException,
+  updateLeftEmployeeRemark,
+} from "../api/directory";
 import { formatDateTimeText } from "../labels";
 
 const router = useRouter();
@@ -24,6 +28,22 @@ const loading = ref(true);
 const rows = ref<LeftEmployeeRow[]>([]);
 const keyword = ref("");
 const detail = ref<LeftEmployeeRow | null>(null);
+/** 异常项结清弹窗。 */
+const resolveDialog = ref<{ visible: boolean; row: LeftEmployeeRow | null }>({ visible: false, row: null });
+const resolveForm = ref({ resolution: "recovered", note: "" });
+const resolving = ref(false);
+const canUpdateEmployees = computed(() => hasPermission("employees", "update"));
+
+const exceptionItems = computed(() =>
+  (detail.value?.devices ?? []).filter((item) => item.action === "exception"),
+);
+
+const RESOLUTION_OPTIONS = [
+  { value: "recovered", label: "已找回" },
+  { value: "scrapped", label: "已报废" },
+  { value: "compensated", label: "已赔付" },
+  { value: "other", label: "其他" },
+];
 const detailVisible = ref(false);
 const page = ref(1);
 const pageSize = ref(50);
@@ -111,6 +131,76 @@ const remarkDialogVisible = ref(false);
 const remarkSaving = ref(false);
 const remarkTarget = ref<LeftEmployeeRow | null>(null);
 const remarkDraft = ref("");
+
+/** 去处理：设备跳办公终端并带上搜索词，物资跳物资管理。 */
+function goHandleException(row: { label?: string; category?: string }): void {
+  const label = String(row.label ?? "").trim();
+  if (row.category === "computer" && label) {
+    void router.push({ path: "/computers", query: { keyword: label } });
+    return;
+  }
+  void router.push({ path: "/inventory-hub", query: label ? { keyword: label } : {} });
+}
+
+function openResolveDialog(row: { resolved?: boolean }): void {
+  if (row.resolved) return;
+  resolveForm.value = { resolution: "recovered", note: "" };
+  resolveDialog.value = { visible: true, row: detail.value };
+  pendingExceptionIndex.value = Number((row as { exceptionIndex?: number }).exceptionIndex ?? -1);
+}
+
+const pendingExceptionIndex = ref(-1);
+
+async function submitResolve(): Promise<void> {
+  const archive = resolveDialog.value.row;
+  const index = pendingExceptionIndex.value;
+  if (!archive || index < 0) return;
+  resolving.value = true;
+  try {
+    await resolveLeftException(archive.id, index, {
+      resolution: resolveForm.value.resolution,
+      note: resolveForm.value.note,
+    });
+    ElMessage.success("已结清。");
+    resolveDialog.value.visible = false;
+    await refreshDetail();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "结清失败。");
+  } finally {
+    resolving.value = false;
+  }
+}
+
+async function revokeException(row: { exceptionIndex?: number }): Promise<void> {
+  const archive = detail.value;
+  const index = Number(row.exceptionIndex ?? -1);
+  if (!archive || index < 0) return;
+  try {
+    await ElMessageBox.confirm("撤销后该项会重新变成「待结清」，确定继续？", "撤销结清", { type: "warning" });
+  } catch {
+    return;
+  }
+  try {
+    await revokeLeftException(archive.id, index);
+    ElMessage.success("已撤销结清。");
+    await refreshDetail();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "撤销失败。");
+  }
+}
+
+async function refreshDetail(): Promise<void> {
+  const id = detail.value?.id ?? "";
+  if (!id) return;
+  try {
+    const data = await loadDirectoryData(true);
+    rows.value = data.leftEmployees;
+    const fresh = rows.value.find((item) => item.id === id);
+    if (fresh) detail.value = fresh;
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "刷新失败。");
+  }
+}
 
 function openRemarkDialog(row: LeftEmployeeRow): void {
   remarkTarget.value = row;
@@ -265,14 +355,23 @@ onMounted(loadRows);
       <el-table-column label="离职设备快照" min-width="240" show-overflow-tooltip>
         <template #default="{ row }">{{ deviceSummary(row.devices) }}</template>
       </el-table-column>
-      <el-table-column label="异常项" width="130">
+      <el-table-column label="异常项" width="150">
         <template #default="{ row }">
           <el-tooltip
-            v-if="row.exceptionCount"
+            v-if="Number(row.exceptionOpenCount ?? 0) > 0"
+            :content="(row.exceptionOpenLabels ?? []).join('、')"
+            placement="top"
+          >
+            <el-tag type="danger" size="small">
+              待结清 {{ row.exceptionOpenCount }}/{{ row.exceptionCount }}
+            </el-tag>
+          </el-tooltip>
+          <el-tooltip
+            v-else-if="row.exceptionCount"
             :content="(row.exceptionLabels ?? []).join('、')"
             placement="top"
           >
-            <el-tag type="danger" size="small">异常待处理 {{ row.exceptionCount }}</el-tag>
+            <el-tag type="info" size="small">异常已结清 {{ row.exceptionCount }}</el-tag>
           </el-tooltip>
           <span v-else class="oa-cell-sub">—</span>
         </template>
@@ -347,14 +446,52 @@ onMounted(loadRows);
       <el-descriptions-item label="离职信息">{{ detail.leaveInfo || "—" }}</el-descriptions-item>
       <el-descriptions-item label="备注">{{ detail.leaveRemark || "—" }}</el-descriptions-item>
     </el-descriptions>
-    <el-alert
-      v-if="detail?.exceptionCount"
-      type="warning"
-      :closable="false"
-      show-icon
-      class="oa-mb-3"
-      :title="`有 ${detail.exceptionCount} 项资产按「异常待处理」归档，尚未结清：${(detail.exceptionLabels ?? []).join('、')}`"
-    />
+    <div v-if="detail?.exceptionCount" class="oa-drawer-section">
+      <h4>异常项（未结清 {{ detail.exceptionOpenCount ?? 0 }} / 共 {{ detail.exceptionCount }}）</h4>
+      <el-table :data="exceptionItems" size="small" border>
+        <el-table-column prop="label" label="资产" min-width="150" show-overflow-tooltip />
+        <el-table-column label="状态" width="110">
+          <template #default="{ row }">
+            <el-tag :type="row.resolved ? 'success' : 'danger'" size="small">
+              {{ row.resolved ? "已结清" : "待结清" }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="处理方式" width="120">
+          <template #default="{ row }">
+            {{ row.resolutionLabel || "—" }}
+          </template>
+        </el-table-column>
+        <el-table-column label="处理人 / 时间" width="170">
+          <template #default="{ row }">
+            <span v-if="row.resolved">{{ row.resolvedBy }} · {{ row.resolvedAt }}</span>
+            <span v-else class="oa-hint">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="resolutionNote" label="备注" min-width="120" show-overflow-tooltip />
+        <el-table-column label="操作" width="200" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="goHandleException(row)">去处理</el-button>
+            <el-button
+              v-if="canUpdateEmployees && !row.resolved"
+              link
+              type="primary"
+              @click="openResolveDialog(row)"
+            >
+              结清
+            </el-button>
+            <el-button
+              v-if="canUpdateEmployees && row.resolved"
+              link
+              type="warning"
+              @click="revokeException(row)"
+            >
+              撤销结清
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
     <div class="oa-drawer-section">
       <h4>离职时设备快照（{{ (detail?.devices ?? []).length }} 条）</h4>
       <el-descriptions v-if="(detail?.devices ?? []).length" :column="1" border size="small">
@@ -369,4 +506,21 @@ onMounted(loadRows);
       <el-empty v-else description="暂无离职设备快照" :image-size="60" />
     </div>
   </DetailDrawer>
+
+  <el-dialog v-model="resolveDialog.visible" title="结清异常项" width="480px">
+    <el-form label-width="96px">
+      <el-form-item label="处理方式">
+        <el-select v-model="resolveForm.resolution" class="oa-full-width">
+          <el-option v-for="item in RESOLUTION_OPTIONS" :key="item.value" :label="item.label" :value="item.value" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="备注">
+        <el-input v-model="resolveForm.note" type="textarea" :rows="3" placeholder="如：已找回，存放于 A 库；或已按 8 折赔付" />
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="resolveDialog.visible = false">取消</el-button>
+      <el-button type="primary" :loading="resolving" @click="submitResolve">确认结清</el-button>
+    </template>
+  </el-dialog>
 </template>

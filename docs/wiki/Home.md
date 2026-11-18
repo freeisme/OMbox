@@ -15,6 +15,7 @@
 | [机房巡检](Inspection) | 巡检模板、开始巡检、提交与导出 |
 | [会议室](Meeting-Rooms) | 会议室与会议室内设备、会议室巡检模板 |
 | [产线工控机](LineGuard) | 车间 IPC 台账、换线履历、在线状态与告警 |
+| [离职与异常结清](Offboarding) | 离职办理、异常待处理项的去处理与结清/撤销 |
 | [发布与版本](Releases-and-Versioning) | 版本号规则、发布流程与回滚 |
 | [运维与安全](Operations-and-Security) | 权限模型、备份、密钥与令牌、脱敏纪律 |
 

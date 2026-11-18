@@ -1028,6 +1028,24 @@ class DomainApiRouter:
             send_json(self.assets.offboarding_preview(parts[3], context))
             return True
 
+        # 离职异常项结清 / 撤销结清
+        if path.startswith("/api/left-employees/") and "/exceptions/" in path and method == "POST":
+            parts = path.split("/")
+            # /api/left-employees/{archiveId}/exceptions/{index}/{action}
+            if len(parts) != 7 or not parts[3].isdigit() or not parts[5].isdigit():
+                raise self.deps.api_error("Invalid left employee exception path.")
+            action = parts[6]
+            if action not in {"resolve", "revoke"}:
+                raise self.deps.api_error("Invalid left employee exception action.")
+            context = self._write_context(handler, "employees", "update")
+            payload = self._payload(handler) if action == "resolve" else {}
+            send_json(
+                self.assets.save_left_exception(
+                    parts[3], parts[5], payload, context, revoke=action == "revoke"
+                )
+            )
+            return True
+
         # 离职人员备注编辑
         if path.startswith("/api/left-employees/") and method == "PUT":
             parts = path.split("/")

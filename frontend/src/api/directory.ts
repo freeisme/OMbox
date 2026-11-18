@@ -3,6 +3,7 @@ import { withCompanyQuery } from "../companyScope";
 import type { ImportSummary } from "./datacenter";
 
 export interface LeftDeviceRow {
+  category?: string;
   label?: string;
   detail?: string;
   quantity?: number;
@@ -11,6 +12,14 @@ export interface LeftDeviceRow {
   targetEmployeeName?: string;
   targetEmployeeNo?: string;
   handlingNote?: string;
+  /** 异常项结清：只有 action=exception 的条目才有 exceptionIndex。 */
+  exceptionIndex?: number;
+  resolved?: boolean;
+  resolution?: string;
+  resolutionLabel?: string;
+  resolutionNote?: string;
+  resolvedBy?: string;
+  resolvedAt?: string;
 }
 
 export interface LeftEmployeeRow {
@@ -30,9 +39,12 @@ export interface LeftEmployeeRow {
   archivedAt: string;
   devices: LeftDeviceRow[];
   deviceCount?: number;
-  /** 离职时按「异常待处理」归档、尚未结清的项数。 */
+  /** 按「异常待处理」归档的项目总数（含已结清）。 */
   exceptionCount?: number;
+  /** 其中尚未结清的数量，列表红标用它。 */
+  exceptionOpenCount?: number;
   exceptionLabels?: string[];
+  exceptionOpenLabels?: string[];
 }
 
 export interface OrgNode {
@@ -63,6 +75,29 @@ export interface DirectoryData {
   orgs: OrgNode[];
   nonAssetTypes: NonAssetTypeRow[];
   employees: DirectoryEmployeeRow[];
+}
+
+/** 结清一条离职异常项：resolution = recovered / scrapped / compensated / other。 */
+export function resolveLeftException(
+  archiveId: string,
+  exceptionIndex: number,
+  payload: { resolution: string; note?: string },
+): Promise<{ ok: boolean; resolved: boolean }> {
+  return api(
+    withCompanyQuery("/api/left-employees/" + archiveId + "/exceptions/" + exceptionIndex + "/resolve"),
+    { method: "POST", body: payload },
+  );
+}
+
+/** 撤销结清（误点恢复），保留操作记录。 */
+export function revokeLeftException(
+  archiveId: string,
+  exceptionIndex: number,
+): Promise<{ ok: boolean; resolved: boolean }> {
+  return api(
+    withCompanyQuery("/api/left-employees/" + archiveId + "/exceptions/" + exceptionIndex + "/revoke"),
+    { method: "POST", body: {} },
+  );
 }
 
 let cache: { at: number; data: DirectoryData } | null = null;

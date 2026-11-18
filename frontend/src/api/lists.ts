@@ -13,8 +13,10 @@ export interface ListQuery {
   /** 0 表示取全部，用于导出与"全选当前结果"。 */
   pageSize?: number;
   keyword?: string;
-  /** 配置查询：匹配 CPU / 内存 / 存储 / 显卡 / 型号（8G、i5、512G 等）。 */
+  /** 配置查询关键字（8G、i5、512G 等）。 */
   spec?: string;
+  /** 配置查询限定的字段：cpu / memory / storage / gpu / model，空表示全部。 */
+  specField?: string;
   status?: string;
   orgId?: string;
   /** 只看某位使用人名下的终端（设备弹窗用）。 */

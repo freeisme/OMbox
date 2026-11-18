@@ -168,6 +168,13 @@ COMPUTER_STATUS_TRANSITIONS = {
 }
 
 
+LEFT_EXCEPTION_RESOLUTIONS = {
+    "recovered": "已找回",
+    "scrapped": "已报废",
+    "compensated": "已赔付",
+    "other": "其他",
+}
+
 OFFBOARD_ACTION_LABELS = {
     "recover": "回收",
     "transfer": "转交他人",
@@ -980,6 +987,91 @@ class AssetService:
             """
         )
         return {"id": org_id, "deleted": True}
+
+    def save_left_exception(
+        self,
+        archive_id: str,
+        item_index: str,
+        payload: dict,
+        context: dict,
+        *,
+        revoke: bool = False,
+    ) -> dict:
+        """结清 / 撤销结清一条离职异常项；归档快照本身不改。"""
+        archive_number = self.db.integer(archive_id, 0)
+        index_number = self.db.integer(item_index, -1)
+        if archive_number <= 0 or index_number < 0:
+            raise self.api_error("异常的离职记录或项目无效。")
+        row = self.db.json(
+            f"SELECT JSON_OBJECT('snapshot', COALESCE(device_snapshot, JSON_ARRAY())) "
+            f"FROM left_employee_archive WHERE archive_id = {archive_number} LIMIT 1",
+            None,
+        )
+        if not isinstance(row, dict):
+            raise self.api_error("离职记录不存在。")
+        snapshot = row.get("snapshot")
+        if isinstance(snapshot, list):
+            devices = snapshot
+        else:
+            try:
+                devices = json.loads(str(snapshot or "[]"))
+            except (TypeError, ValueError):
+                devices = []
+        item = devices[index_number] if 0 <= index_number < len(devices) else None
+        if not isinstance(item, dict) or self.db.text(item.get("action")) != "exception":
+            raise self.api_error("该条目不是「异常待处理」项，无法结清。")
+        label = self.db.text(item.get("label") or item.get("detail"))[:250]
+        actor = self.db.text(context.get("username"))
+
+        if revoke:
+            self.db.execute(
+                "UPDATE left_employee_exception SET revoked_at = NOW(), revoked_by = "
+                + self.db.quote(actor)
+                + f" WHERE archive_id = {archive_number} AND item_index = {index_number} "
+                "AND revoked_at IS NULL"
+            )
+            self._write_left_exception_audit(archive_number, index_number, "撤销结清", label, actor)
+            return {"ok": True, "resolved": False}
+
+        resolution = self.db.text(payload.get("resolution"))
+        if resolution not in LEFT_EXCEPTION_RESOLUTIONS:
+            raise self.api_error("请选择处理方式：已找回 / 已报废 / 已赔付 / 其他。")
+        note = self.db.text(payload.get("note"))[:500]
+        self.db.execute(
+            f"""
+            INSERT INTO left_employee_exception (
+              archive_id, item_index, item_label, resolution, note, resolved_by
+            ) VALUES (
+              {archive_number}, {index_number}, {self.db.quote(label)},
+              {self.db.quote(resolution)}, {self.db.quote(note)}, {self.db.quote(actor)}
+            )
+            ON DUPLICATE KEY UPDATE
+              item_label = VALUES(item_label),
+              resolution = VALUES(resolution),
+              note = VALUES(note),
+              resolved_by = VALUES(resolved_by),
+              resolved_at = NOW(),
+              revoked_at = NULL,
+              revoked_by = ''
+            """
+        )
+        self._write_left_exception_audit(
+            archive_number, index_number, "结清异常项：" + LEFT_EXCEPTION_RESOLUTIONS[resolution], label, actor
+        )
+        return {"ok": True, "resolved": True}
+
+    def _write_left_exception_audit(
+        self, archive_id: int, item_index: int, summary: str, label: str, actor: str
+    ) -> None:
+        self.db.execute(
+            "INSERT INTO audit_log (action_type, entity_type, entity_id, entity_name, summary, actor, source) "
+            "VALUES ("
+            + self.db.quote("left_employee_exception")
+            + ", " + self.db.quote("left_employee_archive")
+            + f", {self.db.quote(str(archive_id))}, {self.db.quote(label)}, "
+            + self.db.quote(f"{summary}（第 {item_index + 1} 项）")
+            + ", " + self.db.quote(actor) + ", " + self.db.quote("web") + ")"
+        )
 
     def delete_left_employee(self, archive_id: object, context: dict) -> dict:
         """删除一条离职人员档案（只删历史归档，不动在职人员）。"""

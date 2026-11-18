@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 import { ElMessage } from "element-plus";
 import { companyScope } from "../companyScope";
 import {
@@ -33,6 +34,8 @@ import { confirmAction } from "../composables/useConfirm";
 import { deviceTypeLabel, statusLabel, statusTagType } from "../labels";
 import { hasPermission } from "../session";
 import { loadOrgTree, transferAsset, type Company } from "../api/company";
+
+const route = useRoute();
 
 const loading = ref(true);
 const saving = ref(false);
@@ -227,7 +230,7 @@ const MOVEMENT_TAG_TYPES: Record<string, "primary" | "success" | "info" | "warni
   status_changed: "info",
 };
 
-const filters = reactive({ keyword: "", spec: "", status: "", orgId: "" });
+const filters = reactive({ keyword: "", spec: "", specField: "", status: "", orgId: "" });
 const selectedIds = ref<string[]>([]);
 const page = ref(1);
 const pageSize = ref(50);
@@ -318,6 +321,7 @@ async function loadRows(): Promise<void> {
       pageSize: pageSize.value,
       keyword: filters.keyword.trim(),
       spec: filters.spec.trim(),
+      specField: filters.specField,
       status: filters.status,
       orgId: filters.orgId,
     });
@@ -338,7 +342,7 @@ function scheduleReload(): void {
 }
 
 watch(
-  () => [filters.keyword, filters.spec] as const,
+  () => [filters.keyword, filters.spec, filters.specField] as const,
   () => scheduleReload(),
 );
 
@@ -485,6 +489,7 @@ async function selectAllFiltered(): Promise<void> {
       pageSize: 0,
       keyword: filters.keyword.trim(),
       spec: filters.spec.trim(),
+      specField: filters.specField,
       status: filters.status,
       orgId: filters.orgId,
     });
@@ -506,6 +511,7 @@ function clearSelection(): void {
 function clearFilters(): void {
   filters.keyword = "";
   filters.spec = "";
+  filters.specField = "";
   filters.status = "";
   filters.orgId = "";
   page.value = 1;
@@ -523,6 +529,11 @@ watch(
 );
 
 onMounted(async () => {
+  const wanted = String(route.query.keyword ?? "").trim();
+  if (wanted) {
+    filters.keyword = wanted;
+    page.value = 1;
+  }
   await load(false);
   try {
     scrapReasons.value = await fetchScrapReasons();
@@ -568,13 +579,24 @@ onMounted(async () => {
             />
           </el-form-item>
         </el-col>
-        <el-col :xs="24" :sm="12" :md="5">
+        <el-col :xs="24" :sm="12" :md="6">
           <el-form-item label="配置查询">
-            <el-input
-              v-model="filters.spec"
-              placeholder="如 8G、16G、i5、512G"
-              clearable
-            />
+            <div class="oa-flex-row">
+              <el-select v-model="filters.specField" clearable placeholder="全部项" style="width: 110px">
+                <el-option label="全部" value="" />
+                <el-option label="CPU" value="cpu" />
+                <el-option label="内存" value="memory" />
+                <el-option label="存储" value="storage" />
+                <el-option label="显卡" value="gpu" />
+                <el-option label="型号" value="model" />
+              </el-select>
+              <el-input
+                v-model="filters.spec"
+                placeholder="如 8G、i5、512G"
+                clearable
+                style="flex: 1"
+              />
+            </div>
           </el-form-item>
         </el-col>
         <el-col :xs="12" :sm="6" :md="4">

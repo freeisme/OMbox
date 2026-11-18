@@ -4875,6 +4875,27 @@ class LineGuardModuleTests(TestCase):
         with self.assertRaises(ValueError):
             parse_network("198.51.100.0/8")
 
+class LeftExceptionSettlementTests(TestCase):
+    """离职异常项结清：处理方式取值与配置查询字段映射。"""
+
+    def test_resolution_labels_cover_all_options(self):
+        from office_asset.asset_service import LEFT_EXCEPTION_RESOLUTIONS
+
+        self.assertEqual(
+            set(LEFT_EXCEPTION_RESOLUTIONS), {"recovered", "scrapped", "compensated", "other"}
+        )
+        self.assertEqual(LEFT_EXCEPTION_RESOLUTIONS["compensated"], "已赔付")
+
+    def test_spec_field_mapping(self):
+        import server
+
+        self.assertEqual(server.SPEC_FIELDS["memory"], ("memory",))
+        self.assertIn("deviceName", server.SPEC_FIELDS["model"])
+        self.assertEqual(
+            set(server.SPEC_FIELDS), {"cpu", "memory", "storage", "gpu", "model"}
+        )
+
+
 class BackupScopeTests(TestCase):
     """备份范围：文件名里带 _files_ 的是文件库卷归档。"""
 

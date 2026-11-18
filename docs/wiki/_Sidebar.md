@@ -9,6 +9,8 @@
 * [机房巡检](Inspection)
 * [会议室](Meeting-Rooms)
 
+* [离职与异常结清](Offboarding)
+
 **产线设备**
 
 * [产线工控机](LineGuard)
