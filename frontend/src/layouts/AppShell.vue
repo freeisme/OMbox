@@ -4,7 +4,7 @@ import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { NAV_BY_PAGE, NAV_GROUPS, NAV_ITEMS, PAGE_BY_PATH, PATH_BY_PAGE } from "../navigation";
 import { NAV_ICON_FALLBACK, NAV_ICON_PATHS } from "../navIcons";
-import { canViewPage, hasPermission, loadMeta, logout, session } from "../session";
+import { canViewPage, firstVisiblePath, hasPermission, loadMeta, logout, session } from "../session";
 import { checkUpdateStatus } from "../api/settings";
 import { fetchNotifications } from "../api/service";
 import { listNavLinks, type NavLink } from "../api/company";
@@ -174,6 +174,13 @@ async function loadNavLinks(): Promise<void> {
 
 const visibleItems = computed(() => NAV_ITEMS.filter((item) => canViewPage(item.page)));
 const currentTitle = computed(() => String(route.meta.title ?? "OMbox 运维（O&M）盒子"));
+/** 个人工作台是独立门户：隐藏资产管理侧栏，只留一条顶栏。 */
+const isPersonalPage = computed(() => route.path === "/me");
+
+function goBackToConsole(): void {
+  void router.push(firstVisiblePath());
+}
+
 const version = computed(() => session.meta?.version || __APP_VERSION__);
 /** 系统名与 Logo 来自「设置 → 系统参数」，没设置时回落到产品默认样式。 */
 const brandName = computed(() => session.appName.trim() || "OMbox");
@@ -243,7 +250,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="oa-shell">
-    <aside class="oa-rail" :class="{ 'is-collapsed': railIsCollapsed }">
+    <aside v-if="!isPersonalPage" class="oa-rail" :class="{ 'is-collapsed': railIsCollapsed }">
       <div class="oa-brand">
         <img v-if="brandLogo" class="oa-brand-logo" :src="brandLogo" alt="系统 Logo" />
         <span v-else class="oa-brand-mark">OM</span>
@@ -333,8 +340,9 @@ onBeforeUnmount(() => {
           <el-tag size="small" effect="plain" type="info">v{{ version }}</el-tag>
         </div>
         <div class="oa-topbar-actions">
+          <el-button v-if="isPersonalPage" text @click="goBackToConsole">返回资产系统</el-button>
           <el-dropdown
-            v-if="canSwitchCompany"
+            v-if="canSwitchCompany && !isPersonalPage"
             trigger="click"
             placement="bottom-end"
             @command="onCompanyCommand"
@@ -365,8 +373,9 @@ onBeforeUnmount(() => {
             <el-button text @click="openNotifications">消息</el-button>
           </el-badge>
           <el-button text @click="toggleTheme">{{ theme === "dark" ? "日间" : "夜间" }}</el-button>
-          <el-button text @click="reloadData">重新加载</el-button>
-          <el-button text @click="goToSettings">设置</el-button>
+          <el-button v-if="!isPersonalPage" text @click="reloadData">重新加载</el-button>
+          <el-button v-if="!isPersonalPage" text @click="goToSettings">设置</el-button>
+          <el-button v-if="!isPersonalPage" text @click="router.push('/me')">我的</el-button>
           <el-button text type="danger" @click="signOut">退出</el-button>
         </div>
       </header>

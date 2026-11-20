@@ -19,8 +19,6 @@ const SERVICE_MODULES = [
 ];
 
 export const NAV_ITEMS: NavItem[] = [
-  // 个人工作台：任何已登录账号都可见（canViewPage 对 personal 特判），不需要授权模块
-  { page: "personal", path: "/me", title: "我的工作台", group: "个人中心", modules: [] },
   { page: "dashboard", path: "/dashboard", title: "工作台", group: "资产台账", modules: ["dashboard"] },
   { page: "computers", path: "/computers", title: "办公终端", group: "资产台账", modules: ["it_assets"] },
   { page: "employees", path: "/employees", title: "使用人员", group: "资产台账", modules: ["employees"] },
@@ -102,7 +100,7 @@ export const NAV_ITEMS: NavItem[] = [
   },
 ];
 
-export const NAV_GROUPS = ["个人中心", ..."资产台账", "机房管理", "巡检管理", "产线设备", "资源与审计", "系统", "服务管理"];
+export const NAV_GROUPS = ["资产台账", "机房管理", "巡检管理", "产线设备", "资源与审计", "系统", "服务管理"];
 
 export const PAGE_BY_PATH: Record<string, string> = Object.fromEntries(
   NAV_ITEMS.map((item) => [item.path, item.page]),

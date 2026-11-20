@@ -58,6 +58,13 @@ const routes: RouteRecordRaw[] = [
     meta: { title: "集团/公司初始化" },
   },
   { path: "/", redirect: PATH_BY_PAGE.dashboard },
+  // 个人工作台：独立门户，不在资产管理左侧菜单里，从顶栏「我的」进入
+  {
+    path: "/me",
+    name: "personal",
+    component: () => import("../views/PersonalView.vue"),
+    meta: { title: "我的工作台", page: "personal" },
+  },
   // 合并前的旧地址：收藏夹、外链、别人发的链接都还能用，自动落到对应页签。
   ...LEGACY_REDIRECTS,
   ...vueRoutes,
