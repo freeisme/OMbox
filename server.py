@@ -26,7 +26,10 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
+from office_asset.ai_tools import AiToolRegistry, ToolError
+from office_asset.api_credential import ApiCredentialService
 from office_asset.api_router import ApiDependencies, DomainApiRouter
+from office_asset.mcp_gateway import McpError, McpGateway
 from office_asset.xlsx import WorkbookError, decode_logo_data_uri
 from office_asset.xlsx import map_headers as map_sheet_headers
 from office_asset.xlsx import normalise_header as normalise_sheet_header
@@ -1139,6 +1142,52 @@ def require_auth(handler: SimpleHTTPRequestHandler) -> dict:
         raise UnauthorizedError("请先登录。")
     return context
 
+
+
+def auth_context_for_user(user_id: object) -> dict | None:
+    """按用户直接构建上下文（API 令牌没有会话）：字段与 current_auth_context 保持一致。"""
+    uid = sql_int(user_id, 0)
+    if uid <= 0:
+        return None
+    context = json_query_one(
+        f"""
+        SELECT JSON_OBJECT(
+          'id', CAST(user.user_id AS CHAR),
+          'username', user.username,
+          'displayName', user.display_name,
+          'role', COALESCE(user.role_code, user.user_role),
+          'roleCode', COALESCE(user.role_code, user.user_role),
+          'sessionId', '',
+          'isSuperAdmin', EXISTS(
+            SELECT 1 FROM auth_role role_row
+            WHERE role_row.role_code = COALESCE(user.role_code, user.user_role)
+              AND role_row.is_active = 1
+              AND role_row.is_super_admin = 1
+          ),
+          'isActive', user.is_active,
+          'csrfHash', '',
+          'companyId', COALESCE(CAST(org.company_id AS CHAR), ''),
+          'employee', JSON_OBJECT(
+            'employeeId', COALESCE(CAST(employee.employee_id AS CHAR), ''),
+            'employeeNo', COALESCE(employee.employee_no, ''),
+            'employeeName', COALESCE(employee.employee_name, ''),
+            'department', COALESCE(employee.department, ''),
+            'positionName', COALESCE(employee.position_name, ''),
+            'orgId', COALESCE(CAST(employee.org_unit_id AS CHAR), ''),
+            'orgName', COALESCE(org.org_name, ''),
+            'email', COALESCE(employee.email, ''),
+            'mobile', COALESCE(employee.mobile, '')
+          )
+        )
+        FROM user_account user
+        LEFT JOIN employee ON employee.employee_id = user.employee_id
+        LEFT JOIN org_unit org ON org.org_unit_id = employee.org_unit_id
+        WHERE user.user_id = {uid} AND user.is_active = 1
+        LIMIT 1
+        """,
+        None,
+    )
+    return context or None
 
 def require_role(context: dict, *roles: str) -> None:
     if text_value(context.get("role")) not in roles:
@@ -6190,6 +6239,28 @@ DOMAIN_ROUTER = DomainApiRouter(
     )
 )
 
+# ---------------------------------------------------------------- MCP / AI 网关
+API_CREDENTIALS = ApiCredentialService(
+    db=DOMAIN_DB,
+    api_error=ApiError,
+    forbidden_error=ForbiddenError,
+)
+AI_TOOLS = AiToolRegistry(
+    router=DOMAIN_ROUTER,
+    db=DOMAIN_DB,
+    require_permission=require_permission,
+    permission_allows=permission_allows,
+    permission_map=permission_map,
+)
+MCP_GATEWAY = McpGateway(
+    db=DOMAIN_DB,
+    tools=AI_TOOLS,
+    load_settings=settings_payload,
+    api_error=ApiError,
+    forbidden_error=ForbiddenError,
+)
+
+
 # ---------------------------------------------------------------- 产线工控机
 # 数据访问复用上面的 mysql 网关；探测循环作为后台线程运行（不依赖 Agent）。
 LINEGUARD_CONFIG = load_lineguard_config()
@@ -6519,6 +6590,28 @@ class AppHandler(SimpleHTTPRequestHandler):
             )
             return
 
+        # ---------------- 个人 API 令牌（MCP / HTTP API 用） ----------------
+        if path == "/api/me/credentials" and self.command in {"GET", "POST"}:
+            context = require_auth(self)
+            if self.command == "GET":
+                self.send_json({"credentials": API_CREDENTIALS.list_for_user(context.get("id"))})
+                return
+            require_csrf(self, context)
+            payload = self.read_json()
+            issued = API_CREDENTIALS.issue(
+                context.get("id"),
+                payload.get("name"),
+                context.get("username"),
+                payload.get("expiresDays"),
+            )
+            self.send_json(issued, status=HTTPStatus.CREATED)
+            return
+        match = re.fullmatch(r"/api/me/credentials/(\d+)", path)
+        if match and self.command == "DELETE":
+            context = require_auth(self)
+            require_csrf(self, context)
+            self.send_json(API_CREDENTIALS.revoke(match.group(1), context.get("id")))
+            return
         if parsed.path == "/api/auth/logout" and self.command == "POST":
             # 登出后立刻让该令牌的会话缓存失效，避免 20s 内仍能读到旧上下文
             invalidate_auth_context(cookie_value(self, AUTH_COOKIE_NAME))
@@ -7112,6 +7205,63 @@ class AppHandler(SimpleHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(content)
 
+    def handle_mcp(self) -> None:
+        """MCP over HTTP：Bearer 令牌鉴权，协议解析与留痕交给 MCP_GATEWAY。"""
+        header = self.headers.get("Authorization", "")
+        token = header[7:].strip() if header.lower().startswith("bearer ") else ""
+        credential = API_CREDENTIALS.authenticate(token) if token else None
+        if not credential:
+            self.send_json(
+                {"error": "令牌无效或已过期。", "code": "AUTH_REQUIRED"},
+                status=HTTPStatus.UNAUTHORIZED,
+            )
+            return
+        context = auth_context_for_user(credential.get("userId"))
+        if context:
+            # 审计日志据此把来源记为 ai，便于与页面操作区分
+            context["_channel"] = "ai"
+        if not context:
+            self.send_json(
+                {"error": "账号不可用。", "code": "AUTH_REQUIRED"},
+                status=HTTPStatus.UNAUTHORIZED,
+            )
+            return
+        try:
+            body = self.read_json()
+        except Exception:  # noqa: BLE001 - 报文不合法时按 JSON-RPC 解析错误处理
+            self.send_json(
+                {"jsonrpc": "2.0", "id": None,
+                 "error": {"code": -32700, "message": "请求体不是合法的 JSON。"}},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+        request_id = body.get("id") if isinstance(body, dict) else None
+        try:
+            status, payload = MCP_GATEWAY.handle(
+                body,
+                context=context,
+                credential=credential,
+                client_name=self.headers.get("X-MCP-Client", ""),
+                ip=self.client_address[0] if self.client_address else "",
+            )
+        except McpError as exc:
+            error = {"code": exc.code, "message": exc.message}
+            if exc.data_code:
+                error["data"] = {"code": exc.data_code}
+            http_status = (
+                HTTPStatus.TOO_MANY_REQUESTS
+                if exc.data_code == "RATE_LIMITED"
+                else HTTPStatus.OK
+            )
+            self.send_json({"jsonrpc": "2.0", "id": request_id, "error": error}, status=http_status)
+            return
+        if status == 202 or payload is None:
+            self.send_response(HTTPStatus.ACCEPTED)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.send_json(payload)
+
     def do_GET(self) -> None:
         try:
             if self.path.startswith("/api/"):
@@ -7198,6 +7348,9 @@ class AppHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         try:
+            if self.path.split("?", 1)[0] == "/mcp":
+                self.handle_mcp()
+                return
             if self.path.startswith("/api/"):
                 self.handle_api()
                 return

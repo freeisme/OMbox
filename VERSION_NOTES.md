@@ -14,6 +14,48 @@
 - v2.31.0 起旧前端已整体删除，早期条目里的「回滚到旧前端 / 从 `MIGRATED_VIEWS` 移除」
   操作已不再适用。
 
+## v4.2.0
+
+发布日期：2026-11-20
+
+### 新增
+
+- **我的工作台**：左侧新增「个人中心 → 我的工作台」，任何登录账号都能进入，查看本人信息、
+  名下设备、我提交的工单，并管理自己的 API 令牌（创建、复制一次、吊销）。
+- **个人 API 令牌**：每人可创建多个令牌供自己的 AI 客户端使用，权限与本人账号完全一致；
+  令牌只在创建时显示一次，可单独吊销，并记录最近使用时间。
+- **MCP 网关（预览）**：`POST /mcp` 提供 MCP（JSON-RPC 2.0 over HTTP）接口，AI 客户端可用令牌接入；
+  首批开放三个工具：身份自检、创建工单、查询我提交的工单。
+  所有调用写入 AI 会话与工具调用记录，业务操作在操作日志中标记来源为 `ai`。
+
+### 配置
+
+- 网关**默认关闭**。开启方式（后续版本提供界面开关）：
+  ```sql
+  UPDATE system_setting SET setting_value = '1' WHERE setting_key = 'ai_gateway_enabled';
+  ```
+- 配套参数：`ai_rate_limit_per_min`（默认 60）、`ai_write_limit_per_min`（默认 20）、
+  `ai_confirm_user_id`（高风险操作确认人，预留）、`ai_confirm_ttl_seconds`（默认 300）。
+
+### 客户端接入
+
+```json
+{"mcpServers":{"ombox":{"type":"http","url":"http://<服务器地址>:8000/mcp",
+  "headers":{"Authorization":"Bearer ombox_xxx_yyy"}}}}
+```
+
+### 数据库影响
+
+新增四张表（`api_credential`、`ai_session`、`ai_tool_call`、`ai_confirm_token`）与五个配置项，不改动既有表结构。
+
+### 降级
+
+关闭 `ai_gateway_enabled` 后 MCP 接口直接拒绝，页面与其它接口完全不受影响。
+
+### 回滚
+
+回退到 `v4.1.12` 即可；新增表可保留，不影响旧版本运行。
+
 ## v4.1.12
 
 发布日期：2026-11-18

@@ -98,6 +98,8 @@ export function isModuleEnabled(resource: string): boolean {
 export function canViewPage(page: string): boolean {
   const item = NAV_BY_PAGE[page];
   if (!item) return true;
+  // 个人工作台不依赖授权模块：只要登录就能进
+  if (page === "personal") return true;
   return item.modules.some(
     (resource) => hasPermission(resource, "view") && isModuleEnabled(resource),
   );

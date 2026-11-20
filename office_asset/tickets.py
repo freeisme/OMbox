@@ -132,6 +132,10 @@ class TicketService:
             conditions.append(f"ticket.ticket_type = {self.db.quote(ticket_type)}")
         if mine == "1":
             conditions.append(f"ticket.assigned_to_user_id = {self._actor_id(context)}")
+        requester = self.db.text((filters.get("requester") or [""])[0])
+        if requester == "me":
+            # MCP 工具「我的工单」：只返回本人提交的，不受角色数据范围影响
+            conditions.append(f"ticket.created_by = {self._actor_id(context)}")
         scope = self.db.text((context.get("_permissionScopes") or {}).get("tickets")) or "all"
         if scope == "assigned":
             conditions.append(f"ticket.assigned_to_user_id = {self._actor_id(context)}")
@@ -345,7 +349,8 @@ class TicketService:
             VALUES (
               'ticket_created', 'itil_ticket', {self.db.quote(str(ticket_id))},
               {self.db.quote(self.db.text(created.get('number')))}, '工单已创建',
-              {self.db.quote(self._actor_name(context))}, 'api'
+              {self.db.quote(self._actor_name(context))},
+              {self.db.quote(self.db.text(context.get("_channel")) or "api")}
             );
             """
         )

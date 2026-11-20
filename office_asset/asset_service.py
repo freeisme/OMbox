@@ -831,7 +831,7 @@ class AssetService:
           {self.db.json_value(new_value or {})},
           {self.db.quote(summary[:500])},
           {self.db.quote(self._actor_name(context))},
-          'api'
+          {self.db.quote(self.db.text(context.get("_channel")) or "api")}
         )
         """
 

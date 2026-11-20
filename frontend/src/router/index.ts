@@ -5,6 +5,7 @@ import { canViewPage, firstVisiblePath, refreshSession, session } from "../sessi
 /** 页面组件一律按需加载，首屏只保留外壳与登录页。 */
 const VIEW_LOADERS: Record<string, () => Promise<unknown>> = {
   dashboard: () => import("../views/DashboardView.vue"),
+  personal: () => import("../views/PersonalView.vue"),
   computers: () => import("../views/ComputersView.vue"),
   dictionary: () => import("../views/DictionaryView.vue"),
   employees: () => import("../views/EmployeesView.vue"),
